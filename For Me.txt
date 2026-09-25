@@ -1,0 +1,7 @@
+Hi, we're building an AI video extender SaaS. I'm going to give you two documents and then a series of build prompts, one at a time.
+
+First, read PLAN.md fully — it's context and rationale: the architecture, what's already been tested and solved, and what's still an open question. Treat anything in the "Open Questions" section as undecided, not settled, even if it's discussed in detail.
+
+Then read EXECUTION_GUIDE.md — this is the actual build sequence, broken into numbered prompts. I'll paste them to you one at a time, in order. Don't jump ahead to a later prompt or combine steps, even if you can see where it's heading — each step has its own testing note I need to run before we move on.
+
+Confirm you've read both, then wait for me to start our work.
