@@ -1,0 +1,39 @@
+# api and worker are the same image (built from ./Dockerfile); both import app.py.
+x-app: &app
+  build: .
+  image: ai-video-extender
+  env_file: .env
+  environment:
+    REDIS_URL: redis://redis:6379/0
+  volumes:
+    - media:/srv/media          # downloaded clips + final videos: the worker writes them, the api serves them
+  depends_on:
+    redis:
+      condition: service_healthy
+
+services:
+  api:
+    <<: *app
+    command: uvicorn app:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8001:8000"   # host port 8001 (Windows reserves 8000 on this machine); container still listens on 8000
+
+  worker:
+    <<: *app
+    command: celery -A app.celery_app worker --loglevel=info
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6380:6379"   # host port 6380 (6379 is taken by another local Redis); localhost only, for poking at job state from a host Python shell
+    volumes:
+      - redis-data:/data        # job state lives in Redis, so keep it across container restarts
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  redis-data:
+  media:

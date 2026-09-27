@@ -1,0 +1,9 @@
+{
+  "source_job": "90de45a2833348f2a2ec53c09812a64b",
+  "how_they_were_made": "each clip: previous clip's video + FIRST clip's audio + FIRST clip's last frame (Formula B)",
+  "saved_at": "2026-09-26T04:13:20+00:00",
+  "clip2_video_url": "https://tempfile.aiquickdraw.com/seedance/1790393902590-4f9xmz4pitf.mp4",
+  "clip3_video_url": "https://tempfile.aiquickdraw.com/seedance/1790394024061-x96w8g1u4y.mp4",
+  "clip4_video_url": "https://tempfile.aiquickdraw.com/seedance/1790394161946-cf3wqc0a0hl.mp4",
+  "clip5_video_url": "https://tempfile.aiquickdraw.com/seedance/1790394281676-tv939cg3wn.mp4"
+}

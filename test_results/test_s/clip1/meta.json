@@ -1,0 +1,33 @@
+{
+  "step": "1/7",
+  "folder": "clip1",
+  "variant": "-",
+  "description": "Base clip: the woman visible, no references. Source of the audio and last frame used by every variant.",
+  "prompt": "Medium shot of a woman in her thirties with shoulder-length dark curly hair and a cream cardigan, pouring coffee into a mug at a kitchen counter at dawn, soft morning light through the window. She looks down at the mug and never looks at the camera. Realistic cinematic style. Calm, quiet, reflective atmosphere. Voiceover narration only, in a wistful female voice, no lip sync needed since she is not speaking: \"She used to make his coffee every morning.\" Natural ambient sound only, no music, no score — just the voiceover.",
+  "duration": 5,
+  "resolution": "480p",
+  "generate_audio": true,
+  "reference_sources": {
+    "reference_video_urls": null,
+    "reference_audio_urls": null,
+    "reference_image_urls": null
+  },
+  "started_at": "2026-09-25T23:55:48+00:00",
+  "reference_video_urls": null,
+  "reference_audio_urls": null,
+  "reference_image_urls": null,
+  "status": "ok",
+  "api_response": {
+    "task_id": "bcb7ec355a0b6135e441eaa43cefa3f7",
+    "video_url": "https://tempfile.aiquickdraw.com/seedance/1790380662409-zz7yo2hwpke.mp4",
+    "credits_consumed": 19.0
+  },
+  "credits_consumed": 19.0,
+  "task_id": "bcb7ec355a0b6135e441eaa43cefa3f7",
+  "elapsed_seconds": 122,
+  "audio_url": "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/99a9fa57a0d147f78d70410a9118bb93.wav",
+  "audio_url_saved_as": "audio.mp3",
+  "last_frame_url": "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/f08bae8ea5b947299cb8d4db958f15ff.png",
+  "last_frame_url_saved_as": "last_frame.jpg",
+  "finished_at": "2026-09-25T23:58:01+00:00"
+}

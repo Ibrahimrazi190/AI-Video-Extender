@@ -1,0 +1,37 @@
+{
+  "step": "3/7",
+  "folder": "variant2/clip2",
+  "variant": 2,
+  "description": "Video + audio only, no image (clip 1's).",
+  "prompt": "Same characters, visual style and lighting as @Video1, but a new scene: wide shot of the same kitchen, empty, steam rising from a kettle on the stove, a vacant chair at the table, no people visible on screen. A woman in her thirties with shoulder-length dark curly hair and a cream cardigan; realistic cinematic style, soft natural morning light; the narrator has a wistful female voice. Voiceover narration only, in the same narrator voice as @Audio1, quiet and heavy, no visible speaker, no lip sync needed since no one is speaking on camera: \"That morning, she didn't.\" Natural ambient sound only, no music, no score — just the voiceover.",
+  "duration": 5,
+  "resolution": "480p",
+  "generate_audio": true,
+  "reference_sources": {
+    "reference_video_urls": "clip1 video",
+    "reference_audio_urls": "clip1 audio",
+    "reference_image_urls": null
+  },
+  "started_at": "2026-09-26T00:00:03+00:00",
+  "reference_video_urls": [
+    "https://tempfile.aiquickdraw.com/seedance/1790380662409-zz7yo2hwpke.mp4"
+  ],
+  "reference_audio_urls": [
+    "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/99a9fa57a0d147f78d70410a9118bb93.wav"
+  ],
+  "reference_image_urls": null,
+  "status": "ok",
+  "api_response": {
+    "task_id": "f8a9caf3c1090c717bde8223bc8d7f01",
+    "video_url": "https://tempfile.aiquickdraw.com/seedance/1790380902328-kr85ooe36ud.mp4",
+    "credits_consumed": 24.0
+  },
+  "credits_consumed": 24.0,
+  "task_id": "f8a9caf3c1090c717bde8223bc8d7f01",
+  "elapsed_seconds": 102,
+  "audio_url": "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/b4a464b9acb44b9383c3665c78b0105e.wav",
+  "audio_url_saved_as": "audio.mp3",
+  "last_frame_url": "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/bd918417ba784586a8477d94e4b2b58c.png",
+  "last_frame_url_saved_as": "last_frame.jpg",
+  "finished_at": "2026-09-26T00:01:54+00:00"
+}

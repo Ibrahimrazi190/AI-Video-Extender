@@ -1,0 +1,36 @@
+{
+  "step": "1/2",
+  "folder": "formula_b/clip2",
+  "formula": "B (hybrid)",
+  "description": "Clip 2 with Formula B: previous clip's video (the master) + first clip's audio + first clip's last frame.",
+  "prompt": "Continuing directly from <Video 1>, A woman in her early 30s with a slim build, shoulder-length dark brown wavy hair, warm medium skin, and an oval face sits facing the camera in a cozy apartment living room. She wears a cream knit cardigan over a simple gray top, small gold hoop earrings, and minimal natural makeup. Behind her is a beige sofa with muted green pillows, a small wooden side table with a ceramic lamp, a leafy houseplant, and framed abstract prints on a warm white wall. Soft late-afternoon window light comes from camera left, with gentle shadows and a calm neutral color palette. Medium close-up framing from mid-chest upward, eye-level camera, shallow depth of field, realistic talking-head style, steady camera, natural facial movement and direct eye contact with the lens, still speaking to camera, hurt, searching for courage: \"So I packed slowly, waiting for him to fight for us.\" Natural lip sync to dialogue, same lighting and camera style, no background music, no score.",
+  "duration": 5,
+  "resolution": "480p",
+  "generate_audio": true,
+  "reference_sources": {
+    "reference_video_urls": "first clip video (previous clip)",
+    "reference_audio_urls": "first clip audio (fixed)",
+    "reference_image_urls": "first clip last frame (fixed)"
+  },
+  "compare_with": "chained_previous_run/clip2.mp4",
+  "started_at": "2026-09-26T03:15:32+00:00",
+  "reference_video_urls": [
+    "https://tempfile.aiquickdraw.com/seedance/1790391062276-ef2xusdajed.mp4"
+  ],
+  "reference_audio_urls": [
+    "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/79ed90dd2fcd40d1af5608aaa7504b41.wav"
+  ],
+  "reference_image_urls": [
+    "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/7babb67f2a2a469eb073dfb8e6b03240.png"
+  ],
+  "status": "ok",
+  "api_response": {
+    "task_id": "85807d6808f3b9d907d9a7504bc38f59",
+    "video_url": "https://tempfile.aiquickdraw.com/seedance/1790392682886-u4zktt29sd.mp4",
+    "credits_consumed": 24.0
+  },
+  "credits_consumed": 24.0,
+  "task_id": "85807d6808f3b9d907d9a7504bc38f59",
+  "elapsed_seconds": 158,
+  "finished_at": "2026-09-26T03:18:11+00:00"
+}

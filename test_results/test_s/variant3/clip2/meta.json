@@ -1,0 +1,35 @@
+{
+  "step": "4/7",
+  "folder": "variant3/clip2",
+  "variant": 3,
+  "description": "Video + audio + clip 1's last frame as the fixed character image, plus the 'looks exactly like @Image1' sentence.",
+  "prompt": "Same characters, visual style and lighting as @Video1, but a new scene: wide shot of the same kitchen, empty, steam rising from a kettle on the stove, a vacant chair at the table, no people visible on screen. A woman in her thirties with shoulder-length dark curly hair and a cream cardigan; realistic cinematic style, soft natural morning light; the narrator has a wistful female voice. The main character looks exactly like @Image1. Voiceover narration only, in the same narrator voice as @Audio1, quiet and heavy, no visible speaker, no lip sync needed since no one is speaking on camera: \"That morning, she didn't.\" Natural ambient sound only, no music, no score — just the voiceover.",
+  "duration": 5,
+  "resolution": "480p",
+  "generate_audio": true,
+  "reference_sources": {
+    "reference_video_urls": "clip1 video",
+    "reference_audio_urls": "clip1 audio",
+    "reference_image_urls": "clip1 last frame"
+  },
+  "started_at": "2026-09-26T00:01:54+00:00",
+  "reference_video_urls": [
+    "https://tempfile.aiquickdraw.com/seedance/1790380662409-zz7yo2hwpke.mp4"
+  ],
+  "reference_audio_urls": [
+    "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/99a9fa57a0d147f78d70410a9118bb93.wav"
+  ],
+  "reference_image_urls": [
+    "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/f08bae8ea5b947299cb8d4db958f15ff.png"
+  ],
+  "status": "ok",
+  "api_response": {
+    "task_id": "ea68b8e85864f837414c7f05450b2a4f",
+    "video_url": "https://tempfile.aiquickdraw.com/seedance/1790381052380-aw6anbjl2w.mp4",
+    "credits_consumed": 24.0
+  },
+  "credits_consumed": 24.0,
+  "task_id": "ea68b8e85864f837414c7f05450b2a4f",
+  "elapsed_seconds": 143,
+  "finished_at": "2026-09-26T00:04:19+00:00"
+}

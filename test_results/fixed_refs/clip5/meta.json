@@ -1,0 +1,35 @@
+{
+  "step": "4/4",
+  "folder": "clip5",
+  "description": "Clip 5 regenerated with all three references fixed to the master (line: \"He made me smaller, and I finally chose to leave.\").",
+  "prompt": "Continuing directly from <Video 1>, A 28-year-old woman with a slim build, shoulder-length dark brown wavy hair, oval face, brown eyes, and minimal makeup sits facing the camera. She wears a plain cream knit sweater and a thin gold necklace. The setting is a quiet apartment living room with a gray sofa behind her, a small wooden side table with a ceramic lamp, a framed abstract print on the wall, and soft daylight filtering through sheer curtains. The shot is a steady medium close-up at eye level, with shallow depth of field, natural lighting, and direct eye contact with the lens, still speaking to camera, resolved, softly relieved: \"He made me smaller, and I finally chose to leave.\" Natural lip sync to dialogue, same lighting and camera style, no background music, no score.",
+  "duration": 5,
+  "resolution": "480p",
+  "generate_audio": true,
+  "compare_with": "previous_run_chained/clip5.mp4",
+  "started_at": "2026-09-26T04:19:20+00:00",
+  "reference_sources": {
+    "reference_video_urls": "master clip video (FIXED, not the previous clip)",
+    "reference_audio_urls": "master audio, tail trimmed (FIXED)",
+    "reference_image_urls": "master last frame (FIXED)"
+  },
+  "reference_video_urls": [
+    "https://tempfile.aiquickdraw.com/seedance/1790393772446-i2a4hfx37sq.mp4"
+  ],
+  "reference_audio_urls": [
+    "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/master_audio_trimmed_696c42b0.wav"
+  ],
+  "reference_image_urls": [
+    "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/0c4ba53b4345467db3bae45f326913bb.png"
+  ],
+  "status": "ok",
+  "api_response": {
+    "task_id": "877a730123f292769574b86149117ce3",
+    "video_url": "https://tempfile.aiquickdraw.com/seedance/1790396492371-o1jgvuieyq.mp4",
+    "credits_consumed": 24.0
+  },
+  "credits_consumed": 24.0,
+  "task_id": "877a730123f292769574b86149117ce3",
+  "elapsed_seconds": 142,
+  "finished_at": "2026-09-26T04:21:44+00:00"
+}

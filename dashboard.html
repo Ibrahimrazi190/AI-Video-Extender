@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Video Extender</title>
+<style>
+  :root {
+    color-scheme: light dark; /* native scrollbars and the dropdown follow the theme too */
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1c2230; --muted: #5f6878; --line: #dde1e8;
+    --accent: #3056d3; --accent-text: #ffffff; --soft: #eef2fd;
+    --pending: #8a93a3; --generating: #b7791f; --done: #2f855a; --failed: #c53030;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1b2029; --text: #e6e9ef; --muted: #9aa3b2; --line: #2d3440;
+      --accent: #6d8cff; --accent-text: #0e1320; --soft: #222a3a;
+      --pending: #8a93a3; --generating: #e0a33a; --done: #4fbf85; --failed: #f06b6b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
+  form { display: grid; gap: 18px; }
+  label.field, fieldset { display: grid; gap: 6px; margin: 0; }
+  fieldset { border: 0; padding: 0; }
+  legend, .label { font-weight: 600; font-size: 13px; padding: 0; margin-bottom: 6px; }
+  input[type=text], select {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--panel); color: var(--text); font: inherit;
+  }
+  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; }
+  .choices { display: flex; gap: 8px; flex-wrap: wrap; }
+  .choice { position: relative; flex: 1 1 0; min-width: 120px; }
+  .choice input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+  .choice span {
+    display: block; height: 100%; padding: 8px 12px; border: 1px solid var(--line); border-radius: 7px;
+    cursor: pointer; font-weight: 500;
+  }
+  .choice span small { display: block; font-weight: 400; color: var(--muted); font-size: 12.5px; }
+  .choice input:checked + span { border-color: var(--accent); background: var(--soft); }
+  .choice input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .hint { color: var(--muted); font-size: 12.5px; margin: 0; }
+  .actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  button {
+    padding: 10px 22px; border: 0; border-radius: 7px; background: var(--accent); color: var(--accent-text);
+    font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .error { color: var(--failed); }
+  #job { margin-top: 22px; }
+  #job[hidden] { display: none; }
+  .job-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .job-head h2 { font-size: 17px; margin: 0; }
+  .job-meta { color: var(--muted); font-size: 13px; }
+  .job-meta code { font-size: 12px; }
+  .badge {
+    display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; font-weight: 600;
+    color: #fff; background: var(--pending); text-transform: capitalize;
+  }
+  .badge.generating { background: var(--generating); }
+  .badge.done { background: var(--done); }
+  .badge.failed { background: var(--failed); }
+  .timeline { display: flex; gap: 10px; overflow-x: auto; padding: 14px 2px 6px; scroll-snap-type: x proximity; }
+  .seg {
+    flex: 0 0 250px; scroll-snap-align: start; display: flex; flex-direction: column; gap: 8px;
+    border: 1px solid var(--line); border-top: 4px solid var(--pending); border-radius: 8px; padding: 10px;
+    background: var(--panel);
+  }
+  .seg.generating { border-top-color: var(--generating); }
+  .seg.done { border-top-color: var(--done); }
+  .seg.failed { border-top-color: var(--failed); }
+  .seg-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 600; }
+  .seg-head .res { color: var(--muted); font-weight: 500; }
+  .line { margin: 0; }
+  .visual {
+    margin: 0; color: var(--muted); font-size: 13px;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .waiting { margin: 0; color: var(--muted); font-style: italic; }
+  video { width: 100%; border-radius: 6px; background: #000; margin-top: auto; }
+  .seg { cursor: pointer; }
+  .seg:hover { border-color: var(--muted); }
+  .seg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .seg.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .detail { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 14px; display: grid; gap: 10px; }
+  .detail[hidden] { display: none; }
+  .detail h3 { font-size: 15px; margin: 0; }
+  .detail p { margin: 0; }
+  .detail .quote { font-size: 16px; }
+  .detail .meta { color: var(--muted); font-size: 13.5px; }
+  .detail-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); padding: 8px 16px; }
+  .final { margin: 14px 0 4px; display: grid; gap: 10px; }
+  .final[hidden] { display: none; }
+  .final-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .final-head .meta { color: var(--muted); font-size: 13px; }
+  .final video { max-width: 640px; }
+  .final-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  a.button {
+    display: inline-block; padding: 9px 20px; border-radius: 7px; background: var(--accent); color: var(--accent-text);
+    font-weight: 600; text-decoration: none;
+  }
+  a.button[hidden], .final-actions button[hidden] { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AI Video Extender</h1>
+  <p class="sub">Write a topic, pick the settings, and generate a continuous video made of short clips.</p>
+
+  <section class="panel">
+    <form id="form" novalidate>
+      <label class="field">
+        <span class="label">Topic</span>
+        <input type="text" id="topic" name="topic" placeholder="e.g. a woman telling why she didn't like her husband at first" autocomplete="off" required>
+      </label>
+
+      <fieldset>
+        <legend>Mode</legend>
+        <div class="choices">
+          <label class="choice"><input type="radio" name="mode" value="talking_head" checked><span>Talking Head<small>one person speaking to camera</small></span></label>
+          <label class="choice"><input type="radio" name="mode" value="story_time"><span>Story Time<small>changing scenes with a voiceover narrator</small></span></label>
+        </div>
+      </fieldset>
+
+      <div class="row">
+        <fieldset>
+          <legend>Clip length</legend>
+          <div class="choices">
+            <label class="choice"><input type="radio" name="clip_duration" value="10" checked><span>10 seconds</span></label>
+            <label class="choice"><input type="radio" name="clip_duration" value="5"><span>5 seconds<small>testing — cheaper</small></span></label>
+          </div>
+        </fieldset>
+
+        <label class="field">
+          <span class="label">Duration</span>
+          <select id="duration" name="duration"></select>
+        </label>
+
+        <fieldset>
+          <legend>Resolution</legend>
+          <div class="choices">
+            <label class="choice"><input type="radio" name="resolution" value="480p" checked><span>480p</span></label>
+            <label class="choice"><input type="radio" name="resolution" value="720p"><span>720p</span></label>
+          </div>
+          <p class="hint" id="res-hint">In Talking Head the first clip is always 720p.</p>
+        </fieldset>
+      </div>
+
+      <div class="actions">
+        <button type="submit" id="generate">Generate</button>
+        <span id="form-msg" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+  </section>
+
+  <section id="job" class="panel" hidden>
+    <div class="job-head">
+      <h2 id="job-title">Your video</h2>
+      <span id="job-status" class="badge" role="status">pending</span>
+    </div>
+    <p class="job-meta" id="job-meta"></p>
+    <p class="error" id="job-error" hidden></p>
+    <div class="final" id="final" hidden>
+      <div class="final-head"><strong>Final video</strong><span class="meta" id="final-meta"></span></div>
+      <video id="final-video" controls preload="metadata" hidden></video>
+      <div class="final-actions">
+        <a class="button" id="final-download" hidden>Download video</a>
+        <button type="button" class="secondary" id="final-build" hidden>Build final video</button>
+        <span id="final-msg" role="status" aria-live="polite"></span>
+      </div>
+    </div>
+    <div class="timeline" id="timeline" aria-label="Clips: select one to see its script and actions"></div>
+    <div class="detail" id="detail" hidden>
+      <h3 id="detail-title"></h3>
+      <div id="detail-text"></div>
+      <div class="detail-actions">
+        <button type="button" class="secondary" id="regen-script">Regenerate Script</button>
+        <button type="button" class="secondary" id="regen-scene">Regenerate Scene</button>
+        <span id="detail-msg" role="status" aria-live="polite"></span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const CLIP_COUNTS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 18, 24, 30, 60];
+  const DEFAULT_CLIPS = 3;
+  const POLL_MS = 4000;
+  const STORE_KEY = "videoExtender.lastJob";
+
+  const $ = (id) => document.getElementById(id);
+  const form = $("form"), durationSel = $("duration"), generateBtn = $("generate"), formMsg = $("form-msg");
+  const radio = (name) => form.querySelector(`input[name="${name}"]:checked`).value;
+  let pollTimer = null, busy = false;
+  // What is on screen, so a poll that brings nothing new changes nothing (a playing video keeps playing).
+  let shownJson = null, shownJob = null;
+  const shownClips = new Map(); // clip index -> { key, node }
+  let selected = null; // index of the clip whose script and actions are shown under the timeline
+  let actionBusy = false;
+  let pendingAction = null; // { index, label } while a regeneration runs, to report how it ended
+
+  function formatSeconds(total) {
+    const m = Math.floor(total / 60), s = total % 60;
+    if (!m) return `${s} s`;
+    return s ? `${m} min ${s} s` : `${m} min`;
+  }
+
+  // The duration list follows the clip length: same number of clips, total = clips x clip length.
+  function fillDurations() {
+    const clipSeconds = Number(radio("clip_duration"));
+    const keepClips = durationSel.value ? Number(durationSel.value) / Number(durationSel.dataset.clipSeconds) : DEFAULT_CLIPS;
+    durationSel.replaceChildren(...CLIP_COUNTS.map((n) => {
+      const opt = new Option(`${formatSeconds(n * clipSeconds)} · ${n} clip${n > 1 ? "s" : ""}`, String(n * clipSeconds));
+      opt.selected = n === keepClips;
+      return opt;
+    }));
+    durationSel.dataset.clipSeconds = String(clipSeconds);
+  }
+
+  function updateHint() {
+    $("res-hint").hidden = radio("mode") !== "talking_head";
+  }
+
+  function remember(jobId) {
+    try { localStorage.setItem(STORE_KEY, jobId); } catch (e) { /* storage unavailable: the job just won't survive a reload */ }
+  }
+  function recall() {
+    try { return localStorage.getItem(STORE_KEY); } catch (e) { return null; }
+  }
+
+  function setBusy(value) {
+    busy = value;
+    generateBtn.disabled = value;
+    generateBtn.textContent = value ? "Generating…" : "Generate";
+  }
+
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function renderSegment(clip, job, previous) {
+    const seg = el("article", `seg ${clip.status}`);
+    seg.dataset.index = String(clip.index);
+    seg.tabIndex = 0; // selectable from the keyboard (Enter or Space), like a click
+    const head = el("div", "seg-head");
+    head.append(el("span", null, `Clip ${clip.index + 1}`));
+    const right = el("span");
+    if (clip.resolution) right.append(el("span", "res", `${clip.resolution} `));
+    right.append(el("span", `badge ${clip.status}`, clip.status));
+    head.append(right);
+    seg.append(head);
+
+    if (job.mode === "story_time") {
+      if (clip.narration) {
+        seg.append(el("p", "line", `“${clip.narration}”`));
+        if (clip.visual) seg.append(el("p", "visual", clip.visual));
+      } else {
+        seg.append(el("p", "waiting", "Waiting for the script…"));
+      }
+    } else if (clip.dialogue) {
+      seg.append(el("p", "line", `“${clip.dialogue}”`));
+    } else {
+      seg.append(el("p", "waiting", "Waiting for the script…"));
+    }
+
+    if (clip.error) seg.append(el("p", "error", clip.error));
+    if (clip.video_url) {
+      // Reuse the player already showing this clip, so a redraw doesn't reload or restart it.
+      let video = previous && previous.querySelector("video");
+      if (!video || video.getAttribute("src") !== clip.video_url) {
+        video = el("video");
+        video.controls = true;
+        video.preload = "metadata";
+        video.src = clip.video_url;
+      }
+      seg.append(video);
+    }
+    return seg;
+  }
+
+  function renderJob(job) {
+    const json = JSON.stringify(job);
+    if (json === shownJson) return; // nothing new since the last poll: leave the page alone
+    if (!shownJob || shownJob.id !== job.id) {
+      shownClips.clear();
+      selected = null;
+    }
+    shownJson = json;
+    shownJob = job;
+    $("job").hidden = false;
+    const modeName = job.mode === "story_time" ? "Story Time" : "Talking Head";
+    $("job-title").textContent = job.request.topic;
+    const badge = $("job-status");
+    badge.className = `badge ${job.status}`;
+    badge.textContent = job.status;
+    const done = job.clips.filter((c) => c.status === "done").length;
+    $("job-meta").replaceChildren(
+      `${modeName} · ${job.clips.length} × ${job.request.clip_duration} s clips · ${job.resolution} · ${done} of ${job.clips.length} done · job `,
+      el("code", null, job.id),
+    );
+    const err = $("job-error");
+    err.hidden = !job.error;
+    err.textContent = job.error || "";
+    $("timeline").replaceChildren(...job.clips.map((c) => {
+      const key = JSON.stringify([job.mode, c]);
+      const shown = shownClips.get(c.index);
+      if (shown && shown.key === key) return shown.node; // unchanged clip: keep its card as it is
+      const node = renderSegment(c, job, shown && shown.node);
+      shownClips.set(c.index, { key, node });
+      return node;
+    }));
+    renderFinal(job);
+    renderDetail();
+  }
+
+  // The joined video: a player and a download link once it exists, a note while it is being made, and a button to
+  // make it for jobs that finished before it existed or after a failed attempt.
+  let finalBusy = false;
+  function renderFinal(job) {
+    const allDone = job.clips.length > 0 && job.clips.every((c) => c.status === "done");
+    const running = job.status === "pending" || job.status === "generating";
+    const box = $("final"), video = $("final-video"), link = $("final-download"), build = $("final-build");
+    box.hidden = !allDone && !job.final_video_at;
+    if (box.hidden) return;
+    const has = Boolean(job.final_video_at);
+    video.hidden = link.hidden = !has;
+    if (has) {
+      const src = `/jobs/${encodeURIComponent(job.id)}/video?v=${job.final_video_at}`; // a new build gets a new address
+      if (video.getAttribute("src") !== src) video.src = src;
+      link.href = src;
+      link.download = `${(job.request.topic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "video")}.mp4`;
+      const built = new Date(job.final_video_at * 1000);
+      $("final-meta").textContent = `${job.clips.length} clips joined at ${job.resolution} · built ${built.toLocaleString()}`;
+    } else {
+      $("final-meta").textContent = "";
+    }
+    build.hidden = has || running;
+    build.disabled = finalBusy;
+    build.textContent = job.final_error ? "Try again" : "Build final video";
+    const msg = $("final-msg");
+    if (running && allDone && !pendingAction) msg.textContent = "Joining the clips into the final video…";
+    else if (!running && job.final_error) msg.textContent = `The final video failed: ${job.final_error}`;
+    else if (!running && !has) msg.textContent = "This job finished before final videos were made automatically.";
+    else msg.textContent = "";
+  }
+
+  $("final-build").addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job || finalBusy) return;
+    finalBusy = true;
+    renderFinal(job);
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/assemble`, { method: "POST" });
+      const body = await res.json().catch(() => null);
+      if (res.status === 202) poll(job.id); // follow it until the final video is ready
+      else $("final-msg").textContent = `Could not do that: ${describeError(body)}`;
+    } catch (e) {
+      $("final-msg").textContent = `Could not reach the server (${e.message}).`;
+    } finally {
+      finalBusy = false;
+    }
+  });
+
+  // The selected clip's script text and its two actions, under the timeline.
+  function renderDetail() {
+    for (const { node } of shownClips.values()) node.classList.toggle("selected", Number(node.dataset.index) === selected);
+    const detail = $("detail");
+    const job = shownJob;
+    const clip = job && selected != null ? job.clips[selected] : null;
+    detail.hidden = !clip;
+    if (!clip) return;
+    $("detail-title").textContent = `Clip ${clip.index + 1} of ${job.clips.length}`;
+    const text = [];
+    const hasScript = job.mode === "story_time" ? Boolean(clip.narration) : Boolean(clip.dialogue);
+    if (!hasScript) {
+      text.push(el("p", "waiting", "Waiting for the script…"));
+    } else if (job.mode === "story_time") {
+      text.push(el("p", "quote", `“${clip.narration}”`));
+      text.push(el("p", "meta", `On screen: ${clip.visual}`));
+    } else {
+      text.push(el("p", "quote", `“${clip.dialogue}”`));
+    }
+    if (hasScript && clip.delivery) text.push(el("p", "meta", `Delivery: ${clip.delivery}`));
+    const running = job.status === "pending" || job.status === "generating";
+    if (running) text.push(el("p", "meta", "Regenerating is available once the job has finished."));
+    $("detail-text").replaceChildren(...text);
+    for (const id of ["regen-script", "regen-scene"]) $(id).disabled = !hasScript || running || actionBusy;
+  }
+
+  function select(index) {
+    if (index === selected) return;
+    selected = index;
+    $("detail-msg").textContent = "";
+    renderDetail();
+  }
+
+  $("timeline").addEventListener("click", (event) => {
+    const seg = event.target.closest(".seg");
+    if (!seg || event.target.closest("video")) return; // clicks on a video's controls just play it
+    select(Number(seg.dataset.index));
+  });
+  $("timeline").addEventListener("keydown", (event) => {
+    if ((event.key === "Enter" || event.key === " ") && event.target.classList.contains("seg")) {
+      event.preventDefault();
+      select(Number(event.target.dataset.index));
+    }
+  });
+
+  async function runAction(action) {
+    const job = shownJob, index = selected;
+    if (!job || index == null || actionBusy) return;
+    actionBusy = true;
+    renderDetail();
+    const msg = $("detail-msg");
+    msg.textContent = "Sending…";
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/clips/${index}/${action}`, { method: "POST" });
+      const body = await res.json().catch(() => null);
+      if (res.status === 202) {
+        const label = action === "regenerate-script" ? "Regenerate Script" : "Regenerate Scene";
+        pendingAction = { index, label };
+        msg.textContent = `${label} started for clip ${index + 1}: this takes a few minutes. The clip keeps its current version until the new one is ready.`;
+        poll(job.id); // follow the job again until the regeneration finishes
+      } else if (res.status === 501) msg.textContent = `Not available yet: ${describeError(body)}`;
+      else msg.textContent = `Could not do that: ${describeError(body)}`;
+    } catch (e) {
+      msg.textContent = `Could not reach the server (${e.message}).`;
+    } finally {
+      actionBusy = false;
+      renderDetail();
+    }
+  }
+  $("regen-script").addEventListener("click", () => runAction("regenerate-script"));
+  $("regen-scene").addEventListener("click", () => runAction("regenerate-scene"));
+
+  async function poll(jobId) {
+    clearTimeout(pollTimer);
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" });
+      if (res.status === 404) {
+        formMsg.textContent = "That job no longer exists.";
+        setBusy(false);
+        return;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const job = await res.json();
+      renderJob(job);
+      if (job.status === "done" || job.status === "failed") {
+        setBusy(false);
+        formMsg.textContent = job.status === "failed" ? "The job failed (details below)." : "";
+        if (pendingAction) {
+          const { index, label } = pendingAction;
+          const clip = job.clips[index];
+          if (selected === index && clip) {
+            $("detail-msg").textContent = clip.error
+              ? `${clip.error}${clip.video_url ? " (the clip keeps its previous version)" : ""}`
+              : `${label} finished: clip ${index + 1} is updated.`;
+          }
+          pendingAction = null;
+        }
+        return;
+      }
+      setBusy(true);
+      const joining = job.clips.length > 0 && job.clips.every((c) => c.status === "done");
+      formMsg.textContent = pendingAction
+        ? `Regenerating clip ${pendingAction.index + 1}…`
+        : joining
+          ? "Joining the clips into the final video…"
+          : "Generating: this takes a few minutes per clip. You can reload the page; it will pick the job up again.";
+    } catch (e) {
+      formMsg.textContent = `Lost contact with the server (${e.message}); retrying…`;
+    }
+    pollTimer = setTimeout(() => poll(jobId), POLL_MS);
+  }
+
+  function describeError(body) {
+    if (body && Array.isArray(body.detail)) {
+      return body.detail.map((d) => `${(d.loc || []).slice(1).join(".") || "request"}: ${d.msg}`).join("; ");
+    }
+    return (body && body.detail) || "unknown error";
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (busy) return; // one job at a time: every submit is a new, paid job
+    const topic = $("topic").value.trim();
+    if (!topic) {
+      formMsg.textContent = "Write a topic first.";
+      $("topic").focus();
+      return;
+    }
+    setBusy(true);
+    formMsg.textContent = "Sending…";
+    const payload = {
+      topic,
+      mode: radio("mode"),
+      clip_duration: Number(radio("clip_duration")),
+      duration: Number(durationSel.value),
+      resolution: radio("resolution"),
+    };
+    try {
+      const res = await fetch("/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(describeError(body));
+      remember(body.job_id);
+      poll(body.job_id);
+    } catch (e) {
+      setBusy(false);
+      formMsg.textContent = `Could not start the job: ${e.message}`;
+    }
+  });
+
+  form.addEventListener("change", (event) => {
+    if (event.target.name === "clip_duration") fillDurations();
+    if (event.target.name === "mode") updateHint();
+  });
+
+  fillDurations();
+  updateHint();
+  const last = recall();
+  if (last) poll(last); // show the last job again, and keep following it if it is still running
+})();
+</script>
+</body>
+</html>

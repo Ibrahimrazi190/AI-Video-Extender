@@ -1,0 +1,42 @@
+{
+  "clip": 1,
+  "line": "I left my husband after realizing love had become permission to disappear.",
+  "delivery": "quiet and deeply honest",
+  "prompt": "A 28-year-old woman with a slim build, shoulder-length dark brown wavy hair, warm medium skin, oval face, and small silver hoop earrings sits facing the camera in a tidy apartment living room. She wears a cream knit cardigan over a plain olive T-shirt. Behind her are a gray fabric sofa, a wooden side table with a ceramic lamp, a leafy potted plant, and softly blurred framed prints on a beige wall. Natural afternoon light comes from a window to camera left, with gentle fill light on her face. Medium close-up framing from mid-chest upward, static camera, shallow depth of field, realistic talking-head style. She speaks directly to camera, quiet and deeply honest: \"I left my husband after realizing love had become permission to disappear.\" Natural lip sync to dialogue, no background music, no score.",
+  "model": "bytedance/seedance-2-mini",
+  "duration": 5,
+  "resolution": "720p",
+  "generate_audio": true,
+  "reference_sources": "none (first clip, the master)",
+  "status": "ok",
+  "started_at": "2026-09-26T23:39:49+00:00",
+  "task_id": "3b21fac742c6ab46cabe1aa33a382721",
+  "video_url": "https://tempfile.aiquickdraw.com/seedance/1790466111636-mc5w2dywv7g.mp4",
+  "credits_consumed": 41.0,
+  "elapsed_seconds": 123,
+  "anchors": {
+    "audio_url": "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/4e9d4a1d6fc64b0e86178b8fcca43e64.wav",
+    "image_url": "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/44a10934c8eb4d2c969f6ece6822e863.png"
+  },
+  "master_reference": {
+    "url": "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/master_a9a5ecae37374093bdca2ad2e2702547.mp4",
+    "frames": 121,
+    "seconds": 5.042,
+    "source_size": "1280x720",
+    "size": "1280x720",
+    "scaled_down": false
+  },
+  "tail_sent_to_next_clip": {
+    "url": "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/tail_0f63af66b9df42b09464467acb2d4a7d.mp4",
+    "source_frames": 121,
+    "first_frame_kept": 72,
+    "frames": 49,
+    "seconds": 2.042,
+    "size": "1280x720",
+    "scaled_down": false
+  },
+  "finished_at": "2026-09-26T23:42:11+00:00",
+  "video_kbps": 3430,
+  "edge_energy": 27.72,
+  "edge_measured_at": "864x496"
+}

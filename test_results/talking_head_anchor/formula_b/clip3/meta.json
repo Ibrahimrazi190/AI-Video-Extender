@@ -1,0 +1,36 @@
+{
+  "step": "2/2",
+  "folder": "formula_b/clip3",
+  "formula": "B (hybrid)",
+  "description": "Clip 3 with Formula B: previous clip's video (this run's clip 2) + the SAME first-clip audio and last frame.",
+  "prompt": "Continuing directly from <Video 1>, A woman in her early 30s with a slim build, shoulder-length dark brown wavy hair, warm medium skin, and an oval face sits facing the camera in a cozy apartment living room. She wears a cream knit cardigan over a simple gray top, small gold hoop earrings, and minimal natural makeup. Behind her is a beige sofa with muted green pillows, a small wooden side table with a ceramic lamp, a leafy houseplant, and framed abstract prints on a warm white wall. Soft late-afternoon window light comes from camera left, with gentle shadows and a calm neutral color palette. Medium close-up framing from mid-chest upward, eye-level camera, shallow depth of field, realistic talking-head style, steady camera, natural facial movement and direct eye contact with the lens, still speaking to camera, soft relief, steady resolve: \"He didn't, and honestly, that silence finally set me free.\" Natural lip sync to dialogue, same lighting and camera style, no background music, no score.",
+  "duration": 5,
+  "resolution": "480p",
+  "generate_audio": true,
+  "reference_sources": {
+    "reference_video_urls": "formula_b clip2 video (previous clip)",
+    "reference_audio_urls": "first clip audio (fixed)",
+    "reference_image_urls": "first clip last frame (fixed)"
+  },
+  "compare_with": "chained_previous_run/clip3.mp4",
+  "started_at": "2026-09-26T03:18:11+00:00",
+  "reference_video_urls": [
+    "https://tempfile.aiquickdraw.com/seedance/1790392682886-u4zktt29sd.mp4"
+  ],
+  "reference_audio_urls": [
+    "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/79ed90dd2fcd40d1af5608aaa7504b41.wav"
+  ],
+  "reference_image_urls": [
+    "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/7babb67f2a2a469eb073dfb8e6b03240.png"
+  ],
+  "status": "ok",
+  "api_response": {
+    "task_id": "f97cae012db35196fa8f7b1c1c8ea6cd",
+    "video_url": "https://tempfile.aiquickdraw.com/seedance/1790392813676-ls7whxj561.mp4",
+    "credits_consumed": 24.0
+  },
+  "credits_consumed": 24.0,
+  "task_id": "f97cae012db35196fa8f7b1c1c8ea6cd",
+  "elapsed_seconds": 126,
+  "finished_at": "2026-09-26T03:20:19+00:00"
+}

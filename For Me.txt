@@ -4,4 +4,10 @@ First, read PLAN.md fully — it's context and rationale: the architecture, what
 
 Then read EXECUTION_GUIDE.md — this is the actual build sequence, broken into numbered prompts. I'll paste them to you one at a time, in order. Don't jump ahead to a later prompt or combine steps, even if you can see where it's heading — each step has its own testing note I need to run before we move on.
 
-Confirm you've read both, then wait for me to start our work.
+Confirm you've read both, then wait for me to start our work. Make sure you never run the kie.ai api tests yourself for video generation if you ever want ay invezstigations or testing you ask me to do it you can never do that.
+
+
+
+
+
+IMPORTANT POINT : I did some tests and confimed we have to switch to seedance 2-5 for atleast those videos taht require alot of face value becuase seedance 2- mini might distort some faces as seen in my tests.

@@ -1,0 +1,35 @@
+{
+  "step": "2/4",
+  "folder": "clip3",
+  "description": "Clip 3 regenerated with all three references fixed to the master (line: \"I laughed along until I barely recognized my own voice.\").",
+  "prompt": "Continuing directly from <Video 1>, A 28-year-old woman with a slim build, shoulder-length dark brown wavy hair, oval face, brown eyes, and minimal makeup sits facing the camera. She wears a plain cream knit sweater and a thin gold necklace. The setting is a quiet apartment living room with a gray sofa behind her, a small wooden side table with a ceramic lamp, a framed abstract print on the wall, and soft daylight filtering through sheer curtains. The shot is a steady medium close-up at eye level, with shallow depth of field, natural lighting, and direct eye contact with the lens, still speaking to camera, voice tightening, candid: \"I laughed along until I barely recognized my own voice.\" Natural lip sync to dialogue, same lighting and camera style, no background music, no score.",
+  "duration": 5,
+  "resolution": "480p",
+  "generate_audio": true,
+  "compare_with": "previous_run_chained/clip3.mp4",
+  "started_at": "2026-09-26T04:15:22+00:00",
+  "reference_sources": {
+    "reference_video_urls": "master clip video (FIXED, not the previous clip)",
+    "reference_audio_urls": "master audio, tail trimmed (FIXED)",
+    "reference_image_urls": "master last frame (FIXED)"
+  },
+  "reference_video_urls": [
+    "https://tempfile.aiquickdraw.com/seedance/1790393772446-i2a4hfx37sq.mp4"
+  ],
+  "reference_audio_urls": [
+    "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/master_audio_trimmed_696c42b0.wav"
+  ],
+  "reference_image_urls": [
+    "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/0c4ba53b4345467db3bae45f326913bb.png"
+  ],
+  "status": "ok",
+  "api_response": {
+    "task_id": "9968bb7ce8f33afdaae4e86f1ef8e2c5",
+    "video_url": "https://tempfile.aiquickdraw.com/seedance/1790396223379-lwa7tjt8izo.mp4",
+    "credits_consumed": 24.0
+  },
+  "credits_consumed": 24.0,
+  "task_id": "9968bb7ce8f33afdaae4e86f1ef8e2c5",
+  "elapsed_seconds": 105,
+  "finished_at": "2026-09-26T04:17:09+00:00"
+}
