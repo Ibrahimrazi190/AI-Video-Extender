@@ -1,0 +1,21 @@
+{
+  "sent_to_kie": {
+    "model": "bytedance/seedance-2-fast",
+    "input": {
+      "prompt": "Reverse medium close two-shot from behind the vendor’s flower buckets, keeping Military Husband on frame left and Street Vendor on frame right. The camera gently pans with the clear glass vase as the husband gathers it against his chest, the shallow depth of field turning the wet street and brick shops into soft morning blur. The location is the place shown in @Image1: keep its architecture, furniture, materials, colors and light exactly the same, but film it from the camera angle described here, not the angle of the picture. Characters: Military Husband is @Image2 (Tall, athletic Western European man in his early 30s with short dark-blond hair, blue eyes, clean-shaven face, strong jawline, and a neatly fitted dark military dress uniform with polished black boots.). Street Vendor is @Image3 (Middle-aged Western European man with weathered skin, grey curly hair, kind eyes, a trimmed salt-and-pepper beard, a wool flat cap, canvas apron, and rolled-up shirt sleeves.). [0.5s to 3.3s] Military Husband speaks Deep, steady baritone with a restrained British inflection., deep, steady, visibly pleased, with a restrained British lilt: \"Long deployment's over. I'm surprising my wife.\" [3.7s to 4.5s] Street Vendor speaks Warm, slightly raspy tenor with a relaxed London accent., soft, approving, with a small chuckle in his voice: \"Lucky woman.\" Military Husband and Street Vendor are clearly visible on camera, face and lips in view, while speaking. Natural lip sync: each person's lips move only during their own line; everyone else keeps their mouth closed. The Military Husband’s eyes crease as he grins, fingers wrapped carefully around the glass vase. The Street Vendor nods, his brows lifting kindly as he tucks the cash into his apron pocket. No background music.",
+      "resolution": "480p",
+      "duration": 5,
+      "generate_audio": true,
+      "reference_image_urls": [
+        "https://tempfile.aiquickdraw.com/js/g4/a3dffd4d1dbc.jpg",
+        "https://tempfile.aiquickdraw.com/js/g4/6b83f37b894f.jpg",
+        "https://tempfile.aiquickdraw.com/js/g4/68c84cb150d8.jpg"
+      ]
+    }
+  },
+  "kie_reply": {
+    "task_id": "c41e434ca8215e4910033b6f0cda2b9c",
+    "video_url": "https://tempfile.aiquickdraw.com/seedance/1790618190626-r74j93eep9.mp4",
+    "credits_consumed": 58.5
+  }
+}

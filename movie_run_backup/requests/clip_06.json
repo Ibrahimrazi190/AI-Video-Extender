@@ -1,0 +1,16 @@
+{
+  "sent_to_kie": {
+    "model": "bytedance/seedance-2-fast",
+    "input": {
+      "prompt": "Tight intimate profile two-shot on the upholstered bed area, Seductive Wife on frame left and The Lover on frame right, both faces sharply lit by a warm brass bedside lamp against the dark curtains. The camera makes a slow push-in on their faces with a very shallow depth of field, excluding the doorway and keeping the husband unseen. The location is the place shown in @Image1: keep its architecture, furniture, materials, colors and light exactly the same, but film it from the camera angle described here, not the angle of the picture. Characters: Seductive Wife is @Image2 (Extremely attractive, curvy Western European woman in her late 20s with an hourglass figure, full bust and narrow waist, long glossy brunette hair, green eyes, full lips and sharp cheekbones, wearing a fitted black satin crop top that leaves her toned midriff bare and a short black satin mini skirt that shows her thighs.). The Lover is @Image3 (Handsome Western European man in his mid-30s with thick black hair, dark eyes, light stubble, broad shoulders, and an expensive charcoal designer suit over an open-collar white shirt.). [0.2s to 3.4s] The Lover speaks Smooth, confident baritone with a polished British accent., smooth, calm, confident, normal conversational volume: \"Keep your eyes on me. Don't look away.\" The Lover is clearly visible on camera, face and lips in view, while speaking. Natural lip sync: each person's lips move only during their own line; everyone else keeps their mouth closed. The Lover cups the Seductive Wife’s head with both hands, thumbs brushing near her cheekbones. She holds his gaze without looking away. He leans in and kisses her slowly, then pulls back just enough for their eyes to meet again, their faces inches apart. No background music.",
+      "resolution": "480p",
+      "duration": 5,
+      "generate_audio": true,
+      "reference_image_urls": [
+        "https://tempfile.aiquickdraw.com/js/g4/7bc3373da613.jpg",
+        "https://tempfile.aiquickdraw.com/js/g4/8a76d6bd0156.jpg",
+        "https://tempfile.aiquickdraw.com/js/g4/3609a28a3ab5.jpg"
+      ]
+    }
+  }
+}

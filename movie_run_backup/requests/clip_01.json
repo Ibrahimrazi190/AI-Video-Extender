@@ -1,0 +1,21 @@
+{
+  "sent_to_kie": {
+    "model": "bytedance/seedance-2-fast",
+    "input": {
+      "prompt": "Medium two-shot from just outside the dark wood flower table, Military Husband on frame left and Street Vendor on frame right, both faces clearly visible under the green canvas awning. The camera makes a slow, polished push-in over metal buckets of flowers and handwritten price cards, with soft morning light bouncing off wet cobblestones and old brick storefronts behind them. The location is the place shown in @Image1: keep its architecture, furniture, materials, colors and light exactly the same, but film it from the camera angle described here, not the angle of the picture. Characters: Military Husband is @Image2 (Tall, athletic Western European man in his early 30s with short dark-blond hair, blue eyes, clean-shaven face, strong jawline, and a neatly fitted dark military dress uniform with polished black boots.). Street Vendor is @Image3 (Middle-aged Western European man with weathered skin, grey curly hair, kind eyes, a trimmed salt-and-pepper beard, a wool flat cap, canvas apron, and rolled-up shirt sleeves.). [0.4s to 2.4s] Military Husband speaks Deep, steady baritone with a restrained British inflection., deep baritone, relaxed and bright, normal conversational volume: \"These are perfect. How much?\" [2.7s to 4.7s] Street Vendor speaks Warm, slightly raspy tenor with a relaxed London accent., warm, slightly raspy, easy and friendly: \"For you, twenty pounds, mate.\" Military Husband and Street Vendor are clearly visible on camera, face and lips in view, while speaking. Natural lip sync: each person's lips move only during their own line; everyone else keeps their mouth closed. The Military Husband smiles broadly and holds out a few cash bills. The Street Vendor takes the money with one hand and steadies a clear glass vase filled with a beautiful bouquet with the other, sliding it carefully toward him across the table. No background music.",
+      "resolution": "480p",
+      "duration": 5,
+      "generate_audio": true,
+      "reference_image_urls": [
+        "https://tempfile.aiquickdraw.com/js/g4/a3dffd4d1dbc.jpg",
+        "https://tempfile.aiquickdraw.com/js/g4/6b83f37b894f.jpg",
+        "https://tempfile.aiquickdraw.com/js/g4/68c84cb150d8.jpg"
+      ]
+    }
+  },
+  "kie_reply": {
+    "task_id": "c734dc41778b42f8798ff61ee126c237",
+    "video_url": "https://tempfile.aiquickdraw.com/seedance/1790617890819-w4q3ovist2c.mp4",
+    "credits_consumed": 58.5
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "sent_to_kie": {
+    "model": "bytedance/seedance-2-fast",
+    "input": {
+      "prompt": "Three-quarter frontal tracking medium shot on the compact urban pavement, moving backward as the Military Husband approaches the narrow Georgian brick townhouse. The glossy dark front door, black iron railings, and stone steps fill the background while soft daylight catches the polished boots and the glass vase partly hidden behind his back. The location is the place shown in @Image1: keep its architecture, furniture, materials, colors and light exactly the same, but film it from the camera angle described here, not the angle of the picture. Characters: Military Husband is @Image2 (Tall, athletic Western European man in his early 30s with short dark-blond hair, blue eyes, clean-shaven face, strong jawline, and a neatly fitted dark military dress uniform with polished black boots.). [0.8s to 4.0s] Military Husband speaks in the voice of @Audio1, low and pleased, spoken to himself with controlled excitement: \"Easy now. She has no idea I'm home.\" Military Husband is clearly visible on camera, face and lips in view, while speaking. Natural lip sync: each person's lips move only during their own line; everyone else keeps their mouth closed. He climbs the stone steps with a tight grin, shoulders squared in his dark military dress uniform. His right arm stays tucked behind him, keeping the clear vase and flowers concealed as the stems tremble slightly with each step. No background music.",
+      "resolution": "480p",
+      "duration": 5,
+      "generate_audio": true,
+      "reference_audio_urls": [
+        "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/military husband_7e9019de.wav"
+      ],
+      "reference_image_urls": [
+        "https://tempfile.aiquickdraw.com/js/g4/0b1dc6d12e30.jpg",
+        "https://tempfile.aiquickdraw.com/js/g4/6b83f37b894f.jpg"
+      ]
+    }
+  },
+  "kie_reply": {
+    "task_id": "056c65575dc2bf50bdc185922d02b97b",
+    "video_url": "https://tempfile.aiquickdraw.com/seedance/1790618410652-qezi3zgshpa.mp4",
+    "credits_consumed": 58.5
+  }
+}
