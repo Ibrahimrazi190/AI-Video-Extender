@@ -22,7 +22,7 @@ from pathlib import Path
 # --- Reuse helpers from the main pipeline (read-only — nothing in app.py is changed) ---
 sys.path.append(os.getcwd())
 import app
-app.KIE_MODEL = "bytedance/seedance-2-fast" # Override the model in memory for this run
+app.KIE_MODEL = "bytedance/seedance-2-mini" # Override the model in memory for this run
 from app import (
     OPENAI_API_KEY,
     KIE_API_KEY,
@@ -43,31 +43,41 @@ CLIP_SECONDS = 5
 RESOLUTION = "480p"
 OUTPUT_DIR = Path("/srv/media/movie_scene_multispeaker")
 SCRIPTS_DIR = Path("/srv/media/movie_scene_scripts")  # saved scripts; outside OUTPUT_DIR, which every run wipes
-CLIPS_PER_CHAPTER = 6  # 30 seconds per batch
+CLIPS_PER_CHAPTER = 3  # 15 seconds per chapter — maximum OpenAI focus per clip
 WORDS_PER_SECOND = 2.5  # speaking pace every line is timed at
-MIN_WORDS, MAX_WORDS = int(CLIP_SECONDS * 1.6), int(CLIP_SECONDS * WORDS_PER_SECOND)  # per clip, all speakers together
+MIN_WORDS, MAX_WORDS = 8, 16  # per SPEECH clip, all speakers together
 MAX_VOICE_REFS = 3  # kie.ai takes at most 3 reference audios per request
+MAX_REF_IMAGES = 9  # kie.ai's limit for reference pictures per request (seedance-2-mini and -fast)
+MAX_ON_SCREEN = 7  # characters visible (fully or partly) in one clip; 6-7 is for group and action scenes
+PLACE_VIEWS = (2, 3)  # reference pictures per place: one wide master, the rest edited from it at other angles
+MIN_STEP_SECONDS = 1.0  # shortest action step Seedance can visibly play; shorter moments get merged into a neighbour
 VOICE_MIN_SECONDS, VOICE_MAX_SECONDS = 2.0, 4.9  # kie.ai rejects reference audio under 2 s; 3 x 4.9 s stays inside its 15 s total
 SCRIPT_RETRIES = 2  # times OpenAI is asked to fix an outline or chapter that breaks the rules
 VOICE_REUPLOAD_AFTER = 23 * 3600  # kie.ai deletes uploaded files after 24 h; older voice samples are uploaded again on --resume
 AUDIO_RETRY_NOTE = "No background music, no singing, no humming: only the spoken dialogue and natural room sound."  # replaces "No background music." when a clip is retried after kie.ai's audio copyright filter
+IN_FRAME = ["visible", "partly visible", "off screen", "has left"]
+ON_SCREEN = ("visible", "partly visible")
+POSTURES = ["standing", "walking", "sitting", "kneeling", "lying down", "crouching"]
 
 # ---------------------------------------------------------------------------
 # Image Generation (FLUX)
 # ---------------------------------------------------------------------------
-def generate_flux_image(prompt: str) -> str:
+def generate_flux_image(prompt: str, input_image: str = "") -> str:
+    """Text-to-image, or (with input_image) Kontext's edit mode, which keeps the input picture's content."""
     url_create = "https://api.kie.ai/api/v1/jobs/createTask"
     headers = {"Authorization": f"Bearer {KIE_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": "flux1-kontext",
         "input": {"prompt": prompt, "aspect_ratio": "16:9"}
     }
+    if input_image:
+        payload["input"]["input_image"] = input_image
     try:
         req = urllib.request.Request(url_create, data=json.dumps(payload).encode("utf-8"), headers=headers)
         with urllib.request.urlopen(req) as response:
             resp = json.loads(response.read().decode("utf-8"))
             task_id = resp["data"]["taskId"]
-        
+
         while True:
             time.sleep(3)
             url_poll = f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}"
@@ -76,7 +86,7 @@ def generate_flux_image(prompt: str) -> str:
                 status_resp = json.loads(response2.read().decode("utf-8"))
                 data = status_resp.get("data", {})
                 state = data.get("state")
-                
+
                 if state == "success":
                     result = json.loads(data["resultJson"])
                     return result["resultUrls"][0]
@@ -86,6 +96,12 @@ def generate_flux_image(prompt: str) -> str:
     except Exception as e:
         print(f"    [Error] FLUX Image generation request failed: {e}")
         return ""
+
+def _view_prompt(view: str) -> str:
+    """Kontext edit prompt: the same empty place as the master picture, seen from another spot."""
+    return (f"The same place as in the input picture, with exactly the same architecture, layout, furniture, materials, "
+            f"colors and light, now seen {view}. Keep exactly the same pieces of furniture, the same number of each and in the same places: "
+            f"add nothing, remove nothing. Empty, no people. Photorealistic, live-action movie still, NO CGI, NO 3D render.")
 
 # ---------------------------------------------------------------------------
 # Step 0 — preflight
@@ -142,14 +158,28 @@ def _outline_schema() -> dict:
                             "properties": {
                                 "id": {"type": "string", "description": "snake_case id of one physical place, e.g. 'bedroom'. One id per room, whatever the camera angle."},
                                 "description": {"type": "string", "description": "The place's fixed look in one or two sentences."},
-                                "image_prompt": {"type": "string", "description": "Text-to-image prompt for a wide, empty view of the place. NO PEOPLE."}
+                                "layout": {"type": "string", "description": "Fixed map of the place: every door, stair and window and the main furniture, each placed relative to the main entrance."},
+                                "views": {"type": "array", "items": {"type": "string"}, "description": "2 or 3 camera viewpoints for the reference pictures; the first is the one image_prompt shows."},
+                                "image_prompt": {"type": "string", "description": "Text-to-image prompt for a wide, empty view of the place from views[0]. NO PEOPLE."}
                             },
-                            "required": ["id", "description", "image_prompt"],
+                            "required": ["id", "description", "layout", "views", "image_prompt"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "props": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "description": "snake_case id of ONE handled object, e.g. 'rose_vase'. Never clothing or shoes being worn."},
+                                "description": {"type": "string", "description": "The prop's full fixed look, e.g. 'a clear glass vase filled with a large bouquet of red and white roses'."}
+                            },
+                            "required": ["id", "description"],
                             "additionalProperties": False,
                         },
                     },
                 },
-                "required": ["characters", "style", "locations"],
+                "required": ["characters", "style", "locations", "props"],
                 "additionalProperties": False,
             },
             "beats": {
@@ -158,9 +188,10 @@ def _outline_schema() -> dict:
                     "type": "object",
                     "properties": {
                         "location_id": {"type": "string", "description": "The id of the listed location this clip happens in."},
-                        "action": {"type": "string", "description": "The ONE main action or event of this clip, and who speaks."}
+                        "action": {"type": "string", "description": "The ONE main action or event of this clip, and who speaks."},
+                        "speech": {"type": "boolean", "description": "true if someone speaks in this clip, false for a silent clip."}
                     },
-                    "required": ["location_id", "action"],
+                    "required": ["location_id", "action", "speech"],
                     "additionalProperties": False,
                 },
                 "description": "One beat per clip, in order."
@@ -170,7 +201,13 @@ def _outline_schema() -> dict:
         "additionalProperties": False,
     }
 
-def _chapter_schema(location_ids: list[str]) -> dict:
+def _chapter_schema(location_ids: list[str], names: list[str], prop_ids: list[str]) -> dict:
+    timed = lambda text_field: {
+        "type": "object",
+        "properties": {"start_est": {"type": "number"}, "end_est": {"type": "number"}, text_field: {"type": "string"}},
+        "required": ["start_est", "end_est", text_field],
+        "additionalProperties": False,
+    }
     return {
         "type": "object",
         "properties": {
@@ -181,11 +218,41 @@ def _chapter_schema(location_ids: list[str]) -> dict:
                     "properties": {
                         "location_id": {"type": "string", "enum": location_ids, "description": "The Scene Bible location this clip is set in."},
                         "shot": {"type": "string", "description": "Camera angle and framing (e.g. 'Wide establishing shot', 'Over the shoulder')."},
-                        "present_characters": {
+                        "blocking": {
                             "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Names of characters physically visible in this specific clip (MAXIMUM 7)."
+                            "description": "The position diary: one entry for every character in this clip's place, on screen or not.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "character": {"type": "string", "enum": names},
+                                    "in_frame": {"type": "string", "enum": IN_FRAME},
+                                    "position": {"type": "string", "description": "Where exactly they are at the START of the clip, using the place's layout; for 'partly visible', which part the camera sees."},
+                                    "posture": {"type": "string", "enum": POSTURES, "description": "Posture at the start of the clip."},
+                                    "end_position": {"type": "string", "description": "Where exactly they are at the END of the clip (the same as position if they don't move); the next clip starts from here."},
+                                    "end_posture": {"type": "string", "enum": POSTURES, "description": "Posture at the end of the clip."},
+                                    "facing": {"type": "string", "description": "Which way they face / what they look at."},
+                                    "awareness": {"type": "string", "description": "What they have noticed so far that matters, e.g. 'has not noticed the door opening'."}
+                                },
+                                "required": ["character", "in_frame", "position", "posture", "end_position", "end_posture", "facing", "awareness"],
+                                "additionalProperties": False,
+                            },
                         },
+                        "prop_state": {
+                            "type": "array",
+                            "description": "The prop diary: one entry for every prop that has appeared in the story so far, in frame or not.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "prop_id": {"type": "string", "enum": prop_ids or ["(no props)"]},
+                                    "holder": {"type": "string", "description": "The character holding or carrying it, or 'scene' if it rests somewhere."},
+                                    "in_frame": {"type": "boolean", "description": "true only if the camera clearly sees it where the action happens; a distant or background prop is false."},
+                                    "state": {"type": "string", "description": "Its condition and exactly where it is, e.g. 'intact, in his right hand behind his back'."}
+                                },
+                                "required": ["prop_id", "holder", "in_frame", "state"],
+                                "additionalProperties": False
+                            }
+                        },
+                        "action_steps": {"type": "array", "items": timed("action"), "description": "The clip's physical action in time order."},
                         "dialogue": {
                             "type": "array",
                             "items": {
@@ -203,7 +270,7 @@ def _chapter_schema(location_ids: list[str]) -> dict:
                         },
                         "others": {"type": "string"},
                     },
-                    "required": ["location_id", "shot", "present_characters", "dialogue", "others"],
+                    "required": ["location_id", "shot", "blocking", "prop_state", "action_steps", "dialogue", "others"],
                     "additionalProperties": False,
                 },
             },
@@ -217,14 +284,23 @@ def _outline_prompt(topic: str, duration: int, total_clips: int) -> str:
 The user's story prompt is: {topic}
 
 Return a JSON object with:
-1. "scene_bible": The characters, locations, and visual style. NO NARRATORS ALLOWED.
+1. "scene_bible": The characters, locations, props and visual style. NO NARRATORS ALLOWED.
    - ENSEMBLE RULE: If the user's prompt specifies an exact number of characters to use, you MUST strictly follow that limit. If no number is specified, invent a reasonable cast size.
    - CASTING RULE: Unless the user's prompt explicitly asks for a specific ethnicity, default the cast to Western, European, or British demographics.
    - STATIC BIBLE RULE: The "look" and "voice" fields MUST describe ONLY permanent, unchanging physical traits (e.g., 'tall, blue eyes, black suit', 'deep baritone'). DO NOT describe chronological changes, emotional arcs, or story events (do NOT say 'starts happy but ends crying'). Emotional acting instructions belong ONLY in the individual clips.
    - REALISM RULE: Every "image_prompt" MUST explicitly include photography keywords to ensure extreme photorealism (e.g., "Photorealistic, 8k, live-action movie still, shot on 35mm lens, detailed skin texture, cinematic lighting, NO CGI, NO plastic look").
-   - LOCATIONS: every place the story uses, listed once ("id" in snake_case, e.g. 'bedroom', 'house_exterior'). A room is ONE location however many camera angles it is filmed from: never make separate locations for different angles of the same room. "description": its fixed look in one or two sentences (architecture, furniture, materials, colors, light), true for the whole story. "image_prompt": a text-to-image prompt for a wide, empty view of that place showing its key permanent features, with photography keywords for extreme photorealism (e.g., "Photorealistic, live-action movie still, shot on Arri Alexa, 8k, detailed textures, NO CGI, NO 3D render"). NO PEOPLE, and none of the story's props that get carried, moved or broken. Places in the same building must match each other (same architecture, era, materials, floor plan, and which floor each room is on), and an exterior must show that same building (a townhouse on a street has no driveway).
-2. "beats": exactly {total_clips} beats in order, one per {CLIP_SECONDS}-second clip. Each beat has "location_id", the id of the place where the clip happens (every place any beat uses must be in "locations", including stairs, corridors, cars and exteriors), and "action", one sentence: the ONE main action or event of that clip, and who speaks. Keep every event from the user's story prompt, in its order, and the meaning of every line the user wrote for a character; add nothing that contradicts it.
-   - PACING: give each part of the story the clips it needs. The set-up moves quickly; the parts with the most events (usually the confrontation and the climax) get the most clips, so no clip has to cram in several big actions. Every beat moves the story forward with a new action, line or reveal: never two beats of the same thing (no second clip of walking, no repeated kiss) and no padding. If the story has more events than clips, fold small moments into a neighbouring beat, never two big actions into one."""
+   - LOCATIONS: every place the story uses, listed once ("id" in snake_case, e.g. 'bedroom', 'house_exterior'). A room is ONE location however many camera angles it is filmed from: never make separate locations for different angles of the same room. "description": its fixed look in one or two sentences (architecture, furniture, materials, colors, light), true for the whole story. Places in the same building must match each other (same architecture, era, materials, floor plan, and which floor each room is on), and an exterior must show that same building (a townhouse on a street has no driveway).
+   - LAYOUT: for every location, a fixed map that every clip set there will follow: each door, staircase and window and the main furniture, placed relative to the main entrance (e.g. 'The only door is in the near-left corner and opens inward; the bed stands against the far wall facing the door, about four metres from it; bedside tables on both sides; wardrobes along the right wall'). For a hallway, say where each door is and where it leads; for an exterior, where the front door, steps and path are. State how many of each thing there are ('the only sofa', 'two doors', 'a single desk'), so nothing gets duplicated. Include every feature the story will use in that place (a hiding spot, a back door, a gap in a hedge, a curtain someone stands behind, the car someone drives off in). Characters' positions and camera placements will be described with this map, so be concrete.
+   - VIEWS: for every location, 2 or 3 camera viewpoints for its reference pictures, all showing the place empty: the first is a wide view that shows the layout (the one "image_prompt" shows), the others look from other key spots (e.g. 'from beside the bed looking back at the door', 'from the doorway looking in').
+   - "image_prompt": a text-to-image prompt for the first view, showing the layout's key permanent features, and ALWAYS naming, clearly visible, every feature the story uses in that place (the video model can only use what the picture shows: if someone slips out through a gap or a back door, the gap or door must be in the picture), with photography keywords for extreme photorealism (e.g., "Photorealistic, live-action movie still, shot on Arri Alexa, 8k, detailed textures, NO CGI, NO 3D render"). NO PEOPLE, and none of the story's props.
+   - PROPS: every object that a character carries, hands over, uses, changes or breaks in the story (e.g. a vase of flowers, divorce papers, a suitcase, a gun), with a snake_case "id" and a full fixed "description" of how it looks (e.g. 'a clear glass vase filled with a large bouquet of red and white roses'). Not furniture, and not what characters wear: clothes, shoes, jewellery and glasses belong in the character's "look" (a coat only becomes a prop if it is taken off and handed over or left somewhere). One prop is one object, never 'two pairs of...' or 'their bags'. An empty list if there are none.
+2. "beats": exactly {total_clips} beats in order, one per {CLIP_SECONDS}-second clip. Each beat has "location_id", the id of the place where the clip happens (every place any beat uses must be in "locations", including stairs, corridors, cars and exteriors), "action", one sentence: what happens in this clip and who speaks, and "speech": true if anyone speaks in this clip. Keep every event from the user's story prompt, in its order, and the meaning of every line the user wrote for a character; add nothing that contradicts it.
+   - FLOWING CONVERSATIONS: a conversation does NOT have to fit inside one clip. When two characters talk, spread the exchange naturally across consecutive clips: clip N ends with character A saying something, clip N+1 starts with character B responding. Each clip shows one conversational beat (a line and a reaction, or a question and the start of an answer), and the next clip picks up from the exact same positions. Think of it as one continuous take sliced into {CLIP_SECONDS}-second pieces, not as separate scenes. The beat for each clip describes only what happens in THAT slice.
+   - SPEECH: make a beat silent ("speech": false) only when the user's story says nobody speaks there, or when talking would make no sense: someone sneaking, hiding or frozen in shock, a character alone with nothing meaningful to say, an establishing shot. Otherwise characters talk.
+   - LOCATION CHANGES: Whenever the story transitions to a completely new building or major location, the VERY FIRST beat for that new location MUST be an Establishing Shot ("speech": false, "action": "A highly dynamic cinematic exterior establishing shot of the building, showing active life like passing road traffic, pedestrians walking, or shifting weather to set the mood and tell the viewer where the next scene takes place. Nobody from the main cast is visible.").
+   - PACING: give each part of the story the clips it needs. The set-up moves quickly; the parts with the most events (usually the confrontation and the climax) get the most clips, so no clip has to cram in several big actions. Every beat moves the story forward with a new action, line or reveal: never two beats of the same thing (no second clip of walking, no repeated kiss) and no padding. If the story has more events than clips, fold small moments into a neighbouring beat, never two big actions into one.
+   - PRIVACY AND EAVESDROPPING: when characters talk about something another character must not hear, the story first shows that character going somewhere they plausibly can't hear: out of the room, far into another area, into the shower, behind a closed door. If that character secretly overhears, they come back or sneak close only after the talk has started, and the speakers must still have a reason to believe they are alone (they saw them leave, a door closed, water is running). Nobody says a secret with the person it's about a couple of metres away where they just watched them go.
+   - MOVEMENT IS AN ACTION: one character leaving and another arriving are two separate actions; give them separate beats, or start the beat after the first has already happened (e.g. 'with Sam already gone, the manager walks in'). A walk across a room, street or building takes real time, so a beat never asks for a long walk plus a conversation."""
 
 def _speakers_so_far(clips: list) -> set[str]:
     return {t["speaker"].lower() for c in clips for t in c["dialogue"]}
@@ -234,28 +310,53 @@ def _chapter_beats(beats: list, chap_idx: int) -> tuple[int, list]:
     start = chap_idx * CLIPS_PER_CHAPTER
     return start + 1, beats[start:start + CLIPS_PER_CHAPTER]
 
+def _beat_line(n: int, b: dict) -> str:
+    return f"{n}. [{b['location_id']}] [{'SPEECH' if b.get('speech', True) else 'SILENT'}] {b['action']}"
+
+def _state_so_far(prev_clips: list) -> str:
+    """Every character's and prop's last known state: the continuity a new chapter must start from."""
+    people, props = {}, {}
+    for n, c in enumerate(prev_clips, 1):
+        for b in c.get("blocking", []):
+            people[b["character"]] = (n, c["location_id"], b)
+        for p in c.get("prop_state", []):
+            props[p["prop_id"]] = (n, c["location_id"], p)
+    lines = []
+    for name, (n, loc, b) in people.items():
+        where = f"{b.get('end_posture', b['posture'])}, {b.get('end_position', b['position'])}"
+        lines.append(f"  - {name} (at the end of clip {n}, in {loc}, {b['in_frame']}): {where}; facing {b['facing']}; {b['awareness']}")
+    for pid, (n, loc, p) in props.items():
+        lines.append(f"  - prop {pid} (as of clip {n}): held by {p['holder']}; {p['state']}")
+    return "\n".join(lines)
+
 def _chapter_prompt(topic: str, chap_idx: int, total_chapters: int, beats: list, bible: dict, prev_clips: list) -> str:
     first, mine = _chapter_beats(beats, chap_idx)
     last = first + len(mine) - 1
-    plan = "\n".join(f"{n}. [{b['location_id']}] {b['action']}" for n, b in enumerate(beats, 1))
-    locations = "\n".join(f"- {loc['id']}: {loc['description']}" for loc in bible["locations"])
+    plan = "\n".join(_beat_line(n, b) for n, b in enumerate(beats, 1))
+    locations = "\n".join(f"- {loc['id']}: {loc['description']} LAYOUT: {loc.get('layout', '')}" for loc in bible["locations"])
+    props = "\n".join(f"- {p['id']}: {p['description']}" for p in bible.get("props", [])) or "- (none)"
     bridge = ""
     if prev_clips:
-        # The whole script so far, not just the last clips, so later chapters can't contradict or repeat earlier ones.
         bridge = "Everything filmed so far, in order. Continue straight on from the last clip, and never contradict or repeat any of it:\n"
         for n, c in enumerate(prev_clips, 1):
             bridge += f"Clip {n} | {c['location_id']} | on screen: {', '.join(c['present_characters']) or 'nobody (establishing shot)'}\n"
+            for s in c.get("action_steps", []):
+                bridge += f"  [{s['start_est']}s to {s['end_est']}s] {s['action']}\n"
             for d in c['dialogue']:
                 bridge += f"  {d['speaker']} ({d['delivery']}): \"{d['line']}\"\n"
-            bridge += f"  Action: {c['others']}\n"
+            bridge += f"  Acting and sound: {c['others']}\n"
+        state = _state_so_far(prev_clips)
+        if state:
+            bridge += f"\nCURRENT STATE at the end of clip {first - 1} (carry every item forward exactly unless an action step in your clips changes it):\n{state}\n"
         bridge += f"\nStart clip {first} as a direct continuation of clip {first - 1}.\n"
     spoken = _speakers_so_far(prev_clips)
     not_yet = ", ".join(c["name"] for c in bible["characters"] if c["name"].lower() not in spoken) or "none"
 
     return f"""You are a world-class Hollywood cinematographer and screenwriter directing CHAPTER {chap_idx + 1} of {total_chapters}: clips {first} to {last} of the video.
+IMPORTANT: every clip is rendered on its own by a video model that sees ONLY that clip's text and reference pictures, with no memory of any other clip. Anything you do not state in the clip (who stands where, sitting or standing, what someone holds, who opens a door) the model will invent, and it will contradict the story. So every clip must be complete on its own.
 The user's story prompt (the source of truth): {topic}
 Scene Bible: {json.dumps(bible)}
-The beat plan for the whole video, one beat per clip. Write ONLY clips {first} to {last}, one clip per beat, in order; the other beats show what comes before and after, so do not repeat earlier beats or jump ahead:
+The beat plan for the whole video, one beat per clip, each marked SPEECH or SILENT. Write ONLY clips {first} to {last}, one clip per beat, in order; the other beats show what comes before and after, so do not repeat earlier beats or jump ahead:
 {plan}
 
 {bridge}
@@ -263,26 +364,111 @@ The beat plan for the whole video, one beat per clip. Write ONLY clips {first} t
 You must generate EXACTLY {len(mine)} consecutive clips of {CLIP_SECONDS} seconds each. This is a high-stakes, deeply dramatic movie.
 
 RULES for the clips:
-- "location_id": the place its beat is set in (in [brackets] in the beat plan), one of these locations, and the same id for every camera angle inside the same place (every clip there is rendered from one fixed picture of it, so the room always looks the same):
+- "location_id": the place its beat is set in (in [brackets] in the beat plan), one of these locations, and the same id for every camera angle inside the same place (every clip there is rendered from fixed pictures of it, so the room always looks the same). Follow each place's LAYOUT exactly: doors, stairs and furniture are always where it puts them.
 {locations}
-- CAMERA WORK: film it like a high-budget movie. Change the camera angle on every cut, never the same framing twice in a row, and choose each angle for what the moment needs: a wide or medium shot to set up a place or show movement, two-shots and over-the-shoulders for conversations, close-ups for key lines and reactions, low or high angles for power, tracking shots to follow someone. Keep screen direction consistent (the 180-degree rule: in a conversation each character stays on the same side of the frame across cuts). One clear camera move per clip (e.g., a slow push-in, a pan, a dolly), not several.
-- ESTABLISHING SHOTS: only when the user's story asks for one, or the story jumps to a new place without showing anyone arrive. It shows an exterior location, has an empty "present_characters" array and NO dialogue. Keep them rare.
-- ONE MAIN ACTION: each clip shows the one main action or event of its beat, something that plays out naturally in {CLIP_SECONDS} seconds (e.g., she slaps the papers onto his chest; he smashes the vase). Small supporting movement (breathing, glances, a gesture) is fine, but never pack several events into one clip. The dialogue plays during that action. Each clip starts where the previous one ended and adds something new, so it never drags.
-- "shot": Describe the camera angle, movement, and cinematic lighting in extreme detail! (e.g., 'Low-angle intense close-up with dramatic shadows', 'Handheld shaky tracking shot'). Only what the camera sees: no symbolism or mood commentary (not 'making the home look small and hollow').
-- "present_characters": exactly the characters visible in this framing, MAXIMUM SEVEN (7). A character whose point of view the camera takes is NOT visible. Spell names exactly as in the Scene Bible. Leave empty for establishing shots.
+- CAMERA WORK: film it like a high-budget movie. Choose each angle for what the moment needs: a wide or medium shot to set up a place or show movement, two-shots and over-the-shoulders for conversations, close-ups for key lines and reactions, low or high angles for power, tracking shots to follow someone. Keep screen direction consistent (the 180-degree rule: in a conversation each character stays on the same side of the frame across cuts). One clear camera move per clip (e.g., a slow push-in, a pan, a dolly), not several.
+  CONTINUITY CUTS: when a conversation flows across consecutive clips (the dialogue continues from one clip into the next), you MAY hold the same camera angle, framing and character positions across 2 or 3 clips so they feel like one continuous take sliced into pieces. The video model renders each clip separately, so re-state the full shot setup, blocking and positions identically in each clip of the held angle. Change the angle when the story beat changes (a new character enters, someone moves, the emotion shifts) or after 3 consecutive clips at most.
+- ESTABLISHING SHOTS: only when the user's story asks for one, or the story jumps to a new place without showing anyone arrive. It shows an exterior location, nobody is visible and there is NO dialogue. Keep them rare.
+- ONE MAIN MOMENT OR BEAT: each clip captures ONE natural cinematic beat that plays out comfortably in {CLIP_SECONDS} seconds. Never cram an entire scene's setup, revelation, and resolution into a single 5-second clip. For example, if someone arrives to deliver bad news: Clip 1 can show them walking in and asking for their attention ('Oliver, got a second?'); Clip 2 delivers the shocking revelation ('Only one of you can make the team'); Clip 3 captures the stunned reaction and pushback. Small supporting movement (breathing, glances, shifting posture) makes it feel alive. Give dramatic moments room to breathe across cuts!
+- "shot": You are the Director of Photography. Write the exact camera setup for this 5-second clip as a single continuous physical sentence. You MUST include ALL FIVE of these elements:
+  (1) CAMERA PLACEMENT: where is the camera physically positioned, using the place's layout? (e.g., "camera placed low on the pavement behind his ankles", "from just inside the bedroom doorway", "tight over her left shoulder")
+  (2) CAMERA MOVEMENT: what does it physically do during the 5 seconds? (e.g., "tracks with him as he climbs", "slowly pushes in", "tilts up from his boots to his face")
+  (3) WHAT IT FOLLOWS: what specific body part, prop or detail does the camera stay tight on? (e.g., "stays tight on his polished boots and trouser hem", "locks on her eyes", "follows his trembling hand")
+  (4) ENDING FRAME: where does the shot resolve at the end of 5 seconds? (e.g., "ending on a close-up of his face at the door", "resolving on an over-the-shoulder frame of the open bedroom")
+  (5) LIGHTING + DEPTH OF FIELD: what is the key light source and how does it hit the subject? Does the background blur into bokeh? (e.g., "warm amber streetlamp from camera left rims his jaw; background window glow blooms into soft bokeh", "single harsh overhead bulb throws deep shadows under his eyes")
+  The camera placement must agree with the blocking: if the camera is behind someone's shoulder facing the door, the blocking must put that person between the camera and the door.
+  STORY-CRITICAL MOVEMENT ON CAMERA: when the story depends on where someone goes or where they come from (they hide, leave, slip away, sneak in, arrive, return), the camera must point that way and keep the start and end of the movement in frame, e.g. following her until she disappears through the back door, or holding on the doorway as he walks in. Never let the move that matters happen outside the frame.
+  EXITS THAT LEAVE OTHERS ALONE: when someone leaves so that the others can be alone, the camera follows them until they are clearly gone (through the door, round the far corner, out of earshot) and the shot ends holding on the people left behind, alone, so the next clip plainly reads as a private moment.
+  BAD EXAMPLE (never write this): "Wide shot, eye-level, slow push-in as he walks to the door."
+  GOOD EXAMPLE (write like this): "Camera placed at knee height on the pavement behind Daniel's black dress shoes, tracking forward as he climbs the stone steps, staying tight on his ankles and the brass key in his hand, tilting up his torso to resolve on a close-up of his face at the door; warm interior lamplight spills around the doorframe and the background street blurs into amber bokeh."
+  SHOT SIZES: Extreme Wide, Wide, Medium-Wide (knees up), Medium (waist up), Medium Close-Up (chest up), Close-Up (face), Extreme Close-Up (eyes, mouth, hands, one object).
+  SPECIFIC HOLLYWOOD TECHNIQUES:
+  - CONVERSATION SCENES: alternate OTS (camera behind one person's shoulder looking at the other's face) and Profile Two-Shots. Cut between them.
+  - EMOTIONAL MOMENTS: Extreme Close-Up on eyes, trembling hands, clenched jaw, or a single object.
+  - WALKING SCENES: low-angle tracking tight on boots and legs, OR rear tracking behind the shoulders.
+  - REVEALS: open on a close detail (a hand, a doorknob), then pull back or tilt to reveal the full scene.
+  - POWER DYNAMICS: dominator shot from LOW angle, vulnerable character from HIGH angle.
+  - SCREEN PLACEMENT: the video model has NO memory of previous clips and cannot parse architectural text ('near-left corner'). In every shot with two or more visible characters, explicitly state where each person is IN THE FRAME using screen-relative language: 'frame left', 'frame right', 'foreground', 'background', 'centre frame' (e.g. 'ending with the Coach standing frame left and Oliver seated frame right'). Keep each character on the same side of the frame across consecutive conversation clips (the 180-degree rule).
+- "blocking" (THE POSITION DIARY, REQUIRED): one entry for EVERY character who is in this clip's place, whether the camera sees them or not:
+  - "in_frame": "visible" (face and body in the shot), "partly visible" (only part of them, e.g. the hand that pushes the door open; say which part in "position"), "off screen" (in the place but outside the frame), or "has left" (only in the clip where they walk out; after that, leave them out).
+  - "position" and "posture": exactly where they are and how at the START of the clip, using the place's layout (e.g. 'at the far side of the room beside the bed, about four metres from the door', 'just outside the open doorway; only his right hand and sleeve are visible'). Posture is standing, walking, sitting, kneeling, lying down or crouching.
+  - "end_position" and "end_posture": where they are and how at the END of the clip (the same as the start if they don't move), e.g. 'out of sight behind the parked van', 'on the same spot of the only sofa'. The next clip starts from these.
+  - "facing": which way they face and what they look at.
+  - CLEAR POSITIONS: never describe a position in terms that contradict each other ('on the entrance side of the bench, directly in front of him' when he faces away from the entrance). 'In front of' and 'behind' are relative to where that person faces; when in doubt, use the layout's fixed things instead ('between the bench and the lockers').
+  - "awareness": what they have noticed so far that matters (e.g. 'has not noticed the door opening', 'sees Daniel in the doorway').
+  - CONTINUITY: every character starts this clip exactly where and how the previous clip ended them (its end_position and end_posture), and their awareness carries over, unless one of this clip's action steps shows the change. Characters CANNOT teleport: someone standing does not end up sitting on a bed unless an action step shows them sit down; nobody crosses the room off screen; nobody notices anything before an action step shows it.
+  - ANCHORS: describe positions against fixed things in the layout, and keep using the same words ('on the left end of the only bench', 'at the counter by the till'). When someone comes back to a place, the others are exactly where they were left, on the same spot of the same furniture, and it's said so; an empty spot someone left can be named ('the place beside him on the bench is empty').
+  - OFF-SCREEN ACTORS: if someone outside the frame causes something the camera sees (opens a door, throws something in), make them "partly visible" and show it in the action steps. Otherwise the video model gives the action to whoever is on screen (a door opening with no visible hand looks as if the person inside opened it).
+  - ON SCREEN: at most {MAX_ON_SCREEN} characters "visible" or "partly visible" in one clip. Five to seven are for group scenes and action scenes only.
+- "action_steps" (REQUIRED, 1 to 4 steps): the clip's physical action in time order. Each has "start_est"/"end_est" in seconds inside this clip and one plain sentence of what visibly happens, naming who does it (e.g. [0.0 to 1.5] "Daniel's right hand pushes the bedroom door open from the hallway"; [1.5 to 5.0] "Emily and Mark keep kissing beside the bed, unaware"). Every change of position, posture, prop or awareness appears here.
+  - LIVE REACTIONS: the video model renders each character independently — if you don't tell it what a bystander does, it freezes them like a mannequin. Every action step that has a visible bystander MUST describe what that bystander physically does at the same time (e.g. 'Ethan walks toward the door while Oliver's head turns, tracking him all the way until he disappears', NOT just 'Ethan walks toward the door' with Oliver's reaction left to "others"). Watching, flinching, turning, stepping back — if the camera sees it, the action step says it.
+  - REAL TIME: every step lasts at least {MIN_STEP_SECONDS:g} second (merge smaller moments into a neighbouring step), and movement takes realistic time: walking covers about 1 to 1.5 metres per second, running about 4, standing up or sitting down about 1 second, opening a door and stepping through about 1.5 seconds. Every step where someone walks or runs states the distance in digits, taken from the layout (e.g. 'walks the 5 metres from the bench to the gap'), so its time can be checked. If a movement doesn't fit, start the clip with the character already partway there, or end it before they arrive; never squeeze it, and never shorten or invent distances to make it fit: positions and distances always come from the layout.
+  - ONLY WHAT THE CAMERA SEES: action steps describe only what is visible in this shot. Never mention an off-screen character or what they do off screen (the video model would draw them); their movement lives in the blocking only.
+- "prop_state" (THE PROP DIARY, REQUIRED): one entry for every prop in the Scene Bible's "props" that has appeared in the story so far, in every clip from its first appearance to the end, even when it is not in the shot: "prop_id", "holder" (the character holding or carrying it, or 'scene' when it rests somewhere), "in_frame" (true only if the camera clearly sees it where the action happens; a prop far in the background or left in another part of the place is false, otherwise the video model draws it into the scene) and "state" (its condition and exactly where it is, e.g. 'intact, in his right hand behind his back', 'shattered across the floor beside the bed'). The system writes each prop's full fixed description into the video prompt for you. Props in the Scene Bible:
+{props}
 - "dialogue":
-  - STRICT RULE: NO NARRATORS. Only characters in "present_characters" can speak.
-  - FACES ON SCREEN: whenever a character speaks, their face must be clearly visible in the shot. Never give a line to someone seen from behind, out of focus, out of frame or off screen; never during an over-the-shoulder shot from behind the speaker or the speaker's own POV; never during a close-up of hands, objects or a body part. When two characters speak in the same clip, frame both faces (two-shot, profile two-shot, medium shot).
-  - CONVERSATIONS, NOT MONOLOGUES: when two or more characters are on screen, a clip usually has a back-and-forth: a main line, then a short reply, reaction or interruption of 2 to 4 words from another visible character (e.g. 'Not now.', 'You're lying.', 'Please, just go.'), so no clip ends on a line left hanging. A character who is alone may say short, meaningful lines to themselves about what is happening, but never filler (no talking to objects, no describing their own actions).
+  - SPEECH OR SILENCE: a clip whose beat is SILENT has an EMPTY "dialogue" list. Never invent lines for a silent beat. A SPEECH clip has {MIN_WORDS} to {MAX_WORDS} words in total across all speakers. Ensure dialogue is substantial and uses natural, fluid phrasing (e.g., use "I'll get my bag back, wait for me" instead of just "I'll be a second").
+  - STRICT RULE: NO NARRATORS. Only characters who are "visible" in the blocking can speak.
+  - KNOWLEDGE: characters only say what they know at that moment. Nobody mentions, reacts to or answers something they have not noticed yet (see "awareness"). A character whose arrival must come as a surprise never calls out, greets anyone or announces themselves before the discovery.
+  - PRIVACY: a secret is only spoken when the speakers have a reason to believe the person it's about can't hear (they saw them leave, a door closed, water is running, they are far away), and their "awareness" says why (e.g. 'believes Sam went out to the car park'). A character who secretly overhears is somewhere plausible for that, and the speakers don't know they are there.
+  - FACES ON SCREEN: whenever a character speaks, their face must be clearly visible in the shot. Never give a line to someone seen from behind, out of focus, out of frame or off screen; never during an over-the-shoulder shot from behind the speaker or the speaker's own POV; never during a close-up of hands, objects or a body part. When two characters speak in the same clip, frame both faces (two-shot, profile two-shot, medium shot). At most {MAX_VOICE_REFS} different speakers per clip.
+  - FLOWING DIALOGUE ACROSS CUTS: when two or more characters talk, dialogue can either be a short exchange within the clip OR a single punchy line that hangs and is answered in the NEXT clip. Dialogue DOES NOT have to resolve within the same 5-second clip! A clip can end on a shocking question, proposition, or cliffhanger line ('Only one of you makes the team, Oliver.'), with the next clip starting immediately with the other character's reaction and spoken reply. A character who is alone may say short, meaningful lines to themselves only when the beat is SPEECH, never filler.
   - PLAIN, EVERYDAY SPEECH: characters talk like real people in a modern film, in simple, common words and short sentences that anyone understands the first time they hear them. No formal, poetic or old-fashioned phrasing, no fancy vocabulary, no jargon (not 'solicitor' or 'northbound' but 'lawyer' or 'the last train'), and no semicolons.
-  - NO LONG SILENCES: every clip with characters on screen has dialogue, {MIN_WORDS} to {MAX_WORDS} words in total across all speakers (about {WORDS_PER_SECOND:g} words per second). Only establishing shots are silent.
   - TIMING: "start_est" and "end_est" are seconds from the start of THIS clip (0 to {CLIP_SECONDS}), not of the whole video. Lines come in order and never overlap, with 0.2 to 0.5 s between speakers; the first line starts at 0.2 s or later and the last ends by {CLIP_SECONDS - 0.2:g} s. Each line's window is at least its word count divided by {WORDS_PER_SECOND:g} seconds long.
-  - VOICE SAMPLES: characters who have not spoken yet: {not_yet}. The FIRST line each of them speaks is cut out of the clip and reused as that character's voice for the rest of the video, so it must be at least 5 words and 2 seconds long, spoken at normal conversational volume (not whispered, shouted, sobbed or breathless), and never a short reply.
-  - "delivery": how the voice sounds: tone, volume, pace and emotion as heard (e.g., 'voice shaking with rage', 'cold, clipped and quiet').
+  - VOICE SAMPLES: characters who have not spoken yet: {not_yet}. The FIRST line each of them speaks is cut out of the clip and reused as that character's voice for the rest of the video, so it must be at least 5 words and 2 seconds long, spoken in a clear, fully voiced way (quiet or low is fine; never whispered, shouted, sobbed or breathless), and never a short reply.
+  - "delivery": how THIS line is said: emotion, volume and pace (e.g., 'shaking with rage', 'cold, clipped and quiet'). Never describe the voice itself (tenor, baritone, accent): the system already sends each character's voice. The volume must match the story: if the story or beat says someone speaks quietly, whispers or shouts, the delivery says so (a secret is never at normal conversational volume). A character's very first line (their voice sample) may be quiet or low, but never whispered, shouted, sobbed or breathless.
   - STORY: keep the meaning of every line the user wrote for a character (quoted or described). Never write a line that contradicts the user's story or anything said or shown earlier (e.g. if a return is a surprise, nobody knew about it).
-- "others": the visible acting and movement in this clip. SHOW EMOTIONS, NEVER NAME THEM: write what the face, eyes, mouth, hands, body and breathing do ('his chin trembles and his eyes fill with tears; he swallows hard'), never inner states or interpretation ('heartbreak overtakes him', 'he feels betrayed', 'imagining the reunion').
-- CONTINUITY: people and props stay where the previous clip left them. Someone holding an object keeps holding it until a clip shows them put it down or drop it; broken things stay broken; nobody notices the same thing twice; the layout of the house stays the same.
+- "others": the visible acting and ambient sound in this clip. Write these things:
+  (1) PHYSICAL ACTING: what the face, eyes, mouth, hands, and body visibly do ('his chin trembles; he swallows hard; her gaze drops'). SHOW EMOTIONS, NEVER NAME THEM — no inner states ('heartbreak', 'feels', 'realizes').
+  (2) PROP INTERACTION (only if props are in the shot): how characters physically touch the props, consistent with the prop diary. If there are no props, skip this — do NOT invent props.
+  (3) AMBIENT SOUND: 2 or 3 specific sound cues that Seedance should generate for the audio bed (e.g., 'keys jingle softly against the lock; a faint creak of floorboards; distant traffic murmurs outside'). These make the clip feel real and alive.
+- AI VIDEO LIMITATIONS (STRICT):
+  - NO HAND-OFFS: AI cannot animate characters handing items to each other (e.g., handing cash, passing a phone). Instead, describe the item already in their hand, or being placed on a counter.
+  - SPATIAL BLOCKING (SHOCK SCENES ONLY): when a character is meant to STOP and react the moment they open a door or enter a room (e.g., catching someone doing something), put them "standing frozen in the open doorway" in the blocking, never "enters the room and freezes". This prevents Seedance from making him walk deep into the room before stopping. For any normal walking scene, write the walking naturally.
 Return strictly valid JSON matching the schema."""
+
+def _supervisor_prompt(topic: str, bible: dict, beats: list, prev_clips: list, new_clips: list, first: int) -> str:
+    plan = "\n".join(_beat_line(n, b) for n, b in enumerate(beats, 1))
+    state = _state_so_far(prev_clips) or "  (nothing filmed yet)"
+    recent = json.dumps(prev_clips[-3:], ensure_ascii=False)
+    return f"""You are the script supervisor (continuity supervisor) on an AI-generated film. Each {CLIP_SECONDS}-second clip is rendered separately by a video model that sees ONLY that clip's own text and reference pictures, with no memory of other clips, so every contradiction or missing detail becomes a visible mistake.
+The user's story: {topic}
+Scene Bible (characters, locations with their fixed layouts, props): {json.dumps(bible, ensure_ascii=False)}
+Beat plan (each clip marked SPEECH or SILENT):
+{plan}
+State at the end of the last clip already filmed:
+{state}
+The last clips already filmed (final, do not critique them): {recent}
+
+NEW clips to check, clips {first} to {first + len(new_clips) - 1}: {json.dumps(new_clips, ensure_ascii=False)}
+
+List the real problems in the NEW clips, most serious first, each as one short sentence starting with 'clip N:' and saying what to change. Check:
+1. BEAT: does the clip do what its beat says?
+2. BLOCKING CONTINUITY: every character starts where and how the previous clip ended them (its end_position and end_posture), and their facing and awareness continue, unless an action step in this clip shows the change. Nobody teleports, sits down or stands up off screen, or ends up somewhere the layout makes impossible. Someone who returns finds the others exactly where they were left, on the same spot of the same furniture.
+3. TIMING: every action step lasts at least {MIN_STEP_SECONDS:g} second, and movement takes realistic time (walking about 1 to 1.5 metres per second). A long walk or an entrance squeezed into a second, or a walk plus a whole conversation in one clip, is a problem. Check each stated walking distance against the layout: an understated distance (5 metres called 2), or furniture moved closer so that a walk fits, is a problem.
+   Action steps must describe only what the camera sees; a step that mentions an off-screen character is a problem.
+4. STORY-CRITICAL MOVEMENT: when where someone goes or comes from matters to the story (hiding, leaving, arriving, returning), does the camera actually show it, start and end? A key exit that happens outside the frame is a problem. When someone leaves so that others can be alone, does the shot follow them until they are clearly gone and end on the people left behind?
+4b. PRIVACY: is a secret only spoken when the speakers have a clear reason to believe the person it's about can't hear (saw them leave, door closed, far away), with that reason in their awareness? Someone hiding a couple of metres away, where the speakers just watched them go, is a problem.
+5. KNOWLEDGE: nobody says, answers or reacts to something they have not noticed yet; nobody behaves as if they noticed someone before an action step shows it; a character whose arrival must be a surprise does not call out or announce themselves.
+6. SPACE: doors, stairs and furniture are where the location's layout puts them; it is clear who opens each door (an off-screen person who does it is "partly visible" and named in the action steps); entrances, exits and distances make physical sense; no position is described in terms that contradict each other ('on the entrance side, directly in front of him' when he faces away from the entrance).
+7. PROPS: every prop keeps its state and holder unless an action step changes them; a held prop stays in hand; broken things stay broken; a prop is marked in_frame only when the camera clearly sees it where the action happens.
+8. CLARITY FOR THE VIDEO MODEL: could the model misread who does what (e.g. a door opening with no visible hand looks as if the person inside opened it)? Does the camera placement agree with the blocking? Is anyone doing two things at once, or is too much packed into {CLIP_SECONDS} seconds?
+9. STORY: the lines and actions keep the user's story and never contradict an earlier clip, and each line's delivery matches how the story says it is spoken (said quietly or whispered in the story means a quiet delivery, never 'normal conversational volume').
+BEFORE reporting anything, check it against the location's layout and the blocking (for example, a door that opens inward is pushed from outside and pulled from inside); if your note is wrong or unsure, drop it. Report only problems that would visibly show in the video or break the story, never style preferences or details the camera would not see. Return {{"problems": []}} if there are none."""
+
+SUPERVISOR_SCHEMA = {
+    "type": "object",
+    "properties": {"problems": {"type": "array", "items": {"type": "string"}}},
+    "required": ["problems"],
+    "additionalProperties": False,
+}
+
+def supervise_chapter(topic: str, bible: dict, beats: list, prev_clips: list, new_clips: list, first: int) -> list[str]:
+    """A second OpenAI read of a chapter against the story state: the logic the code checks can't see."""
+    print("  Script supervisor is checking continuity...", flush=True)
+    answer = _ask_openai_json(_supervisor_prompt(topic, bible, beats, prev_clips, new_clips, first), "Check the new clips.",
+                              "script_supervisor", SUPERVISOR_SCHEMA)
+    return [f"script supervisor: {p}" for p in answer["problems"]]
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +477,11 @@ Return strictly valid JSON matching the schema."""
 _WORD = re.compile(r"[\w'’]+")
 _NOT_NORMAL_VOLUME = re.compile(r"\b(whisper|shout|scream|yell|murmur)(s|ed|ing)?\b|\bsob(s|bed|bing)?\b|\bbreathless\b|\bbarely audible\b", re.I)
 _INNER_STATE = re.compile(r"\b(feels?|feeling|reali[sz](e|es|ing)|heartbreak|devastation|emotionally|imagining|hinting)\b", re.I)
+
+WALK_SPEED, RUN_SPEED = 1.5, 4.0  # metres per second: the fastest a step may cover a stated distance
+_MOVE = re.compile(r"\b(walk(s|ed|ing)?|run(s|ning)?|ran|sprint(s|ed|ing)?|dash(es|ed|ing)?|stride(s)?|strode|jog(s|ged|ging)?|hurr(y|ies|ied|ying)|rush(es|ed|ing)?)\b", re.I)
+_RUN = re.compile(r"\b(run(s|ning)?|ran|sprint(s|ed|ing)?|dash(es|ed|ing)?|rush(es|ed|ing)?|hurr(y|ies|ied|ying)|jog(s|ged|ging)?)\b", re.I)
+_DISTANCE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:-\s*)?(?:m|metres?|meters?)\b", re.I)
 
 def _words(line: str) -> int:
     return len(_WORD.findall(line))
@@ -305,46 +496,124 @@ def _check_outline(outline: dict, total_clips: int) -> list[str]:
     ids = [loc["id"] for loc in bible["locations"]]
     if not ids or len(set(ids)) != len(ids):
         problems.append("every location needs its own unique id, one per physical place")
+    for loc in bible["locations"]:
+        if "views" in loc and not PLACE_VIEWS[0] <= len(loc["views"]) <= PLACE_VIEWS[1]:
+            problems.append(f"location '{loc['id']}' needs {PLACE_VIEWS[0]} or {PLACE_VIEWS[1]} views, not {len(loc['views'])}")
+        if "layout" in loc and not loc["layout"].strip():
+            problems.append(f"location '{loc['id']}' needs a layout (where its doors, stairs and furniture are)")
+    prop_ids = [p["id"] for p in bible.get("props", [])]
+    if len(set(prop_ids)) != len(prop_ids):
+        problems.append("every prop needs its own unique id")
     for n, b in enumerate(outline["beats"], 1):
         if b["location_id"] not in ids:
             problems.append(f"beat {n} happens in '{b['location_id']}', which is not in \"locations\": add that place to the locations (with its own description and image_prompt), or use the listed id of the place it means")
     return problems
 
-def _check_chapter(clips: list, bible: dict, first_clip_number: int, beat_locations: list[str], spoken_before: set[str]) -> list[str]:
+def _normalize_clips(clips: list, bible: dict) -> None:
+    """Spell every name as the bible does (the cast and voice banks are keyed by bible name) and derive
+    present_characters (everyone visible or partly visible) from the blocking."""
+    by_lower = {c["name"].lower(): c["name"] for c in bible["characters"]}
+    for clip in clips:
+        for b in clip.get("blocking", []):
+            b["character"] = by_lower.get(b["character"].lower(), b["character"])
+        for p in clip.get("prop_state", []):
+            p["holder"] = by_lower.get(p["holder"].lower(), p["holder"])
+        if "blocking" in clip:
+            clip["present_characters"] = [b["character"] for b in clip["blocking"] if b["in_frame"] in ON_SCREEN]
+        clip["present_characters"] = [by_lower.get(p.lower(), p) for p in clip.get("present_characters", [])]
+        for t in clip["dialogue"]:
+            t["speaker"] = by_lower.get(t["speaker"].lower(), t["speaker"])
+
+def _check_chapter(clips: list, bible: dict, first_clip_number: int, chapter_beats: list, prev_clips: list) -> list[str]:
     names = {c["name"].lower() for c in bible["characters"]}
-    spoken = set(spoken_before)
+    prop_ids = {p["id"] for p in bible.get("props", [])}
+    spoken = _speakers_so_far(prev_clips)
     problems = []
-    if len(clips) != len(beat_locations):
-        problems.append(f"the chapter must have exactly {len(beat_locations)} clips, one per beat, not {len(clips)}")
-    for n, (clip, place) in enumerate(zip(clips, beat_locations), first_clip_number):
-        if clip["location_id"] != place:
-            problems.append(f"clip {n} is set in '{clip['location_id']}', but its beat happens in '{place}'")
+    if len(clips) != len(chapter_beats):
+        problems.append(f"the chapter must have exactly {len(chapter_beats)} clips, one per beat, not {len(clips)}")
+    for n, (clip, beat) in enumerate(zip(clips, chapter_beats), first_clip_number):
+        if clip["location_id"] != beat["location_id"]:
+            problems.append(f"clip {n} is set in '{clip['location_id']}', but its beat happens in '{beat['location_id']}'")
+    history = list(prev_clips)
     for n, clip in enumerate(clips, first_clip_number):
+        beat = chapter_beats[n - first_clip_number] if n - first_clip_number < len(chapter_beats) else {}
         present = {p.lower() for p in clip["present_characters"]}
         turns = clip["dialogue"]
+        prev = history[-1] if history else None
         for p in clip["present_characters"]:
             if p.lower() not in names:
                 problems.append(f"clip {n}: '{p}' is not a Scene Bible name (spell names exactly as in the bible)")
-        if len(present) > 7:
-            problems.append(f"clip {n}: {len(present)} characters on screen; the maximum is 7")
-        for field in ("shot", "others"):
-            m = _INNER_STATE.search(clip[field])
+        if len(present) > MAX_ON_SCREEN:
+            problems.append(f"clip {n}: {len(present)} characters on screen; the maximum is {MAX_ON_SCREEN}")
+        texts = [("shot", clip["shot"]), ("others", clip["others"])] + [("action_steps", s["action"]) for s in clip.get("action_steps", [])]
+        for field, text in texts:
+            m = _INNER_STATE.search(text)
             if m:
                 problems.append(f"clip {n}: \"{field}\" names an inner state ('{m.group(0)}'); describe what the face and body visibly do instead")
+        if "blocking" in clip:  # scripts saved before the position diary existed have none
+            listed = [b["character"].lower() for b in clip["blocking"]]
+            if len(set(listed)) != len(listed):
+                problems.append(f"clip {n}: a character is listed twice in the blocking")
+            if prev and prev.get("blocking") and prev["location_id"] == clip["location_id"]:
+                for b in prev["blocking"]:
+                    if b["in_frame"] != "has left" and b["character"].lower() not in listed:
+                        problems.append(f"clip {n}: {b['character']} was in {clip['location_id']} in the previous clip and hasn't left, so they must be in this clip's blocking (as 'off screen' if the camera doesn't see them)")
+            steps = clip.get("action_steps", [])
+            if not steps:
+                problems.append(f"clip {n}: it needs 1 to 4 action steps")
+            last_start = 0.0
+            for s in steps:
+                if not 0 <= s["start_est"] < s["end_est"] <= CLIP_SECONDS or s["start_est"] < last_start:
+                    problems.append(f"clip {n}: action steps must be in time order, inside 0 to {CLIP_SECONDS} s")
+                    break
+                span = s["end_est"] - s["start_est"]
+                if span < MIN_STEP_SECONDS - 0.05:
+                    problems.append(f"clip {n}: the action step \"{s['action'][:60]}\" lasts {span:.1f} s; each step needs at least {MIN_STEP_SECONDS:g} s of real time (merge it into a neighbour, or start the clip with the movement partway done)")
+                moving = _MOVE.search(s["action"])
+                if moving:
+                    dist = _DISTANCE.search(s["action"])
+                    if not dist:
+                        problems.append(f"clip {n}: the action step \"{s['action'][:60]}\" has someone {moving.group(0)} but doesn't say how far (e.g. 'walks the 5 metres to the door'), so its timing can't be checked")
+                    else:
+                        speed = RUN_SPEED if _RUN.search(s["action"]) else WALK_SPEED
+                        needed = float(dist.group(1)) / speed
+                        if span < needed - 0.1:
+                            problems.append(f"clip {n}: \"{s['action'][:60]}\" covers {dist.group(1)} m in {span:.1f} s; that needs about {needed:.1f} s. Give it the time, or start or end the clip partway through the movement")
+                off = [b["character"] for b in clip["blocking"] if b["in_frame"] in ("off screen", "has left")]
+                named = [c for c in off if re.search(rf"\b{re.escape(c)}\b", s["action"], re.I)]
+                if named:
+                    problems.append(f"clip {n}: the action step \"{s['action'][:60]}\" mentions {', '.join(named)}, who is off screen; action steps describe only what the camera sees")
+                last_start = s["start_est"]
+            holders = names | {"scene"}
+            carried = {p["prop_id"] for p in clip.get("prop_state", [])}
+            for p in clip.get("prop_state", []):
+                if p["prop_id"] not in prop_ids:
+                    problems.append(f"clip {n}: prop '{p['prop_id']}' is not in the Scene Bible's props")
+                if p["holder"].lower() not in holders:
+                    problems.append(f"clip {n}: prop '{p['prop_id']}' is held by '{p['holder']}', which is neither a character nor 'scene'")
+            if prev:
+                for p in prev.get("prop_state", []):
+                    if p["prop_id"] not in carried:
+                        problems.append(f"clip {n}: prop '{p['prop_id']}' appeared earlier, so it must stay in the prop diary (with its current state)")
         if not present:
             if turns:
                 problems.append(f"clip {n}: nobody is on screen (establishing shot), so it must have no dialogue")
+            history.append(clip)
             continue
-        total = sum(_words(t["line"]) for t in turns)
-        if not MIN_WORDS <= total <= MAX_WORDS:
-            problems.append(f"clip {n}: {total} words of dialogue; every clip with characters on screen needs {MIN_WORDS} to {MAX_WORDS}")
+        if turns:
+            total = sum(_words(t["line"]) for t in turns)
+            if not MIN_WORDS <= total <= MAX_WORDS:
+                problems.append(f"clip {n}: {total} words of dialogue; a SPEECH clip needs {MIN_WORDS} to {MAX_WORDS}")
+        elif beat.get("speech", True):
+            problems.append(f"clip {n}: its beat is SPEECH, so it needs {MIN_WORDS} to {MAX_WORDS} words of dialogue")
         if len({t["speaker"].lower() for t in turns}) > MAX_VOICE_REFS:
             problems.append(f"clip {n}: more than {MAX_VOICE_REFS} different speakers; the maximum is {MAX_VOICE_REFS}")
+        visible = {b["character"].lower() for b in clip.get("blocking", []) if b["in_frame"] == "visible"} if "blocking" in clip else present
         prev_end = 0.0
         for t in turns:
             who, words, span = t["speaker"], _words(t["line"]), t["end_est"] - t["start_est"]
-            if who.lower() not in present:
-                problems.append(f"clip {n}: {who} speaks but is not in present_characters (a speaker's face must be on screen)")
+            if who.lower() not in visible:
+                problems.append(f"clip {n}: {who} speaks but is not 'visible' in the blocking (a speaker's face must be on screen)")
             if ";" in t["line"]:
                 problems.append(f"clip {n}: {who}'s line has a semicolon; people don't talk like that, split it into short plain sentences")
             if not 0 <= t["start_est"] < t["end_est"] <= CLIP_SECONDS:
@@ -357,16 +626,9 @@ def _check_chapter(clips: list, bible: dict, first_clip_number: int, beat_locati
             if who.lower() not in spoken:
                 spoken.add(who.lower())
                 if words < 5 or span < VOICE_MIN_SECONDS or _NOT_NORMAL_VOLUME.search(t["delivery"]):
-                    problems.append(f"clip {n}: this is {who}'s first line, which becomes their voice sample: it needs at least 5 words, at least {VOICE_MIN_SECONDS:g} s, at normal volume (not whispered, shouted, sobbed or breathless)")
+                    problems.append(f"clip {n}: this is {who}'s first line, which becomes their voice sample: it needs at least 5 words, at least {VOICE_MIN_SECONDS:g} s, clearly voiced (quiet is fine; not whispered, shouted, sobbed or breathless)")
+        history.append(clip)
     return problems
-
-def _canonical_names(clips: list, bible: dict) -> None:
-    """Spell every name as the bible does, so the cast and voice banks (keyed by bible name) always match."""
-    by_lower = {c["name"].lower(): c["name"] for c in bible["characters"]}
-    for clip in clips:
-        clip["present_characters"] = [by_lower.get(p.lower(), p) for p in clip["present_characters"]]
-        for t in clip["dialogue"]:
-            t["speaker"] = by_lower.get(t["speaker"].lower(), t["speaker"])
 
 def _ask_checked(what: str, prompt: str, request: str, name: str, schema: dict, check) -> tuple[dict, list[str]]:
     """Ask OpenAI, check the answer, and ask it to fix what's wrong (up to SCRIPT_RETRIES times).
@@ -377,7 +639,9 @@ def _ask_checked(what: str, prompt: str, request: str, name: str, schema: dict, 
         if not problems:
             break
         if attempt < SCRIPT_RETRIES:
-            print(f"  {what} check: {len(problems)} rule problem(s), asking OpenAI to fix them (retry {attempt + 1}/{SCRIPT_RETRIES})...", flush=True)
+            print(f"  {what} check: {len(problems)} problem(s), asking OpenAI to fix them (retry {attempt + 1}/{SCRIPT_RETRIES}):", flush=True)
+            for p in problems:
+                print(f"    - {p}", flush=True)
             request = (
                 "Here is your previous answer:\n" + json.dumps(data) + "\n\nIt breaks these rules:\n- " + "\n- ".join(problems)
                 + "\n\nReturn the whole answer again with every one of these fixed, keeping everything else."
@@ -394,19 +658,24 @@ def write_outline(topic: str, duration: int, total_clips: int) -> tuple[dict, li
 
 def write_chapter(topic: str, chap_idx: int, total_chapters: int, beats: list, bible: dict, prev_clips: list) -> tuple[dict, list[str]]:
     first, mine = _chapter_beats(beats, chap_idx)
-    schema = _chapter_schema([loc["id"] for loc in bible["locations"]])
-    data, problems = _ask_checked(
+    schema = _chapter_schema([loc["id"] for loc in bible["locations"]], [c["name"] for c in bible["characters"]],
+                             [p["id"] for p in bible.get("props", [])])
+
+    def check(data: dict) -> list[str]:
+        _normalize_clips(data["clips"], bible)
+        problems = _check_chapter(data["clips"], bible, first, mine, prev_clips)
+        # The supervisor reads for logic only once the mechanical rules pass (it costs one more OpenAI call).
+        return problems or supervise_chapter(topic, bible, beats, prev_clips, data["clips"], first)
+
+    return _ask_checked(
         f"Chapter {chap_idx + 1}", _chapter_prompt(topic, chap_idx, total_chapters, beats, bible, prev_clips), "Generate Script",
-        f"movie_chapter_{chap_idx + 1}", schema,
-        lambda d: _check_chapter(d["clips"], bible, first, [b["location_id"] for b in mine], _speakers_so_far(prev_clips)),
+        f"movie_chapter_{chap_idx + 1}", schema, check,
     )
-    _canonical_names(data["clips"], bible)
-    return data, problems
 
 def save_script(path: Path, topic: str, bible: dict, beats: list, chapters: list) -> None:
     """Everything the video steps need, so --from-script can render exactly this script without asking OpenAI again."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = {"version": 1, "topic": topic, "scene_bible": bible, "beats": beats, "chapters": chapters}
+    data = {"version": 2, "topic": topic, "scene_bible": bible, "beats": beats, "chapters": chapters}
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 def _report(what: str, problems: list[str]) -> None:
@@ -415,39 +684,90 @@ def _report(what: str, problems: list[str]) -> None:
         for p in problems:
             print(f"    - {p}")
 
-def build_multi_prompt(clip: dict, bible: dict, cast_bank: dict[str, str], location_bank: dict[str, str], voice_bank: dict[str, str]) -> tuple[str, list[str], list[str]]:
-    loc_url = location_bank.get(clip["location_id"], "")
-    ref_image_urls = [loc_url] if loc_url else []
-    
-    speakers = clip["present_characters"][:7]
-    char_tags = []
-    for spkr in speakers:
-        char_info = next((c for c in bible["characters"] if c["name"].lower() == spkr.lower()), None)
-        if not char_info: continue
-        if spkr in cast_bank and cast_bank[spkr]:
-            ref_image_urls.append(cast_bank[spkr])
-            img_idx = len(ref_image_urls)
-            char_tags.append(f"{spkr} is @Image{img_idx} ({char_info['look']})")
-        else:
-            char_tags.append(f"{spkr} ({char_info['look']})")
+_VOICE_WORDS = re.compile(r"\b(tenor|baritone|bass|alto|soprano|mezzo|contralto|accent(ed)?|voice)\b", re.I)
 
-    tag_str = ". ".join(char_tags)
-    parts = []
+def _delivery_only(delivery: str, voice: str) -> str:
+    """Drop the parts of a line's delivery that re-describe the voice itself ('clear youthful tenor, ...'):
+    the character's voice is already sent, and saying it twice only muddles the prompt."""
+    parts = [p.strip() for p in delivery.split(",") if p.strip()]
+    kept = []
+    for i, p in enumerate(parts):
+        if _VOICE_WORDS.search(p) or p.lower() in voice.lower():
+            continue
+        # "low, careful, and clipped" minus "low" must not become "careful, and clipped" when the list is cut short
+        kept.append(re.sub(r"^(and|but)\s+", "", p, flags=re.I) if (i == len(parts) - 1 and len(kept) <= 1) else p)
+    return ", ".join(kept) if kept else delivery
 
-    # One fixed picture per place: Seedance keeps the place's look from it but films it from this clip's own camera angle.
+def _join(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+def build_multi_prompt(clip: dict, bible: dict, cast_bank: dict[str, str], location_bank: dict[str, list[str]], voice_bank: dict[str, str]) -> tuple[str, list[str], list[str]]:
+    """The clip's Seedance prompt and references. Everything the clip needs is stated here, because Seedance sees nothing else:
+    the place (pictures and layout), who is where (blocking), what props are in the shot and their state, the timed action,
+    the dialogue and the acting."""
     loc = next((l for l in bible["locations"] if l["id"] == clip["location_id"]), None)
+    on_screen = clip["present_characters"][:MAX_ON_SCREEN]
+    faces = [n for n in on_screen if cast_bank.get(n)]
+    # Picture budget (kie.ai takes 9): every face first, then as many views of the place as fit (at least 1, at most 3).
+    place_urls = [u for u in location_bank.get(clip["location_id"], []) if u]
+    place_urls = place_urls[:max(1, min(PLACE_VIEWS[1], MAX_REF_IMAGES - len(faces)))]
+    ref_image_urls = list(place_urls)
+
+    char_tags = []
+    for name in on_screen:
+        char_info = next((c for c in bible["characters"] if c["name"].lower() == name.lower()), None)
+        if not char_info: continue
+        if cast_bank.get(name) and len(ref_image_urls) < MAX_REF_IMAGES:
+            ref_image_urls.append(cast_bank[name])
+            char_tags.append(f"{name} is @Image{len(ref_image_urls)} ({char_info['look']})")
+        else:
+            char_tags.append(f"{name} ({char_info['look']})")
+
     shot = clip["shot"].rstrip(". ")
-    if loc_url: setting = f"{shot}. The location is the place shown in @Image1: keep its architecture, furniture, materials, colors and light exactly the same, but film it from the camera angle described here, not the angle of the picture."
-    else: setting = f"{shot}. Location: {loc['description'].rstrip('. ') if loc else clip['location_id']}."
-    if speakers: parts.append(f"{setting} Characters: {tag_str}.")
-    else: parts.append(f"{setting} Cinematic environmental shot, no people.")
+    others = clip["others"].rstrip(". ") if clip["others"] else ""
+    if place_urls:
+        tags = _join([f"@Image{i}" for i in range(1, len(place_urls) + 1)])
+        same = " (the same place from different angles)" if len(place_urls) > 1 else ""
+        setting_note = f"The location is the place shown in {tags}{same}: keep its layout, architecture, furniture, materials, colors and light exactly the same, but film it from the camera angle described here"
+    else:
+        setting_note = f"Location: {loc['description'].rstrip('. ') if loc else clip['location_id']}"
+
+    parts = [f"Five-second {shot}, {setting_note}."]
+    parts.append(f"Characters: {'. '.join(char_tags)}." if on_screen else "Cinematic environmental shot, no people.")
+    def _at(posture: str, position: str) -> str:
+        # OpenAI often repeats the posture inside the text ("standing frozen in..."); don't say it twice.
+        position = position.rstrip(". ")
+        return position if position.lower().startswith(posture) else f"{posture}, {position}"
+    def _where(b: dict) -> str:
+        facing = b["facing"].rstrip(". ")
+        # Say "facing" only when OpenAI's text doesn't already ('faces the door', 'starts facing the lockers, then...').
+        facing = facing if re.search(r"\b(fac(e|es|ing)|look(s|ing)?|turn(s|ing)?|watch(es|ing)?)\b", facing, re.I) else f"facing {facing}"
+        start = _at(b["posture"], b["position"])
+        end_pos, end_posture = b.get("end_position", b["position"]), b.get("end_posture", b["posture"])
+        if end_pos.rstrip(". ") == b["position"].rstrip(". ") and end_posture == b["posture"]:
+            return f"{start}; {facing}"
+        return f"starts {start}; ends {_at(end_posture, end_pos)}; {facing}"
+    blocking = [b for b in clip.get("blocking", []) if b["in_frame"] in ON_SCREEN]
+    if blocking:
+        parts.append("Blocking: " + " ".join(
+            f"{b['character']} ({b['in_frame']}): {_where(b)}; {b['awareness'].rstrip('. ')}." for b in blocking))
+    props = {p["id"]: p["description"] for p in bible.get("props", [])}
+    def _plain(text: str) -> str:
+        # Prop ids like 'work_bag' sometimes leak into the prose; Seedance should read plain words.
+        for pid in props:
+            text = re.sub(rf"\b{re.escape(pid)}\b", pid.replace("_", " "), text)
+        return text
+    shown = [p for p in clip.get("prop_state", []) if p["in_frame"]]
+    if shown:
+        parts.append("Props in the shot: " + " ".join(
+            f"{props.get(p['prop_id'], p['prop_id']).rstrip('. ')} ({'held by ' + p['holder'] if p['holder'] != 'scene' else 'resting in the scene'}; {p['state'].rstrip('. ')})."
+            for p in shown))
+    if clip.get("action_steps"):
+        parts.append("Action: " + " ".join(f"[{s['start_est']}s to {s['end_est']}s] {_plain(s['action']).rstrip('. ')}." for s in clip["action_steps"]))
 
     ref_audio_urls = []
-    if not clip["dialogue"]: 
-        if speakers:
-            parts.append("Nobody speaks. Intense silent acting and reaction shot.")
-        else:
-            parts.append("Nobody speaks. Atmospheric b-roll.")
+    if not clip["dialogue"]:
+        parts.append("Nobody speaks.")
     else:
         for turn in clip["dialogue"]:
             spkr = turn["speaker"]
@@ -455,15 +775,15 @@ def build_multi_prompt(clip: dict, bible: dict, cast_bank: dict[str, str], locat
             voice_url = voice_bank.get(spkr)
             if voice_url and voice_url not in ref_audio_urls and len(ref_audio_urls) < MAX_VOICE_REFS:
                 ref_audio_urls.append(voice_url)
+            delivery = _delivery_only(turn["delivery"], char["voice"] if char else "")
             if voice_url in ref_audio_urls:
-                parts.append(f"[{turn['start_est']}s to {turn['end_est']}s] {spkr} speaks in the voice of @Audio{ref_audio_urls.index(voice_url) + 1}, {turn['delivery']}: \"{turn['line']}\"")
+                parts.append(f"[{turn['start_est']}s to {turn['end_est']}s] {spkr} speaks in the voice of @Audio{ref_audio_urls.index(voice_url) + 1}, {delivery}: \"{turn['line']}\"")
             else:
-                parts.append(f"[{turn['start_est']}s to {turn['end_est']}s] {spkr} speaks {char['voice'] if char else 'naturally'}, {turn['delivery']}: \"{turn['line']}\"")
-        faces = list(dict.fromkeys(t["speaker"] for t in clip["dialogue"]))
-        who = faces[0] if len(faces) == 1 else ", ".join(faces[:-1]) + " and " + faces[-1]
-        parts.append(f"{who} {'is' if len(faces) == 1 else 'are'} clearly visible on camera, face and lips in view, while speaking. Natural lip sync: each person's lips move only during their own line; everyone else keeps their mouth closed.")
-    
-    if clip["others"]: parts.append(clip["others"].rstrip(". ") + ".")
+                parts.append(f"[{turn['start_est']}s to {turn['end_est']}s] {spkr} speaks {char['voice'].rstrip('. ') if char else 'naturally'}, {delivery}: \"{turn['line']}\"")
+        speakers = list(dict.fromkeys(t["speaker"] for t in clip["dialogue"]))
+        parts.append(f"{_join(speakers)} {'is' if len(speakers) == 1 else 'are'} clearly visible on camera, face and lips in view, while speaking. Natural lip sync: each person's lips move only during their own line; everyone else keeps their mouth closed.")
+    if others:
+        parts.append(_plain(others) + ".")
     parts.append("No background music.")
     return " ".join(parts), ref_image_urls, ref_audio_urls
 
@@ -563,14 +883,21 @@ def render_clip(n: int, prompt: str, image_urls: list[str], audio_urls: list[str
         _write_record(record_path, record)
         return result
 
+def _place_urls(entry: dict) -> list[str]:
+    """A place's picture links from images.json (runs made before place views existed have one picture)."""
+    return [v["url"] for v in entry["views"]] if "views" in entry else [entry["url"]]
+
 def main():
+    global CLIPS_PER_CHAPTER  # --chapter-clips can change it for this run
     parser = argparse.ArgumentParser()
     parser.add_argument("topic", nargs="*")
     parser.add_argument("--duration", type=int, default=15, help="Total requested video duration in seconds")
     parser.add_argument("--script-only", action="store_true")
     parser.add_argument("--from-script", help="Use a saved script (JSON) instead of asking OpenAI for a new one; its length replaces --duration")
     parser.add_argument("--resume", action="store_true", help="With --from-script: continue an interrupted run, keeping its clips, pictures and voice samples")
+    parser.add_argument("--chapter-clips", type=int, default=CLIPS_PER_CHAPTER, help=f"Clips OpenAI writes per chapter (default {CLIPS_PER_CHAPTER})")
     args = parser.parse_args()
+    CLIPS_PER_CHAPTER = max(1, args.chapter_clips)
     if args.resume and (not args.from_script or args.script_only):
         sys.exit("--resume continues an interrupted video run: use it with --from-script (the same saved script) and without --script-only.")
 
@@ -594,7 +921,14 @@ def main():
 
     total_clips = len(saved["beats"]) if saved else max(1, args.duration // CLIP_SECONDS)
     chapters_count = max(1, (total_clips + CLIPS_PER_CHAPTER - 1) // CLIPS_PER_CHAPTER)
-    saved_chapters = saved["chapters"] if saved else []
+    saved_chapters = []
+    if saved:
+        # Regroup the saved clips into this version's chapter size (older scripts used 6-clip chapters);
+        # an incomplete last chapter is written again by OpenAI.
+        flat = [c for chap in saved["chapters"] for c in chap]
+        saved_chapters = [flat[i:i + CLIPS_PER_CHAPTER] for i in range(0, len(flat), CLIPS_PER_CHAPTER)]
+        if saved_chapters and len(saved_chapters[-1]) < len(_chapter_beats(saved["beats"], len(saved_chapters) - 1)[1]):
+            saved_chapters.pop()
     # Save every script this run writes (or completes), so it can be rendered again exactly with --from-script.
     script_path = None if len(saved_chapters) >= chapters_count else SCRIPTS_DIR / f"script_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}.json"
 
@@ -623,32 +957,39 @@ def main():
         for c in bible["characters"]:
             print(f"  - {c['name']} (Voice: {c['voice']})")
             print(f"    FLUX Prompt: {c['image_prompt']}")
-        print("\n🏠 LOCATIONS (one fixed picture each, every camera angle in that place uses it):")
+        print("\n🏠 LOCATIONS (fixed pictures and layout; every camera angle in that place uses them):")
         for loc in bible["locations"]:
             print(f"  - {loc['id']}: {loc['description']}")
+            if loc.get("layout"): print(f"    Layout: {loc['layout']}")
+            for i, view in enumerate(loc.get("views", []), 1):
+                print(f"    View {i}: {view}{'  (master picture)' if i == 1 else '  (edited from the master)'}")
             print(f"    FLUX Prompt: {loc['image_prompt']}")
+        if bible.get("props"):
+            print("\n🧰 PROPS (fixed descriptions, written into every clip that shows them):")
+            for p in bible["props"]:
+                print(f"  - {p['id']}: {p['description']}")
     print("\n📋 BEAT PLAN (one beat per clip):")
     for n, b in enumerate(beats, 1):
-        print(f"  {n:02d}. [{b['location_id']}] {b['action']}")
+        print(f"  {n:02d}. [{b['location_id']}] {'' if b.get('speech', True) else '(silent) '}{b['action']}")
     if problems and not args.script_only and input("\nContinue with this plan anyway? [y/n]: ").strip().lower() != "y":
         print("Stopped before anything was generated.")
         return
 
     cast_bank: dict[str, str] = {}
-    location_bank: dict[str, str] = {}
+    location_bank: dict[str, list[str]] = {}
     voice_bank: dict[str, str] = {}
     voice_local: dict[str, Path] = {}
     if args.resume:
         # Same pictures and voice samples as the interrupted run, so faces, rooms and voices match the clips already made.
         images = json.loads((OUTPUT_DIR / "requests" / "images.json").read_text(encoding="utf-8"))
         cast_bank = {name: v["url"] for name, v in images["cast"].items()}
-        location_bank = {lid: v["url"] for lid, v in images["locations"].items()}
+        location_bank = {lid: _place_urls(v) for lid, v in images["locations"].items()}
         mismatched = [c["name"] for c in bible["characters"] if images["cast"].get(c["name"], {}).get("prompt") != c["image_prompt"]]
         mismatched += [l["id"] for l in bible["locations"] if images["locations"].get(l["id"], {}).get("prompt") != l["image_prompt"]]
         if mismatched:
             sys.exit(f"The saved script's picture prompts for {', '.join(mismatched)} differ from the interrupted run's pictures, "
                      "so --resume would not match. Use the same saved script, or start a fresh run. Nothing was generated.")
-        print(f"\n[RESUME] Reusing the interrupted run's {len(cast_bank)} cast and {len(location_bank)} place pictures.")
+        print(f"\n[RESUME] Reusing the interrupted run's {len(cast_bank)} cast and {sum(len(u) for u in location_bank.values())} place pictures.")
         voices_path = OUTPUT_DIR / "requests" / "voices.json"
         voices = json.loads(voices_path.read_text(encoding="utf-8")) if voices_path.exists() else {}
         for speaker, v in voices.items():
@@ -662,18 +1003,30 @@ def main():
         voices_path.write_text(json.dumps(voices, indent=2, ensure_ascii=False), encoding="utf-8")
     elif not args.script_only:
         print("\n[PHASE 1.5] Generating cast and location images with FLUX...")
+        images = {"cast": {}, "locations": {}}
         for c in bible["characters"]:
             print(f"  Generating image for {c['name']}...", flush=True)
             cast_bank[c["name"]] = generate_flux_image(c["image_prompt"])
+            images["cast"][c["name"]] = {"prompt": c["image_prompt"], "url": cast_bank[c["name"]]}
             if cast_bank[c["name"]]: print(f"    Saved: {cast_bank[c['name']]}")
         for loc in bible["locations"]:
-            print(f"  Generating image for location {loc['id']}...", flush=True)
-            location_bank[loc["id"]] = generate_flux_image(loc["image_prompt"])
-            if location_bank[loc["id"]]: print(f"    Saved: {location_bank[loc['id']]}")
-        images = {"cast": {c["name"]: {"prompt": c["image_prompt"], "url": cast_bank[c["name"]]} for c in bible["characters"]},
-                  "locations": {l["id"]: {"prompt": l["image_prompt"], "url": location_bank[l["id"]]} for l in bible["locations"]}}
+            views = loc.get("views") or ["wide view"]
+            print(f"  Generating the master picture of {loc['id']} ({views[0]})...", flush=True)
+            master = generate_flux_image(loc["image_prompt"])
+            entry = {"prompt": loc["image_prompt"], "url": master, "views": [{"view": views[0], "prompt": loc["image_prompt"], "url": master}]}
+            if master:
+                print(f"    Saved: {master}")
+                # The other angles are edits of the master (Kontext keeps its content), so they show the same room, not a new one.
+                for view in views[1:PLACE_VIEWS[1]]:
+                    print(f"  Generating {loc['id']} {view}...", flush=True)
+                    url = generate_flux_image(_view_prompt(view), input_image=master)
+                    if url:
+                        entry["views"].append({"view": view, "prompt": _view_prompt(view), "url": url})
+                        print(f"    Saved: {url}")
+            images["locations"][loc["id"]] = entry
+            location_bank[loc["id"]] = [v["url"] for v in entry["views"] if v["url"]]
         (OUTPUT_DIR / "requests" / "images.json").write_text(json.dumps(images, indent=2, ensure_ascii=False), encoding="utf-8")
-        missing = [name for name, url in (*cast_bank.items(), *location_bank.items()) if not url]
+        missing = [name for name, url in cast_bank.items() if not url] + [lid for lid, urls in location_bank.items() if not urls]
         if missing:
             print(f"\n  ⚠ No image for: {', '.join(missing)}. They would be drawn from text alone and change look from clip to clip.")
             if input("Continue anyway? [y/n]: ").strip().lower() != "y":
@@ -694,40 +1047,50 @@ def main():
 
         if chap_idx < len(saved_chapters):
             script_data = {"clips": saved_chapters[chap_idx]}
+            _normalize_clips(script_data["clips"], bible)
             first, mine = _chapter_beats(beats, chap_idx)
-            problems = _check_chapter(script_data["clips"], bible, first, [b["location_id"] for b in mine], _speakers_so_far(all_clips_json))
+            problems = _check_chapter(script_data["clips"], bible, first, mine, all_clips_json)
             _report(f"Saved chapter {chap_num}", problems)
         else:
             script_data, problems = write_chapter(topic, chap_idx, chapters_count, beats, bible, all_clips_json)
             chapters_json.append(script_data["clips"])
             save_script(script_path, topic, bible, beats, chapters_json)
         if problems and not args.script_only:
-            if input(f"\nGenerate chapter {chap_num} anyway? [y/n]: ").strip().lower() != "y":
+            all_exist = True
+            for c_idx_rel in range(CLIPS_PER_CHAPTER):
+                g_idx = (chap_idx * CLIPS_PER_CHAPTER) + c_idx_rel + 1
+                if not (OUTPUT_DIR / "clips" / f"clip_{g_idx:02d}.mp4").exists():
+                    all_exist = False
+                    break
+            if args.resume and all_exist:
+                pass
+            elif input(f"\nGenerate chapter {chap_num} anyway? [y/n]: ").strip().lower() != "y":
                 print(f"Stopping before chapter {chap_num}; nothing was generated for it.")
                 break
         all_clips_json.extend(script_data["clips"])
-        
+
         if args.script_only:
             print("\n🎬 DIRECTOR'S CUT: SCRIPT & PROMPT PREVIEW")
-            print("   (The real run sends this same text, except that the location, each character and each already-sampled voice")
-            print("    point at their picture or voice sample: @Image1 for the place, @Image2+ for the cast, @Audio1+ for voices.)")
+            print("   (The real run sends this same text, except that the place, each character and each already-sampled voice")
+            print("    point at their pictures or voice sample: @Image1+ for the place's views, then the cast, @Audio1+ for voices.)")
             print(f"\n🎥 SEEDANCE VIDEO CLIPS (Chapter {chap_num}):")
             for c_idx, clip_data in enumerate(script_data["clips"]):
                 print(f"\n  ▶ CLIP {(chap_idx * CLIPS_PER_CHAPTER) + c_idx + 1:02d} | Location: {clip_data['location_id']}")
                 print(f"    Shot Type: {clip_data['shot']}")
                 prompt_str, _, _ = build_multi_prompt(clip_data, bible, {}, {}, {})
                 print(f"    SEEDANCE PROMPT:\n    > {prompt_str}")
-            
+
             if chap_num < chapters_count:
                 input("\nPress Enter to generate script for next Chapter...")
             continue
 
         # --- Video Generation Phase ---
         batch_video_paths = []
+        all_reused = True
         for c_idx_rel, clip_data in enumerate(script_data["clips"]):
             global_idx = (chap_idx * CLIPS_PER_CHAPTER) + c_idx_rel + 1
             if global_idx > total_clips: break # Safety cap
-            
+
             loc_id = clip_data["location_id"]
             clip_path = OUTPUT_DIR / "clips" / f"clip_{global_idx:02d}.mp4"
             if args.resume and clip_path.exists():
@@ -736,6 +1099,8 @@ def main():
                 batch_video_paths.append(clip_path)
                 all_clip_video_paths.append(clip_path)
                 continue
+            
+            all_reused = False
             print(f"\n  {'─'*40}\n  CLIP {global_idx}/{total_clips} (Location: {loc_id})", flush=True)
             prompt, ref_image_urls, ref_audio_urls = build_multi_prompt(clip_data, bible, cast_bank, location_bank, voice_bank)
             result = render_clip(global_idx, prompt, ref_image_urls, ref_audio_urls)
@@ -750,6 +1115,7 @@ def main():
             batch_video_paths.append(clip_path)
             all_clip_video_paths.append(clip_path)
 
+            # Voice samples first (saved to voices.json), so stopping at the pause below never loses them for --resume.
             for t_idx, turn in enumerate(clip_data["dialogue"]):
                 speaker = turn["speaker"]
                 if speaker not in voice_local:
@@ -765,20 +1131,30 @@ def main():
                         voices_path.write_text(json.dumps(voices, indent=2, ensure_ascii=False), encoding="utf-8")
                     else:
                         print(f"    no usable {VOICE_MIN_SECONDS:g}+ s voice sample in this line; trying {speaker}'s next line", flush=True)
-        
+
+            # Per-clip review pause
+            if global_idx < total_clips:
+                print(f"\n  ✅ Clip {global_idx} done! Video saved to container.")
+                print(f"     Copy it out to preview: docker cp \"${{cid}}:/srv/media/movie_scene_multispeaker/clips/clip_{global_idx:02d}.mp4\" .\\clip_{global_idx:02d}.mp4")
+                if input(f"  Continue to Clip {global_idx + 1}? [y/n]: ").strip().lower() != "y":
+                    print(f"\nStopped after clip {global_idx}. Everything made so far is kept.")
+                    print(f"To continue later:\n  {resume_cmd}")
+                    return
+
         # Assemble batch review
         chap_review_filename = f"chapter_{chap_num}_review.mp4"
         assemble_test_video(batch_video_paths, chap_review_filename)
-        
+
         if chap_num < chapters_count:
-            print(f"\n=======================================================")
-            print(f"CHAPTER {chap_num} COMPLETE!")
-            print(f"Review video: docker cp \"${{cid}}:/srv/media/movie_scene_multispeaker/{chap_review_filename}\" .\\{chap_review_filename}")
-            ans = input("\nContinue generating the next 30 seconds? [y/n]: ").strip().lower()
-            if ans != 'y':
-                print("Stopping generation early as requested.")
-                print(f"The clips are kept. To continue later from clip {(chap_idx + 1) * CLIPS_PER_CHAPTER + 1}:\n  {resume_cmd}")
-                break
+            if not all_reused:
+                print(f"\n=======================================================")
+                print(f"CHAPTER {chap_num} COMPLETE!")
+                print(f"Review video: docker cp \"${{cid}}:/srv/media/movie_scene_multispeaker/{chap_review_filename}\" .\\{chap_review_filename}")
+                ans = input(f"\nContinue generating the next {CLIPS_PER_CHAPTER * CLIP_SECONDS} seconds? [y/n]: ").strip().lower()
+                if ans != 'y':
+                    print("Stopping generation early as requested.")
+                    print(f"The clips are kept. To continue later from clip {(chap_idx + 1) * CLIPS_PER_CHAPTER + 1}:\n  {resume_cmd}")
+                    break
 
     if not args.script_only and not all_clip_video_paths:
         print("\nNothing was generated.")

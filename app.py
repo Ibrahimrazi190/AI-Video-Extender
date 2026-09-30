@@ -309,7 +309,7 @@ def generate_script(topic: str, num_clips: int, mode: Mode = "talking_head", cli
 
 def _ask_openai_json(system_prompt: str, user_content: str, name: str, schema: dict) -> dict:
     """One Structured Outputs call (strict JSON schema); returns the parsed JSON or raises ValueError."""
-    response = OpenAI(api_key=OPENAI_API_KEY, timeout=120).chat.completions.create(
+    response = OpenAI(api_key=OPENAI_API_KEY, timeout=300).chat.completions.create(
         model=OPENAI_MODEL,
         messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
         response_format={"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
