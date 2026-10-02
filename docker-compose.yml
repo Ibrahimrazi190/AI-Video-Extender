@@ -7,6 +7,9 @@ x-app: &app
     REDIS_URL: redis://redis:6379/0
   volumes:
     - media:/srv/media          # downloaded clips + final videos: the worker writes them, the api serves them
+    - ./app.py:/srv/app.py
+    - ./dashboard.html:/srv/dashboard.html
+    - ./movie_scene_multispeaker.py:/srv/movie_scene_multispeaker.py
   depends_on:
     redis:
       condition: service_healthy

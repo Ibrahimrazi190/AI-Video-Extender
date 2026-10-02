@@ -28,6 +28,7 @@ Running log of the build, following `EXECUTION_GUIDE.md`. One section per comple
 | 11 | Mid-sequence regeneration (dual-reference bridging) | **Deferred (your call, 2026-09-27)**: skipped for now, to come back to after Prompt 12. Its gate isn't met (Tests B and D haven't been run). Middle clips keep answering 501. Cheap partial option noted for later: in Talking Head a middle clip (not clip 1) can be regenerated like the last one, from the master, with no bridging |
 | 12 | Final video assembly | **Built (2026-09-27)**, verified offline (real ffmpeg on Seedance-shaped clips) and on the dashboard with a throwaway API. Your testing note next (no credits): press "Build final video" on one of your existing jobs per mode, then download and watch it |
 | Watch | Story Time quality over a long chain (5+ clips) | **Watch item, not a blocker.** First data point (2026-09-27, 5 clips x 5 s): quality fell a bit down the chain; you're accepting it for now |
+| Movie Mode | Multi-Speaker Dramatic Scene Pipeline (`movie_scene_multispeaker.py`) | **Built & Completed (2026-10-01)**: 60-clip (5-minute) thriller fully generated, verified, and seamlessly assembled via `app.py` lead-in audio trimming and Lanczos normalization. Permanent pipeline integration completed. |
 
 ---
 
@@ -685,6 +686,195 @@ Skipped for now at your request (2026-09-27), to come back to after Prompt 12. I
 
 ---
 
+## Movie Mode: Multi-Speaker Dramatic Scene Pipeline (`movie_scene_multispeaker.py`) (2026-10-01)
+
+### 1. What Movie Mode Does
+Movie Mode (`movie_scene_multispeaker.py`) is the multi-character dramatic storytelling pipeline designed to scale AI video generation across long, continuous multi-clip narratives (proven up to 60 clips / 5+ minutes). Unlike single-character Talking Head or single-narrator Story Time, Movie Mode orchestrates:
+- **Multiple simultaneous characters:** Independent visual identities, physical blocking, spatial proximities, and conversational dialogue with dynamic lip sync.
+- **Strict continuity tracking:** A persistent **Scene Bible** and **Prop Diary** that track character health/injury states, exact physical positions, props, and ammunition counts across every cut.
+- **Actor voice persistence:** Automatic harvesting of voice samples from the characters' first spoken lines, reused across all subsequent clips as `@Audio1+` reference tracks to keep voices identical throughout the film.
+- **Interactive Terminal Workflow:** Generates and validates each 3-clip chapter with OpenAI, displays the compiled Seedance prompt in the terminal for human review, and supports hot-reloading (`r`) directly from the script JSON without restarting the run.
+
+---
+
+### 2. Architecture & How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ 1. User Story Input (e.g. story.txt psychological thriller)                     │
+└──────────────────────────────────────┬──────────────────────────────────────────┘
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ 2. Outline & Master Beats: 60 timed beats (5 seconds each)                      │
+└──────────────────────────────────────┬──────────────────────────────────────────┘
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ 3. Scene Bible Generation: Characters (looks/voices), Locations & Props         │
+└──────────────────────────────────────┬──────────────────────────────────────────┘
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ 4. Phase 1.5 (FLUX 1 Kontext): 25 Reference Images Cached                       │
+│    • 3 Cast Reference Portraits (text-to-image)                                 │
+│    • 8 Location Master Pictures (text-to-image)                                 │
+│    • 14 Location Angle Variations (Kontext image-to-image edit mode)            │
+└──────────────────────────────────────┬──────────────────────────────────────────┘
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ 5. Chapter-by-Chapter Scripting (OpenAI, 3 clips/chapter):                      │
+│    • Strict validation (_check_chapter): movement bounds, dialogue word count,  │
+│      speaker visibility, prop consistency, timeline continuity                  │
+└──────────────────────────────────────┬──────────────────────────────────────────┘
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ 6. Prompt Compiler (build_multi_prompt):                                        │
+│    Compiles structured chapter JSON into dense, highly-specific prompts         │
+│    formatted for Seedance-2-mini / Seedance-2-fast on kie.ai                    │
+└──────────────────────────────────────┬──────────────────────────────────────────┘
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ 7. Interactive Execution Loop (Terminal 1):                                     │
+│    Prompt Review ──► [y = generate | r = reload from script json | q = quit]    │
+└──────────────────────────────────────┬──────────────────────────────────────────┘
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ 8. Smooth Video Assembly (Permanently integrated with app.py):                  │
+│    • app._lead_in(): Spectral audio onset detection trims dead silence          │
+│    • app._normalized(): Lanczos scaling, SAR=1, 24 fps, boundary micro-fades   │
+│    • Final Concatenation: Seamless, broadcast-ready mastercut                   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 3. Detailed Anatomy of the Prompts We Give to Seedance
+
+Everything Seedance sees must be completely self-contained within each clip's compiled prompt (`build_multi_prompt`). Seedance has zero memory between requests; prompt precision is the only mechanism that prevents character drifting, hallucinated props, and floating cameras.
+
+#### A. Camera Angle, Lens & Lighting Prompts
+- **Lens & Perspective:** Specifies exact camera placement, height, and angle relative to the action (e.g., *"Camera placed low at mud level framing Clara crouched on frame left directly adjacent to Marcus pinned beneath the fallen log on frame right"* or *"Extreme Close-Up of his rain-slick face and slowly zooming inward while locking on his steel-blue eyes, resolving with both unblinking eyes filling the entire frame"*).
+- **Camera Movement:** Dictates precise camera motivation rather than random drifting (e.g., *"the camera pans and jerks dynamically as Julian emerges..."* vs. *"slow, creeping, continuous push-in"*).
+- **Dual Lighting & Tone:** Directs contrasting light sources to maintain cinematic mood (e.g., *"warm amber light from the glowing oil lantern in the foreground mud warms the rain and fallen timber, while cold pale moonlight rims Julian's dark jacket against the dark misty pine forest"*).
+- **Depth of Field:** Explicitly defines focal plane and background falloff (e.g., *"the clearing behind him dissolves into deep soft bokeh with an extremely shallow depth of field"*).
+
+#### B. Character Blocking & Spatial Coordinates
+To prevent characters from teleporting, changing clothes, or switching positions across cuts, every character has structured blocking rules:
+- **`position` & `posture` (Start):** Where the character begins (e.g., *"crouched on frame left less than a foot from Marcus, lowering the smoking, empty revolver in shock and despair"*).
+- **`end_position` & `end_posture` (Finish):** Where the character ends the 5-second take (e.g., *"lying flat on her back in the mud directly alongside Marcus beneath the fallen trunk, stunned, breathless, and motionless"*).
+- **`facing`:** Eye-line and body orientation (e.g., *"directly toward the camera with an unblinking, pitiless stare"*).
+- **`awareness`:** Psychological state and perception (e.g., *"Locks his unblinking stare into the lens, knowing his ruthless vengeance is complete"*).
+
+#### C. The Prop Diary (`prop_state`)
+Every physical object is tracked continuously across the entire film:
+- **Holder:** Identifies who holds the prop (`"Julian Vale"`, `"Clara Whitmore"`, or `"scene"` when resting on the ground/table).
+- **In-Frame:** `true` only when the camera clearly frames it, preventing the model from drawing background props into tight close-ups.
+- **Physical State & Ammo Tracking:** Exact condition (e.g., the revolver is tracked clip-by-clip from 6 loaded brass cartridges -> 5 -> 4 -> 3 -> 2 -> 1 -> strictly 0 rounds empty after firing into the water reflection; the oil lantern tracked as glowing with warm amber light; the tactical flashlight tracked as half-submerged in mud).
+
+#### D. Micro-Timed Action Steps (`[0.0s to 1.4s]`, etc.)
+Rather than a vague sentence, action within the 5-second window is broken down into timed choreography:
+```text
+[0.0s to 1.4s] Clara crouches on frame left less than a foot from Marcus, lowering the smoking empty revolver in shock; Julian emerges silently from the dark pine shadows directly behind Clara, stepping onto the wet mud.
+[1.4s to 2.8s] Julian brings his gloved right hand down in a hard chop across Clara's wrists, knocking the empty revolver spinning into the mud puddle beside the glowing lantern, and seizes Clara's coat shoulders as she gasps in terror.
+[2.8s to 5.0s] Julian forcefully drives Clara backward over the slick ravine lip; Clara's boots slip on the wet mud and she tumbles backward onto her back, landing breathless and motionless in the mud right beside Marcus as Julian steps up to tower over both of them.
+```
+
+#### E. Dialogue, Word Budget & Voice Matching
+- **Word Budget:** Enforces `MIN_WORDS = 8` to `MAX_WORDS = 16` per speech clip (calculated at ~2.5 words/second). Prevents rushed or clipped dialogue.
+- **Voice Mapping:** References the actor's verified audio sample (e.g., `Julian Vale speaks in the voice of @Audio1, Cold, quiet, and ruthless with chilling finality: "You chose this ending. Those who betray must die."`).
+- **Lip Sync Rules:** Directs Seedance to animate natural lip movements matching the line only for the visible speaker, while ensuring non-speaking characters keep their mouths closed.
+
+---
+
+### 4. Smooth Video Assembly Integration (`app.py` Integration)
+
+#### The Problem Discovered:
+When `movie_scene_multispeaker.py` originally generated `master_final.mp4`, it used a naive `ffmpeg -c:v copy` concat. Seedance-2 naturally injects **0.5s to 1.5s of dead air, silence, and breathing** before speech or action. Glued together raw, these pauses caused jarring hard cuts and stuttered pacing.
+
+#### The Permanent Upgrade:
+We upgraded `assemble_test_video()` inside `movie_scene_multispeaker.py` to directly invoke the core `app.py` video assembly engine:
+1. **Spectral Voice Onset Detection (`app._lead_in`):** Uses Fourier-transform audio analysis in 20 ms slices to detect tonal voice onset and trim away the dead silence and hesitation before speech.
+2. **Audio Micro-Fades:** Applies subtle fade-ins and fade-outs (20–30 ms) at each cut boundary to eliminate audio clicks, pops, and room-tone drops.
+3. **Lanczos Video Normalization (`app._normalized`):** Standardizes all clips to constant 24.0 fps, SAR=1, Lanczos scaling, and x264 CRF 16 with uncompressed PCM audio before joining.
+
+#### Results on the 60-Clip Master:
+- **Raw Concat Duration:** `305.34 s` (5.09 min)
+- **Smooth Assembly Duration:** `269.06 s` (4.48 min)
+- **Dead air / awkward hesitation trimmed:** **`36.28 seconds`** across the 60 clips!
+- **Outcome:** The mastercut plays with continuous, tight, television-grade cinematic pacing.
+
+---
+
+### 5. 60-Clip Project Milestone Summary
+
+- **Production Status:** 60 / 60 clips completed and verified with zero validation errors.
+- **FLUX Reference Images:** 25 total generations (3 cast portraits + 22 location views across 8 settings).
+- **Seedance Image Injections:** 305 reference image injections (~5.1 per clip) ensuring perfect character and set continuity.
+- **Archival Package:** All 60 `.mp4` video clips, 62 Seedance `.json` request blocks, 40 quality-check inspection frames, the master script, and both master cuts are stored in [`Majore 5 minute Project/`](file:///e:/AI%20Video%20Extender/AI%20Video%20Extender/Majore%205%20minute%20Project).
+
+---
+
+### 6. Full End-to-End Pipeline Automation (2026-10-02)
+
+- **Interleaved Execution (`CLIPS_PER_CHAPTER = 1` default):** Rather than generating 3 clips of script at once, the pipeline now automatically interleaves clip-by-clip:
+  1. Master plan generated (Outline, Scene Bible, Beats, FLUX images).
+  2. Clip 1 script generated by OpenAI -> Clip 1 video generated on kie.ai -> Voice samples harvested.
+  3. Clip 2 script generated with Clip 1 continuity context and banked voice reference -> Clip 2 video generated.
+  4. Continues automatically for all clips.
+  5. Final mastercut video (`master_final.mp4`) automatically assembled with audio onset trimming and Lanczos normalization.
+- **Zero-Touch Automation:** Eliminated all mandatory terminal `[y]` input pauses (prompt review confirmation, per-clip continuation pauses, chapter review pauses, non-critical warnings).
+- **Optional Interactive Mode:** Kept `--interactive` CLI flag for when a human director wants manual review and JSON hot-reloading (`r`) between clips.
+
+---
+
+### 7. Story Videos Frontend & Pipeline Integration (2026-10-02)
+
+- **Third Mode ("Story Videos"):** Fully integrated alongside "Talking Head" and "Story Time" in `dashboard.html` and `app.py`.
+- **Backend Architecture (`app.py`):**
+  - Updated `Mode` type to include `"story_videos"`.
+  - Added `movie_script: dict | None` to the `Clip` model to store rich screenplay data (blocking, dialogue array, actions, shot descriptions).
+  - Added `movie_bible`, `beats`, `cast_bank`, `location_bank`, and `voice_bank` to the `Job` model.
+  - Added `story_videos_uses_5s_clips` validator to `ClipRequest` to guarantee 5-second clips.
+  - Linked Celery `run_generation_job` task to `_run_movie_job`:
+    1. Phase 1: Master plan generation via OpenAI (`movie.write_outline`).
+    2. Phase 1.5: FLUX image generation for cast portraits and Kontext viewpoint angles.
+    3. Phase 2: Interleaved clip scripting (`movie.write_chapter`) and rendering (`movie.render_clip`), with automatic voice banking for newly introduced speakers.
+    4. Phase 3: Automated final assembly (`_assemble`).
+- **Validation & Retry Decoupling (`movie_scene_multispeaker.py`):**
+  - Decoupled soft warnings (`[SOFT]`) from hard validation errors.
+  - Word count fluctuations, speech tempo checks, and semicolons are treated as informational warnings and do not trigger OpenAI retries.
+  - Visual, spatial, and blocking continuity violations (teleportation, character placements, prop errors) strictly trigger OpenAI self-correction loops.
+- **Frontend UI (`dashboard.html`):**
+  - Added "Story Videos" mode radio option (`story_videos`).
+  - Added auto-selection of 5s clip duration when "Story Videos" is selected.
+  - Timeline cards render first dialogue line and location pin emoji.
+  - Detail inspection panel shows full multi-turn dialogue, shot setup, and location.
+
+---
+
+### 8. Prompt Inspection Hover Cards & Interactive Parameter Editor (2026-10-02)
+
+- **Hover Inspection on "Regenerate Script":**
+  - Floating card displaying human-comprehensible components: mode directive, story beat, preceding clip continuity, current line to replace, delivery guidance, Scene Bible world summary, and timing word budget.
+- **Hover Inspection on "Regenerate Scene":**
+  - Floating card displaying what is sent to the AI video model: visual framing & shot setup, spoken line with delivery, reference inputs (`@Video1`, `@Audio1`, `@Image1..N`), audio bed directives, and the full compiled Seedance prompt string.
+- **Interactive Parameter & Prompt Editor Modal:**
+  - Added **"✏️ Edit & Customize"** button in clip details.
+  - Modal with tabs for **Video Scene Input** and **Script & Dialogue**.
+  - Direct form controls for dialogue lines, emotional delivery, visual scene description, camera shot, and action steps.
+  - **Live Prompt Compiler:** Monospace preview box that dynamically updates as the user types, showing the exact prompt Seedance will receive.
+  - **Save vs. Regenerate:**
+    - `💾 Save Edits`: Updates clip via new `PATCH /jobs/{job_id}/clips/{clip_index}` without triggering video generation.
+    - `✨ Regenerate with Edits`: Dispatches regeneration with the custom parameters applied.
+  - **Custom Edit Protection & Bypass Logic:**
+    - If a clip has been custom-edited (even a single character in Dialogue, Delivery, Visual, or Compiled Prompt Preview), `clip.custom_edited` is marked `True`.
+    - Regenerating a custom-edited clip strictly bypasses OpenAI (`regenerate_line` and `regenerate_visual` are bypassed), rendering the video directly with the user's exact customized text.
+    - If a clip is untouched, standard automated OpenAI rewriting occurs.
+    - Added `↺ Reset to AI Auto` option in the editor to revert a clip back to automated AI generation if desired.
+- **Backend Regeneration Support Across All Modes:**
+  - Updated `_regenerate` and Celery tasks to accept custom field overrides.
+  - Added `_render_movie_clip_at` enabling Story Videos clip regeneration as well.
+
+---
+
 ## Carried forward (do not lose)
 
 **Parked (no action now)**
@@ -723,4 +913,24 @@ Skipped for now at your request (2026-09-27), to come back to after Prompt 12. I
 - Docker Desktop does not start with Windows on this machine: after a restart, start it before `docker-compose` commands. This project's containers have no restart policy, so they stay stopped until `docker-compose up`.
 - Webhooks instead of polling are possible later (you have ngrok); it needs a public callback route and polling kept as a backup (`PLAN.md` Section 7, question 10).
 
-**Still open (`PLAN.md` Section 7):** script context on regenerate, copyright-filter retry, mid-clip bridging quality, what the regenerate buttons mean in Story Time, aspect ratio, webhooks, cost estimation, the pronoun in the Talking Head template, and the parked model question for motion shots. Resolved on 2026-09-27: question 13 (Talking Head references on longer chains, by the 720p master) and question 14 (Story Time keeps a chained, now muted, video reference; its long-chain quality is a watch item).
+**Still open (`PLAN.md` Section 7):** script context on regenerate, copyright-filter retry, mid-clip bridging quality, what the regenerate buttons mean in Story Time, webhooks, cost estimation, the pronoun in the Talking Head template, and the parked model question for motion shots. Resolved on 2026-09-27: question 13 (Talking Head references on longer chains, by the 720p master) and question 14 (Story Time keeps a chained, now muted, video reference; its long-chain quality is a watch item). Resolved on 2026-10-02: Aspect ratio set to 9:16 vertical and NSFW filter disabled across all generations.
+
+---
+
+## Update: 9:16 Aspect Ratio and NSFW Filter Disabled (2026-10-02)
+
+- **9:16 Vertical Framing:**
+  - `app.py`: `_clip_input` now includes `"aspect_ratio": "9:16"` on every Seedance clip creation request.
+  - `movie_scene_multispeaker.py`: `generate_flux_image` now sends `"aspect_ratio": "9:16"` for `flux1-kontext` character portraits and location master/angle generations.
+  - `FINAL_SIZES` in `app.py` updated to 9:16 portrait dimensions: `{"480p": (496, 864), "720p": (720, 1280)}`.
+- **NSFW Checker Disabled:**
+  - `_clip_input` in `app.py` sets `"nsfw_checker": False`.
+  - `generate_flux_image` in `movie_scene_multispeaker.py` sets `"nsfw_checker": False`.
+- **UI & Dashboard Updates:**
+  - `dashboard.html`: `.seg video` and `.final video` updated with `aspect-ratio: 9/16` and `object-fit: contain` for vertical display.
+  - Hover popover inspection displays `Aspect Ratio: 9:16 (Vertical)` and `NSFW Checker: Disabled`.
+  - Resolution selector hint updated to reflect vertical video and disabled NSFW filtering.
+
+
+
+

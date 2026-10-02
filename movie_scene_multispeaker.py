@@ -1,6 +1,10 @@
 """
 Movie Scene Mode — Cast Bank Architecture (standalone, does NOT modify app.py)
 
+Fully automated end-to-end execution:
+Master Plan -> Clip 1 Script -> Clip 1 Video -> Clip 2 Script -> Clip 2 Video -> ... -> Final Master Video.
+Use --interactive if you want manual review pauses between clips.
+
 RUN in PowerShell:
   $cid = (docker-compose ps -q api).Trim()
   docker cp movie_scene_multispeaker.py "${cid}:/srv/media/movie_scene_multispeaker.py"
@@ -43,7 +47,7 @@ CLIP_SECONDS = 5
 RESOLUTION = "480p"
 OUTPUT_DIR = Path("/srv/media/movie_scene_multispeaker")
 SCRIPTS_DIR = Path("/srv/media/movie_scene_scripts")  # saved scripts; outside OUTPUT_DIR, which every run wipes
-CLIPS_PER_CHAPTER = 3  # 15 seconds per chapter — maximum OpenAI focus per clip
+CLIPS_PER_CHAPTER = 1  # 1 clip (5 seconds) per chapter: write script for clip, then generate video for clip, then next
 WORDS_PER_SECOND = 2.5  # speaking pace every line is timed at
 MIN_WORDS, MAX_WORDS = 8, 16  # per SPEECH clip, all speakers together
 MAX_VOICE_REFS = 3  # kie.ai takes at most 3 reference audios per request
@@ -68,7 +72,11 @@ def generate_flux_image(prompt: str, input_image: str = "") -> str:
     headers = {"Authorization": f"Bearer {KIE_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": "flux1-kontext",
-        "input": {"prompt": prompt, "aspect_ratio": "16:9"}
+        "input": {
+            "prompt": prompt,
+            "aspect_ratio": "9:16",
+            "nsfw_checker": False,
+        }
     }
     if input_image:
         payload["input"]["input_image"] = input_image
@@ -106,16 +114,20 @@ def _view_prompt(view: str) -> str:
 # ---------------------------------------------------------------------------
 # Step 0 — preflight
 # ---------------------------------------------------------------------------
-def preflight(fresh: bool):
+def preflight(fresh: bool, interactive: bool = False):
     """A fresh video run starts from an empty output folder. --resume keeps it, and so does --script-only (it makes no files there)."""
     if not OPENAI_API_KEY: sys.exit("OPENAI_API_KEY is not set")
     if not KIE_API_KEY: sys.exit("KIE_API_KEY is not set")
 
     old_clips = sorted((OUTPUT_DIR / "clips").glob("clip_*.mp4")) if OUTPUT_DIR.exists() else []
     if fresh and OUTPUT_DIR.exists():
-        if old_clips and input(f"\nThe output folder still has {len(old_clips)} paid clip(s) from an earlier run. A new run deletes them "
-                               "(to continue that run instead, add --resume). Delete them and start fresh? [y/n]: ").strip().lower() != "y":
-            sys.exit("Nothing was deleted or generated.")
+        if old_clips:
+            if interactive:
+                if input(f"\nThe output folder still has {len(old_clips)} paid clip(s) from an earlier run. A new run deletes them "
+                         "(to continue that run instead, add --resume). Delete them and start fresh? [y/n]: ").strip().lower() != "y":
+                    sys.exit("Nothing was deleted or generated.")
+            else:
+                print(f"\n[Auto] Clearing output folder containing {len(old_clips)} earlier clip(s) for a fresh run.")
         shutil.rmtree(OUTPUT_DIR)
     if not fresh and (OUTPUT_DIR / "norm").exists():
         shutil.rmtree(OUTPUT_DIR / "norm")  # joining cache, keyed by clip file name; rebuilt so a remade clip is never joined from a stale copy
@@ -332,19 +344,29 @@ def _state_so_far(prev_clips: list) -> str:
 def _chapter_prompt(topic: str, chap_idx: int, total_chapters: int, beats: list, bible: dict, prev_clips: list) -> str:
     first, mine = _chapter_beats(beats, chap_idx)
     last = first + len(mine) - 1
+    clip_range_str = f"clips {first} to {last}" if first != last else f"clip {first}"
+    beat_range_str = f"beats {first} to {last}" if first != last else f"beat {first}"
+    clip_count_str = f"{len(mine)} consecutive clips" if len(mine) > 1 else "1 clip"
     plan = "\n".join(_beat_line(n, b) for n, b in enumerate(beats, 1))
     locations = "\n".join(f"- {loc['id']}: {loc['description']} LAYOUT: {loc.get('layout', '')}" for loc in bible["locations"])
     props = "\n".join(f"- {p['id']}: {p['description']}" for p in bible.get("props", [])) or "- (none)"
     bridge = ""
     if prev_clips:
-        bridge = "Everything filmed so far, in order. Continue straight on from the last clip, and never contradict or repeat any of it:\n"
-        for n, c in enumerate(prev_clips, 1):
-            bridge += f"Clip {n} | {c['location_id']} | on screen: {', '.join(c['present_characters']) or 'nobody (establishing shot)'}\n"
+        window_size = 3
+        recent = prev_clips[-window_size:]
+        recent_start = len(prev_clips) - len(recent) + 1
+        if len(prev_clips) > window_size:
+            bridge = f"Previous scene context: Clips 1 to {recent_start - 1} have already played out according to the beat plan above.\n"
+            bridge += f"Recent filmed clips (clips {recent_start} to {first - 1}) for direct physical & dialogue continuity:\n"
+        else:
+            bridge = "Everything filmed so far, in order. Continue straight on from the last clip, and never contradict or repeat any of it:\n"
+        for n, c in enumerate(recent, recent_start):
+            bridge += f"Clip {n} | {c['location_id']} | on screen: {', '.join(c.get('present_characters', [])) or 'nobody (establishing shot)'}\n"
             for s in c.get("action_steps", []):
                 bridge += f"  [{s['start_est']}s to {s['end_est']}s] {s['action']}\n"
-            for d in c['dialogue']:
+            for d in c.get("dialogue", []):
                 bridge += f"  {d['speaker']} ({d['delivery']}): \"{d['line']}\"\n"
-            bridge += f"  Acting and sound: {c['others']}\n"
+            bridge += f"  Acting and sound: {c.get('others', '')}\n"
         state = _state_so_far(prev_clips)
         if state:
             bridge += f"\nCURRENT STATE at the end of clip {first - 1} (carry every item forward exactly unless an action step in your clips changes it):\n{state}\n"
@@ -352,16 +374,14 @@ def _chapter_prompt(topic: str, chap_idx: int, total_chapters: int, beats: list,
     spoken = _speakers_so_far(prev_clips)
     not_yet = ", ".join(c["name"] for c in bible["characters"] if c["name"].lower() not in spoken) or "none"
 
-    return f"""You are a world-class Hollywood cinematographer and screenwriter directing CHAPTER {chap_idx + 1} of {total_chapters}: clips {first} to {last} of the video.
+    return f"""You are a world-class Hollywood cinematographer and screenwriter directing an AI-generated movie.
 IMPORTANT: every clip is rendered on its own by a video model that sees ONLY that clip's text and reference pictures, with no memory of any other clip. Anything you do not state in the clip (who stands where, sitting or standing, what someone holds, who opens a door) the model will invent, and it will contradict the story. So every clip must be complete on its own.
+
 The user's story prompt (the source of truth): {topic}
 Scene Bible: {json.dumps(bible)}
-The beat plan for the whole video, one beat per clip, each marked SPEECH or SILENT. Write ONLY clips {first} to {last}, one clip per beat, in order; the other beats show what comes before and after, so do not repeat earlier beats or jump ahead:
+
+The beat plan for the whole video, one beat per clip, each marked SPEECH or SILENT:
 {plan}
-
-{bridge}
-
-You must generate EXACTLY {len(mine)} consecutive clips of {CLIP_SECONDS} seconds each. This is a high-stakes, deeply dramatic movie.
 
 RULES for the clips:
 - "location_id": the place its beat is set in (in [brackets] in the beat plan), one of these locations, and the same id for every camera angle inside the same place (every clip there is rendered from fixed pictures of it, so the room always looks the same). Follow each place's LAYOUT exactly: doors, stairs and furniture are always where it puts them.
@@ -411,11 +431,11 @@ RULES for the clips:
   - STRICT RULE: NO NARRATORS. Only characters who are "visible" in the blocking can speak.
   - KNOWLEDGE: characters only say what they know at that moment. Nobody mentions, reacts to or answers something they have not noticed yet (see "awareness"). A character whose arrival must come as a surprise never calls out, greets anyone or announces themselves before the discovery.
   - PRIVACY: a secret is only spoken when the speakers have a reason to believe the person it's about can't hear (they saw them leave, a door closed, water is running, they are far away), and their "awareness" says why (e.g. 'believes Sam went out to the car park'). A character who secretly overhears is somewhere plausible for that, and the speakers don't know they are there.
-  - FACES ON SCREEN: whenever a character speaks, their face must be clearly visible in the shot. Never give a line to someone seen from behind, out of focus, out of frame or off screen; never during an over-the-shoulder shot from behind the speaker or the speaker's own POV; never during a close-up of hands, objects or a body part. When two characters speak in the same clip, frame both faces (two-shot, profile two-shot, medium shot). At most {MAX_VOICE_REFS} different speakers per clip.
+  - SPEAKERS IN FRAME: whenever a character speaks, they must be in the frame (direct view, profile, three-quarter angle, or pacing/moving naturally in the shot). Natural cinematic movement—such as turning while talking, walking, or pacing the room—is encouraged. Never give dialogue to a character who is completely off-screen, out of frame, or seen strictly from behind with no head/body context; never during an over-the-shoulder shot from behind the speaker or the speaker's own POV; never during a close-up exclusively on hands, objects, or floor. When two characters speak in the same clip, frame both characters (two-shot, profile two-shot, medium shot). At most {MAX_VOICE_REFS} different speakers per clip.
   - FLOWING DIALOGUE ACROSS CUTS: when two or more characters talk, dialogue can either be a short exchange within the clip OR a single punchy line that hangs and is answered in the NEXT clip. Dialogue DOES NOT have to resolve within the same 5-second clip! A clip can end on a shocking question, proposition, or cliffhanger line ('Only one of you makes the team, Oliver.'), with the next clip starting immediately with the other character's reaction and spoken reply. A character who is alone may say short, meaningful lines to themselves only when the beat is SPEECH, never filler.
   - PLAIN, EVERYDAY SPEECH: characters talk like real people in a modern film, in simple, common words and short sentences that anyone understands the first time they hear them. No formal, poetic or old-fashioned phrasing, no fancy vocabulary, no jargon (not 'solicitor' or 'northbound' but 'lawyer' or 'the last train'), and no semicolons.
   - TIMING: "start_est" and "end_est" are seconds from the start of THIS clip (0 to {CLIP_SECONDS}), not of the whole video. Lines come in order and never overlap, with 0.2 to 0.5 s between speakers; the first line starts at 0.2 s or later and the last ends by {CLIP_SECONDS - 0.2:g} s. Each line's window is at least its word count divided by {WORDS_PER_SECOND:g} seconds long.
-  - VOICE SAMPLES: characters who have not spoken yet: {not_yet}. The FIRST line each of them speaks is cut out of the clip and reused as that character's voice for the rest of the video, so it must be at least 5 words and 2 seconds long, spoken in a clear, fully voiced way (quiet or low is fine; never whispered, shouted, sobbed or breathless), and never a short reply.
+  - VOICE SAMPLES: The FIRST line a character speaks in the film is cut out of the clip and reused as that character's voice for the rest of the video, so it must be at least 5 words and 2 seconds long, spoken in a clear, fully voiced way (quiet or low is fine; never whispered, shouted, sobbed or breathless), and never a short reply.
   - "delivery": how THIS line is said: emotion, volume and pace (e.g., 'shaking with rage', 'cold, clipped and quiet'). Never describe the voice itself (tenor, baritone, accent): the system already sends each character's voice. The volume must match the story: if the story or beat says someone speaks quietly, whispers or shouts, the delivery says so (a secret is never at normal conversational volume). A character's very first line (their voice sample) may be quiet or low, but never whispered, shouted, sobbed or breathless.
   - STORY: keep the meaning of every line the user wrote for a character (quoted or described). Never write a line that contradicts the user's story or anything said or shown earlier (e.g. if a return is a surprise, nobody knew about it).
 - "others": the visible acting and ambient sound in this clip. Write these things:
@@ -425,6 +445,16 @@ RULES for the clips:
 - AI VIDEO LIMITATIONS (STRICT):
   - NO HAND-OFFS: AI cannot animate characters handing items to each other (e.g., handing cash, passing a phone). Instead, describe the item already in their hand, or being placed on a counter.
   - SPATIAL BLOCKING (SHOCK SCENES ONLY): when a character is meant to STOP and react the moment they open a door or enter a room (e.g., catching someone doing something), put them "standing frozen in the open doorway" in the blocking, never "enters the room and freezes". This prevents Seedance from making him walk deep into the room before stopping. For any normal walking scene, write the walking naturally.
+
+=======================================================
+CURRENT PRODUCTION CONTINUITY & ASSIGNMENT:
+=======================================================
+{bridge}
+
+CALL SHEET FOR THIS ASSIGNMENT:
+- Characters who have not spoken yet in the film so far: {not_yet}. (Remember: their first line becomes their voice sample).
+- Directing {'CLIP ' + str(first) if first == last else 'CHAPTER ' + str(chap_idx + 1)} of {total_chapters}: write ONLY {clip_range_str} of the video, matching {beat_range_str} in the beat plan above. The other beats show what comes before and after; do not repeat earlier beats or jump ahead.
+- You must generate EXACTLY {clip_count_str} of {CLIP_SECONDS} seconds each. This is a high-stakes, deeply dramatic movie.
 Return strictly valid JSON matching the schema."""
 
 def _supervisor_prompt(topic: str, bible: dict, beats: list, prev_clips: list, new_clips: list, first: int) -> str:
@@ -603,9 +633,9 @@ def _check_chapter(clips: list, bible: dict, first_clip_number: int, chapter_bea
         if turns:
             total = sum(_words(t["line"]) for t in turns)
             if not MIN_WORDS <= total <= MAX_WORDS:
-                problems.append(f"clip {n}: {total} words of dialogue; a SPEECH clip needs {MIN_WORDS} to {MAX_WORDS}")
+                problems.append(f"[SOFT] clip {n}: {total} words of dialogue; a SPEECH clip needs {MIN_WORDS} to {MAX_WORDS}")
         elif beat.get("speech", True):
-            problems.append(f"clip {n}: its beat is SPEECH, so it needs {MIN_WORDS} to {MAX_WORDS} words of dialogue")
+            problems.append(f"[SOFT] clip {n}: its beat is SPEECH, so it needs {MIN_WORDS} to {MAX_WORDS} words of dialogue")
         if len({t["speaker"].lower() for t in turns}) > MAX_VOICE_REFS:
             problems.append(f"clip {n}: more than {MAX_VOICE_REFS} different speakers; the maximum is {MAX_VOICE_REFS}")
         visible = {b["character"].lower() for b in clip.get("blocking", []) if b["in_frame"] == "visible"} if "blocking" in clip else present
@@ -615,13 +645,13 @@ def _check_chapter(clips: list, bible: dict, first_clip_number: int, chapter_bea
             if who.lower() not in visible:
                 problems.append(f"clip {n}: {who} speaks but is not 'visible' in the blocking (a speaker's face must be on screen)")
             if ";" in t["line"]:
-                problems.append(f"clip {n}: {who}'s line has a semicolon; people don't talk like that, split it into short plain sentences")
+                problems.append(f"[SOFT] clip {n}: {who}'s line has a semicolon; people don't talk like that, split it into short plain sentences")
             if not 0 <= t["start_est"] < t["end_est"] <= CLIP_SECONDS:
                 problems.append(f"clip {n}: {who}'s line is timed {t['start_est']} to {t['end_est']} s; times are seconds inside this {CLIP_SECONDS} s clip")
             elif t["start_est"] < prev_end:
                 problems.append(f"clip {n}: {who}'s line starts before the previous line ends")
             elif words > span * WORDS_PER_SECOND + 0.5:
-                problems.append(f"clip {n}: {who}'s line has {words} words in {span:.1f} s; it needs at least {words / WORDS_PER_SECOND:.1f} s")
+                problems.append(f"[SOFT] clip {n}: {who}'s line has {words} words in {span:.1f} s; it needs at least {words / WORDS_PER_SECOND:.1f} s")
             prev_end = max(prev_end, t["end_est"])
             if who.lower() not in spoken:
                 spoken.add(who.lower())
@@ -632,31 +662,41 @@ def _check_chapter(clips: list, bible: dict, first_clip_number: int, chapter_bea
 
 def _ask_checked(what: str, prompt: str, request: str, name: str, schema: dict, check) -> tuple[dict, list[str]]:
     """Ask OpenAI, check the answer, and ask it to fix what's wrong (up to SCRIPT_RETRIES times).
-    Returns the answer and whatever problems are still left."""
+    Returns the answer and whatever problems are still left.
+    Problems prefixed with [SOFT] are warnings only (e.g. word count) and do not trigger retries."""
+    SOFT = "[SOFT] "
     for attempt in range(SCRIPT_RETRIES + 1):
         data = _ask_openai_json(prompt, request, name, schema)
         problems = check(data)
-        if not problems:
+        soft = [p for p in problems if p.startswith(SOFT)]
+        hard = [p for p in problems if not p.startswith(SOFT)]
+        if soft:
+            print(f"  {what} check: {len(soft)} soft warning(s) (will not retry):")
+            for p in soft:
+                print(f"    ⚡ {p[len(SOFT):]}")
+        if not hard:
             break
         if attempt < SCRIPT_RETRIES:
-            print(f"  {what} check: {len(problems)} problem(s), asking OpenAI to fix them (retry {attempt + 1}/{SCRIPT_RETRIES}):", flush=True)
-            for p in problems:
-                print(f"    - {p}", flush=True)
+            print(f"  {what} check: {len(hard)} problem(s), asking OpenAI to fix them (retry {attempt + 1}/{SCRIPT_RETRIES}):")
+            for p in hard:
+                print(f"    - {p}")
             request = (
-                "Here is your previous answer:\n" + json.dumps(data) + "\n\nIt breaks these rules:\n- " + "\n- ".join(problems)
-                + "\n\nReturn the whole answer again with every one of these fixed, keeping everything else."
+                "Here is your previous answer:\n" + json.dumps(data) + "\n\nIt breaks these rules:\n- " + "\n- ".join(hard)
+                + "\n\nCRITICAL INSTRUCTION: DO NOT hallucinate a completely new story. You must remain 100% faithful to the Master Plan Beat and the previous clip's ending state. ONLY change the specific details (like posture, props, or word count) necessary to fix the broken rules. Do not rewrite the core action steps unless explicitly required to fix a teleportation or logic error. Return the fixed JSON keeping everything else identical."
             )
-    if problems:
-        print(f"\n  ⚠ {what} still breaks {len(problems)} rule(s) after {SCRIPT_RETRIES} retries:")
-        for p in problems:
+    # Strip [SOFT] prefix for the final report
+    all_remaining = hard + [p[len(SOFT):] for p in soft]
+    if hard:
+        print(f"\n  ⚠ {what} still breaks {len(hard)} rule(s) after {SCRIPT_RETRIES} retries:")
+        for p in hard:
             print(f"    - {p}")
-    return data, problems
+    return data, all_remaining
 
 def write_outline(topic: str, duration: int, total_clips: int) -> tuple[dict, list[str]]:
     return _ask_checked("Outline", _outline_prompt(topic, duration, total_clips), "Generate Outline", "movie_outline",
                         _outline_schema(), lambda d: _check_outline(d, total_clips))
 
-def write_chapter(topic: str, chap_idx: int, total_chapters: int, beats: list, bible: dict, prev_clips: list) -> tuple[dict, list[str]]:
+def write_chapter(topic: str, chap_idx: int, total_chapters: int, beats: list, bible: dict, prev_clips: list, supervise: bool = False) -> tuple[dict, list[str]]:
     first, mine = _chapter_beats(beats, chap_idx)
     schema = _chapter_schema([loc["id"] for loc in bible["locations"]], [c["name"] for c in bible["characters"]],
                              [p["id"] for p in bible.get("props", [])])
@@ -664,8 +704,9 @@ def write_chapter(topic: str, chap_idx: int, total_chapters: int, beats: list, b
     def check(data: dict) -> list[str]:
         _normalize_clips(data["clips"], bible)
         problems = _check_chapter(data["clips"], bible, first, mine, prev_clips)
-        # The supervisor reads for logic only once the mechanical rules pass (it costs one more OpenAI call).
-        return problems or supervise_chapter(topic, bible, beats, prev_clips, data["clips"], first)
+        if not problems and supervise:
+            return supervise_chapter(topic, bible, beats, prev_clips, data["clips"], first)
+        return problems
 
     return _ask_checked(
         f"Chapter {chap_idx + 1}", _chapter_prompt(topic, chap_idx, total_chapters, beats, bible, prev_clips), "Generate Script",
@@ -781,7 +822,7 @@ def build_multi_prompt(clip: dict, bible: dict, cast_bank: dict[str, str], locat
             else:
                 parts.append(f"[{turn['start_est']}s to {turn['end_est']}s] {spkr} speaks {char['voice'].rstrip('. ') if char else 'naturally'}, {delivery}: \"{turn['line']}\"")
         speakers = list(dict.fromkeys(t["speaker"] for t in clip["dialogue"]))
-        parts.append(f"{_join(speakers)} {'is' if len(speakers) == 1 else 'are'} clearly visible on camera, face and lips in view, while speaking. Natural lip sync: each person's lips move only during their own line; everyone else keeps their mouth closed.")
+        parts.append(f"{_join(speakers)} {'is' if len(speakers) == 1 else 'are'} in the frame while speaking; natural dialogue delivery and lip movement matching their line, whether seen in direct view, profile, or dynamic cinematic motion; everyone else keeps their mouth closed.")
     if others:
         parts.append(_plain(others) + ".")
     parts.append("No background music.")
@@ -814,37 +855,39 @@ def trim_windowed_voice(video_path: Path, speaker_name: str, start_est: float, e
     if abs_end_sec - abs_start_sec < VOICE_MIN_SECONDS:
         return None  # kie.ai rejects it as a reference; the speaker's next line gets tried instead
     abs_end_sec = min(abs_end_sec, abs_start_sec + VOICE_MAX_SECONDS)
+    voice_path.parent.mkdir(parents=True, exist_ok=True)
     _run_ffmpeg("-i", str(video_path), "-vn", "-ss", f"{abs_start_sec:.4f}", "-to", f"{abs_end_sec:.4f}", "-c:a", "pcm_s16le", str(voice_path))
     return voice_path
 
 def assemble_test_video(clip_paths: list[Path], output_filename: str) -> Path:
     if not clip_paths: return None
     final_path = OUTPUT_DIR / output_filename
-    probe_out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height,r_frame_rate", "-select_streams", "v:0", "-of", "json", str(clip_paths[0])], capture_output=True, text=True)
-    info = json.loads(probe_out.stdout)["streams"][0]
-    width, height, fps = info["width"], info["height"], info["r_frame_rate"]
-    norm_dir = OUTPUT_DIR / "norm"
-    norm_dir.mkdir(exist_ok=True)
-    norm_paths = []
-    for src in clip_paths:
-        norm = norm_dir / f"norm_{src.name}.mkv"
-        if not norm.exists():
-            _run_ffmpeg("-i", str(src), "-filter_complex", f"[0:v]scale={width}:{height}:flags=lanczos,setsar=1,fps={fps},format=yuv420p[v];[0:a]aformat=sample_fmts=s16:sample_rates=48000:channel_layouts=stereo,afade=t=in:d=0.02,afade=t=out:st={CLIP_SECONDS - 0.1}:d=0.02[a]", "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-c:a", "pcm_s16le", str(norm))
-        norm_paths.append(norm)
+    probes = [app._probe(p) for p in clip_paths]
+    width, height, fps = probes[0]["width"], probes[0]["height"], probes[0]["fps"]
+    norm_parts = []
+    for i, p in enumerate(clip_paths):
+        trim = (i > 0)
+        norm_file = app._normalized(p, width, height, fps, trim_lead_in=trim)
+        norm_parts.append(norm_file)
     listing = OUTPUT_DIR / f"concat_{uuid.uuid4().hex[:6]}.txt"
-    listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in norm_paths), encoding="utf-8")
+    listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in norm_parts), encoding="utf-8")
     part = OUTPUT_DIR / f"part_{output_filename}"
-    _run_ffmpeg("-f", "concat", "-safe", "0", "-i", str(listing), "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(part))
+    app._run_ffmpeg(
+        "-f", "concat", "-safe", "0", "-i", str(listing),
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(part),
+    )
     part.replace(final_path)
     return final_path
 
 def _write_record(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
 
-def render_clip(n: int, prompt: str, image_urls: list[str], audio_urls: list[str]):
+def render_clip(n: int, prompt: str, image_urls: list[str], audio_urls: list[str], interactive: bool = False):
     """Generate clip n on kie.ai, recording every request and reply in requests/clip_NN.json.
     A clip kie.ai refuses is retried once by itself (after the audio copyright filter, with stricter no-music wording);
-    after that you choose: retry, skip the clip, or quit (everything made so far is kept for --resume).
+    in interactive mode, you choose: retry, skip the clip, or quit (everything made so far is kept for --resume).
+    In automated mode (default), it retries up to 2 times, then safely halts to preserve credits.
     Returns kie.ai's reply, "skip" or "quit"."""
     record_path = OUTPUT_DIR / "requests" / f"clip_{n:02d}.json"
     old = json.loads(record_path.read_text(encoding="utf-8")) if record_path.exists() else {}
@@ -852,6 +895,7 @@ def render_clip(n: int, prompt: str, image_urls: list[str], audio_urls: list[str
     if "sent_to_kie" in old and "kie_reply" not in old and "attempts" not in old:  # written before failures were recorded
         record["attempts"].append({"sent_to_kie": old["sent_to_kie"], "error": "failed in an earlier run (no reply recorded)"})
     auto_retried = False
+    retries_left = 2
     while True:
         # The exact request body generate_clip() sends (same helper), saved before sending and again with kie.ai's reply.
         record["sent_to_kie"] = {"model": app.KIE_MODEL, "input": _clip_input(prompt, RESOLUTION, CLIP_SECONDS, True, None, audio_urls or None, image_urls or None)}
@@ -872,6 +916,14 @@ def render_clip(n: int, prompt: str, image_urls: list[str], audio_urls: list[str
                 else:
                     print("    retrying once...", flush=True)
                 continue
+            if not interactive:
+                if retries_left > 0:
+                    retries_left -= 1
+                    print(f"    [Auto] Retrying clip {n} ({retries_left} retries left)...", flush=True)
+                    time.sleep(5)
+                    continue
+                print(f"    ✗ [Auto] Clip {n} failed after retries. Stopping execution to preserve credits.", flush=True)
+                return "quit"
             ans = ""
             while ans not in ("r", "s", "q"):
                 ans = input(f"    Clip {n}: [r] retry  [s] skip it  [q] quit (everything made so far is kept for --resume): ").strip().lower()
@@ -895,11 +947,14 @@ def main():
     parser.add_argument("--script-only", action="store_true")
     parser.add_argument("--from-script", help="Use a saved script (JSON) instead of asking OpenAI for a new one; its length replaces --duration")
     parser.add_argument("--resume", action="store_true", help="With --from-script: continue an interrupted run, keeping its clips, pictures and voice samples")
-    parser.add_argument("--chapter-clips", type=int, default=CLIPS_PER_CHAPTER, help=f"Clips OpenAI writes per chapter (default {CLIPS_PER_CHAPTER})")
+    parser.add_argument("--chapter-clips", type=int, default=CLIPS_PER_CHAPTER, help=f"Clips OpenAI writes per chapter (default {CLIPS_PER_CHAPTER}: script-then-generate each clip)")
+    parser.add_argument("--interactive", action="store_true", help="Pause for manual review and prompt confirmation between clips (default is automated)")
+    parser.add_argument("-y", "--yes", action="store_true", help="Automatically proceed (default behavior)")
+    parser.add_argument("--supervise", action="store_true", help="Enable secondary AI script supervisor call (costs extra OpenAI tokens; default off)")
     args = parser.parse_args()
     CLIPS_PER_CHAPTER = max(1, args.chapter_clips)
-    if args.resume and (not args.from_script or args.script_only):
-        sys.exit("--resume continues an interrupted video run: use it with --from-script (the same saved script) and without --script-only.")
+    if args.resume and not args.from_script:
+        sys.exit("--resume continues an interrupted run: use it with --from-script (the same saved script).")
 
     saved = None
     if args.from_script:
@@ -934,7 +989,7 @@ def main():
 
     if args.resume and not (OUTPUT_DIR / "requests" / "images.json").exists():
         sys.exit(f"Nothing to resume: {OUTPUT_DIR} has no run with pictures in it. Nothing was generated.")
-    preflight(fresh=not args.script_only and not args.resume)
+    preflight(fresh=not args.script_only and not args.resume, interactive=args.interactive)
 
     print("\n=======================================================")
     print(f"[MASTER PLAN] Planning {total_clips} clips ({chapters_count} chapters)...")
@@ -971,9 +1026,13 @@ def main():
     print("\n📋 BEAT PLAN (one beat per clip):")
     for n, b in enumerate(beats, 1):
         print(f"  {n:02d}. [{b['location_id']}] {'' if b.get('speech', True) else '(silent) '}{b['action']}")
-    if problems and not args.script_only and input("\nContinue with this plan anyway? [y/n]: ").strip().lower() != "y":
-        print("Stopped before anything was generated.")
-        return
+    if problems and not args.script_only:
+        if args.interactive:
+            if input("\nContinue with this plan anyway? [y/n]: ").strip().lower() != "y":
+                print("Stopped before anything was generated.")
+                return
+        else:
+            print("\n  [Auto] Outline check reported minor issues, proceeding with beat plan...")
 
     cast_bank: dict[str, str] = {}
     location_bank: dict[str, list[str]] = {}
@@ -1029,9 +1088,12 @@ def main():
         missing = [name for name, url in cast_bank.items() if not url] + [lid for lid, urls in location_bank.items() if not urls]
         if missing:
             print(f"\n  ⚠ No image for: {', '.join(missing)}. They would be drawn from text alone and change look from clip to clip.")
-            if input("Continue anyway? [y/n]: ").strip().lower() != "y":
-                print("Stopped before any video was generated.")
-                return
+            if args.interactive:
+                if input("Continue anyway? [y/n]: ").strip().lower() != "y":
+                    print("Stopped before any video was generated.")
+                    return
+            else:
+                print("  [Auto] Proceeding with video generation...")
 
     all_clip_video_paths = []
     resume_cmd = f"docker-compose exec api python /srv/media/movie_scene_multispeaker.py --from-script {args.from_script or script_path} --resume"
@@ -1039,22 +1101,33 @@ def main():
     all_clips_json = []
     chapters_json = list(saved_chapters)
 
+    if args.script_only and len(saved_chapters) < chapters_count and saved_chapters:
+        print(f"  Fast-forwarding {len(saved_chapters)} already-saved clips to resume at Clip {len(saved_chapters) + 1}...\n")
+
     for chap_idx in range(chapters_count):
         chap_num = chap_idx + 1
-        print(f"\n=======================================================")
-        print(f"[CHAPTER {chap_num}/{chapters_count}] {'Saved script' if chap_idx < len(saved_chapters) else 'Generating AI Script...'}")
-        print("=======================================================")
+        unit_label = f"CLIP {chap_num}/{total_clips}" if CLIPS_PER_CHAPTER == 1 else f"CHAPTER {chap_num}/{chapters_count}"
 
         if chap_idx < len(saved_chapters):
             script_data = {"clips": saved_chapters[chap_idx]}
             _normalize_clips(script_data["clips"], bible)
+            # Fast-forward past already-saved chapters when generating remaining scripts
+            if args.script_only and len(saved_chapters) < chapters_count:
+                all_clips_json.extend(script_data["clips"])
+                continue
             first, mine = _chapter_beats(beats, chap_idx)
             problems = _check_chapter(script_data["clips"], bible, first, mine, all_clips_json)
-            _report(f"Saved chapter {chap_num}", problems)
+            _report(f"Saved {unit_label.lower()}", problems)
+            all_clips_json.extend(script_data["clips"])
         else:
-            script_data, problems = write_chapter(topic, chap_idx, chapters_count, beats, bible, all_clips_json)
+            print(f"\n=======================================================")
+            print(f"[{unit_label}] Generating AI Script...")
+            print("=======================================================")
+            script_data, problems = write_chapter(topic, chap_idx, chapters_count, beats, bible, all_clips_json, supervise=getattr(args, "supervise", False))
             chapters_json.append(script_data["clips"])
-            save_script(script_path, topic, bible, beats, chapters_json)
+            if script_path:
+                save_script(script_path, topic, bible, beats, chapters_json)
+            all_clips_json.extend(script_data["clips"])
         if problems and not args.script_only:
             all_exist = True
             for c_idx_rel in range(CLIPS_PER_CHAPTER):
@@ -1064,16 +1137,18 @@ def main():
                     break
             if args.resume and all_exist:
                 pass
-            elif input(f"\nGenerate chapter {chap_num} anyway? [y/n]: ").strip().lower() != "y":
-                print(f"Stopping before chapter {chap_num}; nothing was generated for it.")
-                break
-        all_clips_json.extend(script_data["clips"])
+            elif args.interactive:
+                if input(f"\nGenerate {unit_label.lower()} anyway? [y/n]: ").strip().lower() != "y":
+                    print(f"Stopping before {unit_label.lower()}; nothing was generated for it.")
+                    break
+            else:
+                print(f"  [Auto] Proceeding to generate video for {unit_label}...")
 
         if args.script_only:
             print("\n🎬 DIRECTOR'S CUT: SCRIPT & PROMPT PREVIEW")
             print("   (The real run sends this same text, except that the place, each character and each already-sampled voice")
             print("    point at their pictures or voice sample: @Image1+ for the place's views, then the cast, @Audio1+ for voices.)")
-            print(f"\n🎥 SEEDANCE VIDEO CLIPS (Chapter {chap_num}):")
+            print(f"\n🎥 SEEDANCE VIDEO CLIPS ({unit_label}):")
             for c_idx, clip_data in enumerate(script_data["clips"]):
                 print(f"\n  ▶ CLIP {(chap_idx * CLIPS_PER_CHAPTER) + c_idx + 1:02d} | Location: {clip_data['location_id']}")
                 print(f"    Shot Type: {clip_data['shot']}")
@@ -1081,7 +1156,11 @@ def main():
                 print(f"    SEEDANCE PROMPT:\n    > {prompt_str}")
 
             if chap_num < chapters_count:
-                input("\nPress Enter to generate script for next Chapter...")
+                if args.interactive:
+                    ans = input("\n[Press Enter to generate next Chapter, or 'q' to stop and review]: ").strip().lower()
+                    if ans == "q":
+                        print(f"\n✓ Script generation paused at {unit_label}. Saved to:\n  {script_path}\n")
+                        break
             continue
 
         # --- Video Generation Phase ---
@@ -1102,8 +1181,39 @@ def main():
             
             all_reused = False
             print(f"\n  {'─'*40}\n  CLIP {global_idx}/{total_clips} (Location: {loc_id})", flush=True)
-            prompt, ref_image_urls, ref_audio_urls = build_multi_prompt(clip_data, bible, cast_bank, location_bank, voice_bank)
-            result = render_clip(global_idx, prompt, ref_image_urls, ref_audio_urls)
+
+            active_script = script_path if (script_path and Path(script_path).exists()) else (Path(args.from_script) if (args.from_script and Path(args.from_script).exists()) else None)
+            while True:
+                prompt, ref_image_urls, ref_audio_urls = build_multi_prompt(clip_data, bible, cast_bank, location_bank, voice_bank)
+                print(f"\n  🎬 COMPILED SEEDANCE PROMPT (Clip {global_idx}/{total_clips}):\n  > {prompt}\n", flush=True)
+                if args.interactive:
+                    ans = input(f"  Generate Clip {global_idx} on kie.ai? [y = generate, r = reload from script json, q = quit]: ").strip().lower()
+                    if ans == "y":
+                        break
+                    elif ans == "r":
+                        target_file = active_script if (active_script and active_script.exists()) else (Path(args.from_script) if (args.from_script and Path(args.from_script).exists()) else None)
+                        if target_file and target_file.exists():
+                            print(f"  Reloading clip {global_idx} from {target_file}...")
+                            raw_data = json.loads(target_file.read_text(encoding="utf-8"))
+                            chaps = raw_data.get("chapters", [])
+                            if chap_idx < len(chaps) and c_idx_rel < len(chaps[chap_idx]):
+                                clip_data = chaps[chap_idx][c_idx_rel]
+                                script_data["clips"][c_idx_rel] = clip_data
+                                print("  ✓ Reloaded successfully! Updated prompt preview below:")
+                            else:
+                                print(f"  Could not find chapter {chap_idx} clip {c_idx_rel} in {target_file}")
+                        else:
+                            print(f"  Script file not found: {target_file}")
+                    elif ans == "q":
+                        print(f"\nStopped before clip {global_idx}. Everything made so far is kept.")
+                        print(f"To continue later:\n  {resume_cmd}")
+                        return
+                    else:
+                        print("  Please enter 'y' to generate, 'r' to reload after editing script JSON, or 'q' to quit.")
+                else:
+                    break
+
+            result = render_clip(global_idx, prompt, ref_image_urls, ref_audio_urls, interactive=args.interactive)
             if result == "skip":
                 print(f"    clip {global_idx} skipped; it's left out of the video (a later --resume makes it again)", flush=True)
                 continue
@@ -1132,29 +1242,33 @@ def main():
                     else:
                         print(f"    no usable {VOICE_MIN_SECONDS:g}+ s voice sample in this line; trying {speaker}'s next line", flush=True)
 
-            # Per-clip review pause
+            # Per-clip completion status
+            print(f"\n  ✅ Clip {global_idx}/{total_clips} done! Video saved to container.", flush=True)
             if global_idx < total_clips:
-                print(f"\n  ✅ Clip {global_idx} done! Video saved to container.")
-                print(f"     Copy it out to preview: docker cp \"${{cid}}:/srv/media/movie_scene_multispeaker/clips/clip_{global_idx:02d}.mp4\" .\\clip_{global_idx:02d}.mp4")
-                if input(f"  Continue to Clip {global_idx + 1}? [y/n]: ").strip().lower() != "y":
-                    print(f"\nStopped after clip {global_idx}. Everything made so far is kept.")
-                    print(f"To continue later:\n  {resume_cmd}")
-                    return
+                if args.interactive:
+                    print(f"     Copy it out to preview: docker cp \"${{cid}}:/srv/media/movie_scene_multispeaker/clips/clip_{global_idx:02d}.mp4\" .\\clip_{global_idx:02d}.mp4")
+                    if input(f"  Continue to Clip {global_idx + 1}? [y/n]: ").strip().lower() != "y":
+                        print(f"\nStopped after clip {global_idx}. Everything made so far is kept.")
+                        print(f"To continue later:\n  {resume_cmd}")
+                        return
+                else:
+                    print(f"  [Auto] Continuing to Clip {global_idx + 1}...", flush=True)
 
-        # Assemble batch review
-        chap_review_filename = f"chapter_{chap_num}_review.mp4"
-        assemble_test_video(batch_video_paths, chap_review_filename)
+        # Assemble batch review only when grouping multiple clips per chapter
+        if CLIPS_PER_CHAPTER > 1:
+            chap_review_filename = f"chapter_{chap_num}_review.mp4"
+            assemble_test_video(batch_video_paths, chap_review_filename)
 
-        if chap_num < chapters_count:
-            if not all_reused:
+            if chap_num < chapters_count and not all_reused:
                 print(f"\n=======================================================")
-                print(f"CHAPTER {chap_num} COMPLETE!")
-                print(f"Review video: docker cp \"${{cid}}:/srv/media/movie_scene_multispeaker/{chap_review_filename}\" .\\{chap_review_filename}")
-                ans = input(f"\nContinue generating the next {CLIPS_PER_CHAPTER * CLIP_SECONDS} seconds? [y/n]: ").strip().lower()
-                if ans != 'y':
-                    print("Stopping generation early as requested.")
-                    print(f"The clips are kept. To continue later from clip {(chap_idx + 1) * CLIPS_PER_CHAPTER + 1}:\n  {resume_cmd}")
-                    break
+                print(f"CHAPTER {chap_num} COMPLETE!", flush=True)
+                if args.interactive:
+                    print(f"Review video: docker cp \"${{cid}}:/srv/media/movie_scene_multispeaker/{chap_review_filename}\" .\\{chap_review_filename}")
+                    ans = input(f"\nContinue generating the next {CLIPS_PER_CHAPTER * CLIP_SECONDS} seconds? [y/n]: ").strip().lower()
+                    if ans != 'y':
+                        print("Stopping generation early as requested.")
+                        print(f"The clips are kept. To continue later from clip {(chap_idx + 1) * CLIPS_PER_CHAPTER + 1}:\n  {resume_cmd}")
+                        break
 
     if not args.script_only and not all_clip_video_paths:
         print("\nNothing was generated.")

@@ -81,7 +81,7 @@
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
   }
   .waiting { margin: 0; color: var(--muted); font-style: italic; }
-  video { width: 100%; border-radius: 6px; background: #000; margin-top: auto; }
+  video { width: 100%; border-radius: 6px; background: #000; margin-top: auto; aspect-ratio: 9/16; object-fit: contain; }
   .seg { cursor: pointer; }
   .seg:hover { border-color: var(--muted); }
   .seg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -98,13 +98,58 @@
   .final[hidden] { display: none; }
   .final-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
   .final-head .meta { color: var(--muted); font-size: 13px; }
-  .final video { max-width: 640px; }
+  .final video { max-width: 360px; max-height: 640px; aspect-ratio: 9/16; object-fit: contain; }
   .final-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
   a.button {
     display: inline-block; padding: 9px 20px; border-radius: 7px; background: var(--accent); color: var(--accent-text);
     font-weight: 600; text-decoration: none;
   }
   a.button[hidden], .final-actions button[hidden] { display: none; }
+
+  /* Hover Prompt Popover */
+  .prompt-popover {
+    position: fixed; z-index: 1000; width: 440px; max-width: 92vw;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28), 0 2px 10px rgba(0, 0, 0, 0.12);
+    padding: 16px; font-size: 13px; line-height: 1.45;
+    pointer-events: none; opacity: 0; transform: translateY(6px);
+    transition: opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1), transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .prompt-popover.visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
+  .pop-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  .pop-title { font-weight: 700; font-size: 13.5px; display: flex; align-items: center; gap: 6px; }
+  .pop-body { display: grid; gap: 9px; max-height: 380px; overflow-y: auto; padding-right: 2px; }
+  .pop-card { background: var(--soft); border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; }
+  .pop-card-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--accent); margin-bottom: 4px; }
+  .pop-card-content { margin: 0; word-break: break-word; }
+  .pop-code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11.5px; background: rgba(0,0,0,0.15); padding: 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow-y: auto; }
+  .pop-footer { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; display: flex; justify-content: space-between; align-items: center; }
+  .pop-footer a { color: var(--accent); text-decoration: none; font-weight: 600; cursor: pointer; }
+  .pop-footer a:hover { text-decoration: underline; }
+  .ref-tag { display: inline-block; background: var(--accent); color: var(--accent-text); font-weight: 600; font-size: 11px; padding: 1px 6px; border-radius: 4px; margin: 1px 2px; }
+
+  /* Modal styles */
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(5px); z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .modal-backdrop[hidden] { display: none; }
+  .modal-window { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; max-width: 740px; width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35); padding: 22px; display: grid; gap: 16px; animation: modalIn 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
+  @keyframes modalIn { from { opacity: 0; transform: scale(0.97) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+  .modal-head { display: flex; justify-content: space-between; align-items: center; }
+  .modal-head h3 { margin: 0; font-size: 17px; font-weight: 700; }
+  .icon-btn { background: transparent; border: 0; color: var(--muted); font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 6px; }
+  .icon-btn:hover { background: var(--soft); color: var(--text); }
+  .modal-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--line); padding-bottom: 2px; }
+  .tab-btn { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted); padding: 8px 14px; font-weight: 600; font-size: 13.5px; cursor: pointer; border-radius: 6px 6px 0 0; }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--soft); }
+  .form-fields { display: grid; gap: 12px; }
+  .form-fields[hidden] { display: none; }
+  .form-group { display: grid; gap: 4px; }
+  .form-group label { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+  .form-group input, .form-group textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; }
+  .form-group textarea { min-height: 60px; resize: vertical; line-height: 1.4; }
+  .preview-box { margin-top: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: grid; gap: 6px; }
+  .preview-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .prompt-code { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.4; color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow-y: auto; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  .modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
 </style>
 </head>
 <body>
@@ -124,6 +169,7 @@
         <div class="choices">
           <label class="choice"><input type="radio" name="mode" value="talking_head" checked><span>Talking Head<small>one person speaking to camera</small></span></label>
           <label class="choice"><input type="radio" name="mode" value="story_time"><span>Story Time<small>changing scenes with a voiceover narrator</small></span></label>
+          <label class="choice"><input type="radio" name="mode" value="story_videos"><span>Story Videos<small>multi-character dramatic scenes</small></span></label>
         </div>
       </fieldset>
 
@@ -147,7 +193,7 @@
             <label class="choice"><input type="radio" name="resolution" value="480p" checked><span>480p</span></label>
             <label class="choice"><input type="radio" name="resolution" value="720p"><span>720p</span></label>
           </div>
-          <p class="hint" id="res-hint">In Talking Head the first clip is always 720p.</p>
+          <p class="hint" id="res-hint">Aspect ratio: 9:16 (vertical video) &bull; NSFW filter disabled. In Talking Head the first clip is always 720p.</p>
         </fieldset>
       </div>
 
@@ -181,7 +227,53 @@
       <div class="detail-actions">
         <button type="button" class="secondary" id="regen-script">Regenerate Script</button>
         <button type="button" class="secondary" id="regen-scene">Regenerate Scene</button>
+        <button type="button" class="secondary" id="edit-prompt">✏️ Edit & Customize</button>
         <span id="detail-msg" role="status" aria-live="polite"></span>
+      </div>
+    </div>
+
+    <!-- Hover Prompt Inspection Popover -->
+    <div id="prompt-popover" class="prompt-popover" hidden>
+      <div class="pop-header">
+        <div class="pop-title" id="pop-title"></div>
+        <span class="badge" id="pop-badge"></span>
+      </div>
+      <div class="pop-body" id="pop-body"></div>
+      <div class="pop-footer">
+        <span>💡 Need changes?</span>
+        <a id="pop-edit-link">Open Editor to customize →</a>
+      </div>
+    </div>
+
+    <!-- Modal for Editing Prompt & Scene Parameters -->
+    <div id="edit-modal" class="modal-backdrop" hidden>
+      <div class="modal-window" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head">
+          <h3 id="modal-title">Edit Clip Parameters & Prompt</h3>
+          <button type="button" class="icon-btn" id="modal-close" aria-label="Close">✕</button>
+        </div>
+        <div class="modal-tabs">
+          <button type="button" class="tab-btn active" id="tab-scene">🎬 Video Scene Input</button>
+          <button type="button" class="tab-btn" id="tab-script">📝 Script & Dialogue</button>
+        </div>
+        <div class="modal-body">
+          <div id="scene-fields" class="form-fields"></div>
+          <div id="script-fields" class="form-fields" hidden></div>
+          <div class="preview-box">
+            <div class="preview-head">
+              <span>Compiled AI Video Prompt Preview <small style="font-weight: normal; color: var(--muted);">(Directly editable)</small></span>
+              <small class="badge" id="preview-model-badge">Seedance 2.0 Mini</small>
+            </div>
+            <textarea class="prompt-code" id="preview-prompt-text" rows="4" style="width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 8px; font-family: ui-monospace, monospace; resize: vertical;" placeholder="Direct Seedance video prompt..."></textarea>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="secondary" id="modal-reset" style="margin-right: auto;" title="Clear customizations and return to automated OpenAI mode">↺ Reset to AI Auto</button>
+          <button type="button" class="secondary" id="modal-cancel">Cancel</button>
+          <button type="button" class="secondary" id="modal-save">💾 Save Edits</button>
+          <button type="button" id="modal-regen">✨ Regenerate with Edits</button>
+          <span id="modal-msg" role="status"></span>
+        </div>
       </div>
     </div>
   </section>
@@ -259,7 +351,20 @@
     head.append(right);
     seg.append(head);
 
-    if (job.mode === "story_time") {
+    if (job.mode === "story_videos") {
+      if (clip.movie_script) {
+        const dl = clip.movie_script.dialogue || [];
+        if (dl.length > 0) {
+          seg.append(el("p", "line", `${dl[0].speaker}: "${dl[0].line}"`));
+        } else {
+          seg.append(el("p", "line", "— silent beat —"));
+        }
+        const loc = (clip.movie_script.location_id || "").replace(/_/g, " ");
+        seg.append(el("p", "visual", `📍 ${loc}`));
+      } else {
+        seg.append(el("p", "waiting", "Waiting for the script…"));
+      }
+    } else if (job.mode === "story_time") {
       if (clip.narration) {
         seg.append(el("p", "line", `“${clip.narration}”`));
         if (clip.visual) seg.append(el("p", "visual", clip.visual));
@@ -297,7 +402,7 @@
     shownJson = json;
     shownJob = job;
     $("job").hidden = false;
-    const modeName = job.mode === "story_time" ? "Story Time" : "Talking Head";
+    const modeName = {talking_head: "Talking Head", story_time: "Story Time", story_videos: "Story Videos"}[job.mode] || job.mode;
     $("job-title").textContent = job.request.topic;
     const badge = $("job-status");
     badge.className = `badge ${job.status}`;
@@ -378,11 +483,17 @@
     const clip = job && selected != null ? job.clips[selected] : null;
     detail.hidden = !clip;
     if (!clip) return;
-    $("detail-title").textContent = `Clip ${clip.index + 1} of ${job.clips.length}`;
+    $("detail-title").innerHTML = `Clip ${clip.index + 1} of ${job.clips.length}` + (clip.custom_edited ? ` <span class="badge" style="background: var(--accent); margin-left: 6px; font-size: 11px;">✏️ Custom Edited</span>` : "");
     const text = [];
-    const hasScript = job.mode === "story_time" ? Boolean(clip.narration) : Boolean(clip.dialogue);
+    const hasScript = job.mode === "story_videos" ? Boolean(clip.movie_script) : job.mode === "story_time" ? Boolean(clip.narration) : Boolean(clip.dialogue);
     if (!hasScript) {
       text.push(el("p", "waiting", "Waiting for the script…"));
+    } else if (job.mode === "story_videos" && clip.movie_script) {
+      const ms = clip.movie_script;
+      const lines = (ms.dialogue || []).map((d) => `${d.speaker}: "${d.line}"`).join("\n");
+      text.push(el("p", "quote", lines || "— silent beat —"));
+      if (ms.shot) text.push(el("p", "meta", `Shot: ${ms.shot}`));
+      text.push(el("p", "meta", `Location: ${(ms.location_id || "").replace(/_/g, " ")}`));
     } else if (job.mode === "story_time") {
       text.push(el("p", "quote", `“${clip.narration}”`));
       text.push(el("p", "meta", `On screen: ${clip.visual}`));
@@ -390,16 +501,20 @@
       text.push(el("p", "quote", `“${clip.dialogue}”`));
     }
     if (hasScript && clip.delivery) text.push(el("p", "meta", `Delivery: ${clip.delivery}`));
+    if (clip.custom_edited) {
+      text.push(el("p", "meta", "🔒 Custom edits are active on this clip. Regenerating will strictly use your text and OpenAI will not rewrite it."));
+    }
     const running = job.status === "pending" || job.status === "generating";
     if (running) text.push(el("p", "meta", "Regenerating is available once the job has finished."));
     $("detail-text").replaceChildren(...text);
-    for (const id of ["regen-script", "regen-scene"]) $(id).disabled = !hasScript || running || actionBusy;
+    for (const id of ["regen-script", "regen-scene", "edit-prompt"]) $(id).disabled = !hasScript || running || actionBusy;
   }
 
   function select(index) {
     if (index === selected) return;
     selected = index;
     $("detail-msg").textContent = "";
+    hidePopover();
     renderDetail();
   }
 
@@ -415,7 +530,407 @@
     }
   });
 
-  async function runAction(action) {
+  function escapeHtml(str) {
+    return String(str || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  // --- Prompt Component Builders (Human-Comprehensible) ---
+  function getScriptPromptData(job, index) {
+    const clip = job.clips[index];
+    const prevClip = index > 0 ? job.clips[index - 1] : null;
+    const dur = job.request.clip_duration || 5;
+
+    let modeLabel = "Talking Head Speech";
+    let targetWords = `~${Math.round(dur * 2.2)} words`;
+    if (job.mode === "story_time") {
+      modeLabel = "Story Time Narration";
+    } else if (job.mode === "story_videos") {
+      modeLabel = "Story Videos Multi-Speaker Scene";
+      targetWords = "8 – 16 words";
+    }
+
+    const sections = [
+      { title: "Mode & Directive", content: `<strong>${modeLabel}</strong> (${dur}s clip duration)` },
+      { title: "Story Topic / Beat", content: job.mode === "story_videos" && job.beats && job.beats[index] ? `<strong>Beat ${index + 1}:</strong> ${escapeHtml(job.beats[index].action)}` : escapeHtml(job.request.topic) },
+    ];
+
+    if (prevClip) {
+      let prevText = prevClip.narration || prevClip.dialogue;
+      if (!prevText && prevClip.movie_script?.dialogue?.[0]) {
+        prevText = `${prevClip.movie_script.dialogue[0].speaker}: "${prevClip.movie_script.dialogue[0].line}"`;
+      }
+      sections.push({ title: "Preceding Clip Context", content: `Continuity from clip ${index}: <em>"${escapeHtml(prevText || 'Action completed')}"</em>` });
+    } else {
+      sections.push({ title: "Sequence Position", content: "Opening clip — sets tone and establishes character baseline" });
+    }
+
+    if (job.mode === "story_time") {
+      sections.push({ title: "Visual Scene (Preserved)", content: escapeHtml(clip.visual || "Waiting for visual") });
+      sections.push({ title: "Current Line (To Replace)", content: clip.narration ? `“${escapeHtml(clip.narration)}”` : "(None yet)" });
+    } else if (job.mode === "story_videos") {
+      const lines = (clip.movie_script?.dialogue || []).map((d) => `${d.speaker}: "${d.line}"`).join("\n");
+      sections.push({ title: "Current Spoken Lines", content: escapeHtml(lines || "— silent beat —") });
+      sections.push({ title: "Location Layout", content: escapeHtml((clip.movie_script?.location_id || "").replace(/_/g, " ")) });
+    } else {
+      sections.push({ title: "Current Line (To Replace)", content: clip.dialogue ? `“${escapeHtml(clip.dialogue)}”` : "(None yet)" });
+    }
+
+    if (clip.delivery) sections.push({ title: "Emotional Delivery Direction", content: escapeHtml(clip.delivery) });
+    if (job.scene_bible) sections.push({ title: "Scene Bible & Character Appearance", content: escapeHtml(job.scene_bible) });
+    sections.push({ title: "Word & Timing Budget", content: `${targetWords} (paced comfortably for ${dur} seconds)` });
+
+    return {
+      title: "📝 Script Generation Prompt",
+      badge: "OpenAI GPT",
+      sections,
+    };
+  }
+
+  function getScenePromptData(job, index) {
+    const clip = job.clips[index];
+    const isFirst = index === 0;
+    const dur = job.request.clip_duration || 5;
+
+    const sections = [];
+    let compiledPrompt = "";
+    const refs = [];
+
+    if (job.mode === "talking_head") {
+      const bible = (job.scene_bible || "").trim().replace(/\.+$/, "");
+      sections.push({ title: "Visual Framing & Setup", content: "Medium shot facing camera directly, matching fixed studio lighting" });
+      sections.push({ title: "Spoken Dialogue & Tone", content: `“${escapeHtml(clip.dialogue || '')}” <small>(${escapeHtml(clip.delivery || 'natural')})</small>` });
+      if (isFirst) {
+        refs.push("None (Clip 1 establishes Master Anchor)");
+        compiledPrompt = `${bible}. She speaks directly to camera, ${clip.delivery || 'naturally'}: "${clip.dialogue || ''}" Natural lip sync to dialogue, no background music, no score.`;
+      } else {
+        refs.push("@Video1 (Clip 0 Muted Anchor Video)", "@Audio1 (Clip 0 Master Audio Anchor)");
+        compiledPrompt = `Continuing directly from <Video 1>, ${bible}, still speaking to camera, ${clip.delivery || 'naturally'}: "${clip.dialogue || ''}" Natural lip sync to dialogue, same lighting and camera style, no background music, no score.`;
+      }
+    } else if (job.mode === "story_time") {
+      const bible = (job.scene_bible || "").trim().replace(/\.+$/, "");
+      sections.push({ title: "Visual Scene Description", content: escapeHtml(clip.visual || "Waiting for visual description") });
+      sections.push({ title: "Voiceover Narration", content: `“${escapeHtml(clip.narration || '')}” <small>(${escapeHtml(clip.delivery || 'natural')})</small>` });
+      if (isFirst) {
+        refs.push("None (First clip establishes visual baseline)");
+        compiledPrompt = `${clip.visual || ''}. ${bible}. Voiceover narration only, ${clip.delivery || 'naturally'}, no visible speaker, no lip sync needed since no one is speaking on camera: "${clip.narration || ''}" Natural ambient sound only, no music, no score — just the voiceover.`;
+      } else {
+        refs.push("@Video1 (Muted Previous Clip)", "@Audio1 (Narrator Voice Anchor)", "@Image1 (Main Character Face Anchor)");
+        compiledPrompt = `Same characters, visual style and lighting as @Video1, but a new scene: ${clip.visual || ''}. ${bible}. The main character looks exactly like @Image1. Voiceover narration only, in the same narrator voice as @Audio1, ${clip.delivery || 'naturally'}, no visible speaker, no lip sync needed since no one is speaking on camera: "${clip.narration || ''}" Natural ambient sound only, no music, no score — just the voiceover.`;
+      }
+    } else if (job.mode === "story_videos") {
+      const ms = clip.movie_script || {};
+      sections.push({ title: "Camera Setup & Lighting", content: escapeHtml(ms.shot || "(5-second cinematic shot)") });
+      sections.push({ title: "Location / Set", content: escapeHtml((ms.location_id || "").replace(/_/g, " ")) });
+      if (ms.blocking?.length) {
+        sections.push({ title: "Characters & Blocking", content: escapeHtml(ms.blocking.map((b) => `${b.character}: ${b.position} (${b.posture})`).join("; ")) });
+      }
+      if (ms.action_steps?.length) {
+        sections.push({ title: "Physical Action Steps", content: escapeHtml(ms.action_steps.map((a) => `[${a.start_est}s-${a.end_est}s] ${a.action}`).join("; ")) });
+      }
+      if (ms.dialogue?.length) {
+        sections.push({ title: "Spoken Dialogue & Delivery", content: escapeHtml(ms.dialogue.map((d) => `${d.speaker} (${d.delivery}): "${d.line}"`).join("\n")) });
+      } else {
+        sections.push({ title: "Audio & Dialogue", content: "— Silent beat: ambient acoustics only —" });
+      }
+      refs.push("@Image1..N (Location Angles + Cast Portraits)", "@Audio1..N (Banked Character Voices)");
+      const shot = (ms.shot || "").trim().replace(/\.+$/, "");
+      const dLines = (ms.dialogue || []).map((d) => `[${d.start_est}s to ${d.end_est}s] ${d.speaker} speaks: "${d.line}"`).join(" ");
+      compiledPrompt = `Five-second ${shot}. Location: ${ms.location_id || ''}. Blocking: ${ms.blocking ? ms.blocking.map((b) => b.character).join(', ') : ''}. Dialogue: ${dLines || 'Nobody speaks.'} Natural lip movement matching spoken line; everyone else keeps their mouth closed. No background music.`;
+    }
+
+    sections.push({ title: "Reference Inputs Sent", content: refs.map((r) => `<span class="ref-tag">${r}</span>`).join(" ") });
+    sections.push({ title: "Model Format & Safety", content: '<span class="ref-tag">Aspect Ratio: 9:16 (Vertical)</span> <span class="ref-tag">NSFW Checker: Disabled</span>' });
+    sections.push({ title: "Audio Directives", content: "Natural lip sync & speech audio bed, strictly no background music or score" });
+    sections.push({ title: "Compiled Video Prompt Preview", content: `<pre class="pop-code">${escapeHtml(compiledPrompt)}</pre>` });
+
+    return {
+      title: "🎬 AI Video Model Input",
+      badge: "ByteDance Seedance 2.0 Mini",
+      sections,
+    };
+  }
+
+  // --- Hover Popover Handling ---
+  let popoverTimer = null;
+  const popover = $("prompt-popover");
+
+  function showPopover(btn, type) {
+    clearTimeout(popoverTimer);
+    const job = shownJob, index = selected;
+    if (!job || index == null) return;
+    const clip = job.clips[index];
+    if (!clip) return;
+
+    const data = type === "script" ? getScriptPromptData(job, index) : getScenePromptData(job, index);
+    $("pop-title").textContent = data.title;
+    $("pop-badge").textContent = data.badge;
+
+    const body = $("pop-body");
+    body.replaceChildren();
+    for (const sec of data.sections) {
+      const card = el("div", "pop-card");
+      card.appendChild(el("div", "pop-card-title", sec.title));
+      const content = el("p", "pop-card-content");
+      content.innerHTML = sec.content;
+      card.appendChild(content);
+      body.appendChild(card);
+    }
+
+    popover.hidden = false;
+    const rect = btn.getBoundingClientRect();
+    const popWidth = Math.min(440, window.innerWidth - 32);
+    let left = rect.left + rect.width / 2 - popWidth / 2;
+    if (left < 16) left = 16;
+    if (left + popWidth > window.innerWidth - 16) left = window.innerWidth - popWidth - 16;
+
+    const popHeight = 360;
+    let top = rect.top - popHeight - 12;
+    if (top < 16) top = rect.bottom + 12;
+
+    popover.style.left = `${left}px`;
+    popover.style.top = `${top}px`;
+    popover.style.width = `${popWidth}px`;
+    popover.classList.add("visible");
+  }
+
+  function hidePopover() {
+    popoverTimer = setTimeout(() => {
+      popover.classList.remove("visible");
+      setTimeout(() => { if (!popover.classList.contains("visible")) popover.hidden = true; }, 200);
+    }, 250);
+  }
+
+  $("regen-script").addEventListener("mouseenter", function () { showPopover(this, "script"); });
+  $("regen-script").addEventListener("mouseleave", hidePopover);
+  $("regen-scene").addEventListener("mouseenter", function () { showPopover(this, "scene"); });
+  $("regen-scene").addEventListener("mouseleave", hidePopover);
+
+  popover.addEventListener("mouseenter", () => clearTimeout(popoverTimer));
+  popover.addEventListener("mouseleave", hidePopover);
+  $("pop-edit-link").addEventListener("click", () => {
+    hidePopover();
+    openEditModal("scene");
+  });
+
+  // --- Interactive Parameter & Prompt Editor Modal ---
+  const editModal = $("edit-modal");
+  let activeTab = "scene";
+
+  function switchTab(tab) {
+    activeTab = tab;
+    $("tab-scene").classList.toggle("active", tab === "scene");
+    $("tab-script").classList.toggle("active", tab === "script");
+    $("scene-fields").hidden = tab !== "scene";
+    $("script-fields").hidden = tab !== "script";
+    $("modal-regen").textContent = tab === "scene" ? "✨ Regenerate Scene with Edits" : "✨ Regenerate Script with Edits";
+  }
+
+  $("tab-scene").addEventListener("click", () => switchTab("scene"));
+  $("tab-script").addEventListener("click", () => switchTab("script"));
+
+  function populateModalFields(job, clip) {
+    const sFields = $("scene-fields");
+    const scFields = $("script-fields");
+    sFields.replaceChildren();
+    scFields.replaceChildren();
+
+    function makeGroup(id, labelText, val, isTextarea = false) {
+      const g = el("div", "form-group");
+      g.appendChild(el("label", "", labelText));
+      const input = el(isTextarea ? "textarea" : "input", "");
+      input.id = id;
+      if (!isTextarea) input.type = "text";
+      input.value = val || "";
+      input.addEventListener("input", updateCompiledPreview);
+      g.appendChild(input);
+      return g;
+    }
+
+    if (job.mode === "talking_head") {
+      sFields.appendChild(makeGroup("modal-dialogue", "Spoken Dialogue (Words sent to AI)", clip.dialogue, true));
+      sFields.appendChild(makeGroup("modal-delivery", "Emotional Delivery Direction", clip.delivery));
+      scFields.appendChild(makeGroup("modal-script-topic", "Topic / Prompt Goal", job.request.topic));
+      scFields.appendChild(makeGroup("modal-script-delivery", "Delivery Tone for Scriptwriting", clip.delivery));
+    } else if (job.mode === "story_time") {
+      sFields.appendChild(makeGroup("modal-visual", "Visual Scene Description (What appears on screen)", clip.visual, true));
+      sFields.appendChild(makeGroup("modal-narration", "Voiceover Narration (Spoken words)", clip.narration, true));
+      sFields.appendChild(makeGroup("modal-delivery", "Delivery Tone", clip.delivery));
+      scFields.appendChild(makeGroup("modal-script-visual", "Fixed Visual Context for Scriptwriting", clip.visual, true));
+      scFields.appendChild(makeGroup("modal-script-narration", "Target Line to Rewrite", clip.narration, true));
+    } else if (job.mode === "story_videos") {
+      const ms = clip.movie_script || {};
+      sFields.appendChild(makeGroup("modal-shot", "Camera Shot & Framing", ms.shot, true));
+      sFields.appendChild(makeGroup("modal-loc", "Location ID", ms.location_id));
+      const dText = (ms.dialogue || []).map((d) => `${d.speaker}: "${d.line}"`).join("\n");
+      sFields.appendChild(makeGroup("modal-dialogue", "Spoken Dialogue Lines (one per line)", dText, true));
+      const aText = (ms.action_steps || []).map((a) => a.action).join("\n");
+      sFields.appendChild(makeGroup("modal-actions", "Action Steps", aText, true));
+      sFields.appendChild(makeGroup("modal-others", "Ambient Acting & Sound Cues", ms.others, true));
+
+      scFields.appendChild(makeGroup("modal-script-shot", "Camera Setup Direction", ms.shot, true));
+      scFields.appendChild(makeGroup("modal-script-dialogue", "Dialogue Context", dText, true));
+    }
+
+    updateCompiledPreview();
+  }
+
+  function updateCompiledPreview() {
+    const job = shownJob;
+    const clip = job && selected != null ? job.clips[selected] : null;
+    if (!clip) return;
+
+    let preview = "";
+    if (job.mode === "talking_head") {
+      const bible = (job.scene_bible || "").trim().replace(/\.+$/, "");
+      const dialogue = ($("modal-dialogue") && $("modal-dialogue").value) || clip.dialogue || "";
+      const delivery = ($("modal-delivery") && $("modal-delivery").value) || clip.delivery || "naturally";
+      preview = clip.index === 0
+        ? `${bible}. She speaks directly to camera, ${delivery}: "${dialogue}" Natural lip sync to dialogue, no background music, no score.`
+        : `Continuing directly from <Video 1>, ${bible}, still speaking to camera, ${delivery}: "${dialogue}" Natural lip sync to dialogue, same lighting and camera style, no background music, no score.`;
+    } else if (job.mode === "story_time") {
+      const bible = (job.scene_bible || "").trim().replace(/\.+$/, "");
+      const visual = ($("modal-visual") && $("modal-visual").value) || clip.visual || "";
+      const narration = ($("modal-narration") && $("modal-narration").value) || clip.narration || "";
+      const delivery = ($("modal-delivery") && $("modal-delivery").value) || clip.delivery || "naturally";
+      preview = clip.index === 0
+        ? `${visual}. ${bible}. Voiceover narration only, ${delivery}, no visible speaker, no lip sync needed since no one is speaking on camera: "${narration}" Natural ambient sound only, no music, no score — just the voiceover.`
+        : `Same characters, visual style and lighting as @Video1, but a new scene: ${visual}. ${bible}. The main character looks exactly like @Image1. Voiceover narration only, in the same narrator voice as @Audio1, ${delivery}, no visible speaker, no lip sync needed since no one is speaking on camera: "${narration}" Natural ambient sound only, no music, no score — just the voiceover.`;
+    } else if (job.mode === "story_videos") {
+      const ms = clip.movie_script || {};
+      const shot = ($("modal-shot") && $("modal-shot").value) || ms.shot || "";
+      const loc = ($("modal-loc") && $("modal-loc").value) || ms.location_id || "";
+      const actions = ($("modal-actions") && $("modal-actions").value) || "";
+      const dialogue = ($("modal-dialogue") && $("modal-dialogue").value) || "";
+      preview = `Five-second ${shot}. Location: ${loc}. Action: ${actions}. Dialogue: ${dialogue}. Natural lip movement matching spoken line; everyone else keeps their mouth closed. No background music.`;
+    }
+    const promptEl = $("preview-prompt-text");
+    if (promptEl && promptEl.dataset.userModified !== "true") {
+      promptEl.value = preview;
+    }
+  }
+
+  function getModalOverrides() {
+    const job = shownJob;
+    const clip = job && selected != null ? job.clips[selected] : null;
+    if (!clip) return {};
+
+    const overrides = { custom_edited: true };
+    const promptEl = $("preview-prompt-text");
+    if (promptEl && promptEl.dataset.userModified === "true") {
+      overrides.custom_prompt = promptEl.value.trim();
+    }
+    if (job.mode === "talking_head") {
+      if ($("modal-dialogue")) overrides.dialogue = $("modal-dialogue").value.trim();
+      if ($("modal-delivery")) overrides.delivery = $("modal-delivery").value.trim();
+    } else if (job.mode === "story_time") {
+      if ($("modal-visual")) overrides.visual = $("modal-visual").value.trim();
+      if ($("modal-narration")) overrides.narration = $("modal-narration").value.trim();
+      if ($("modal-delivery")) overrides.delivery = $("modal-delivery").value.trim();
+    } else if (job.mode === "story_videos") {
+      const ms = JSON.parse(JSON.stringify(clip.movie_script || {}));
+      if ($("modal-shot")) ms.shot = $("modal-shot").value.trim();
+      if ($("modal-loc")) ms.location_id = $("modal-loc").value.trim();
+      if ($("modal-others")) ms.others = $("modal-others").value.trim();
+      overrides.movie_script = ms;
+    }
+    return overrides;
+  }
+
+  function openEditModal(tab = "scene") {
+    const job = shownJob, index = selected;
+    if (!job || index == null) return;
+    const clip = job.clips[index];
+    if (!clip) return;
+
+    $("modal-title").textContent = `Edit Clip ${index + 1} Prompt & Parameters`;
+    const promptEl = $("preview-prompt-text");
+    if (promptEl) {
+      promptEl.dataset.userModified = clip.custom_prompt ? "true" : "false";
+      promptEl.value = clip.custom_prompt || "";
+    }
+    switchTab(tab);
+    populateModalFields(job, clip);
+    editModal.hidden = false;
+  }
+
+  function closeEditModal() {
+    editModal.hidden = true;
+    $("modal-msg").textContent = "";
+  }
+
+  $("modal-close").addEventListener("click", closeEditModal);
+  $("modal-cancel").addEventListener("click", closeEditModal);
+  $("edit-prompt").addEventListener("click", () => openEditModal("scene"));
+  editModal.addEventListener("click", (e) => {
+    if (e.target === editModal) closeEditModal();
+  });
+
+  $("preview-prompt-text").addEventListener("input", () => {
+    $("preview-prompt-text").dataset.userModified = "true";
+  });
+
+  $("modal-reset").addEventListener("click", async () => {
+    const job = shownJob, index = selected;
+    if (!job || index == null) return;
+    $("modal-msg").textContent = "Resetting to AI mode…";
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/clips/${index}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ custom_edited: false, custom_prompt: null }),
+      });
+      if (!res.ok) throw new Error("Could not reset");
+      job.clips[index].custom_edited = false;
+      job.clips[index].custom_prompt = null;
+      const promptEl = $("preview-prompt-text");
+      if (promptEl) {
+        promptEl.dataset.userModified = "false";
+        promptEl.value = "";
+      }
+      populateModalFields(job, job.clips[index]);
+      renderDetail();
+      $("modal-msg").textContent = "✓ Reset to automated AI mode!";
+    } catch (e) {
+      $("modal-msg").textContent = `Failed: ${e.message}`;
+    }
+  });
+
+  $("modal-save").addEventListener("click", async () => {
+    const job = shownJob, index = selected;
+    if (!job || index == null) return;
+    const overrides = getModalOverrides();
+    $("modal-msg").textContent = "Saving…";
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/clips/${index}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(overrides),
+      });
+      if (!res.ok) throw new Error("Could not save changes");
+      Object.assign(job.clips[index], overrides);
+      closeEditModal();
+      renderDetail();
+      $("detail-msg").textContent = `✓ Clip ${index + 1} parameters saved! (Protected from AI overwrites)`;
+    } catch (e) {
+      $("modal-msg").textContent = `Failed: ${e.message}`;
+    }
+  });
+
+  $("modal-regen").addEventListener("click", async () => {
+    const job = shownJob, index = selected;
+    if (!job || index == null) return;
+    const overrides = getModalOverrides();
+    closeEditModal();
+    const action = activeTab === "script" ? "regenerate-script" : "regenerate-scene";
+    runAction(action, overrides);
+  });
+
+  async function runAction(action, overrides = null) {
     const job = shownJob, index = selected;
     if (!job || index == null || actionBusy) return;
     actionBusy = true;
@@ -423,7 +938,12 @@
     const msg = $("detail-msg");
     msg.textContent = "Sending…";
     try {
-      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/clips/${index}/${action}`, { method: "POST" });
+      const opts = { method: "POST" };
+      if (overrides) {
+        opts.headers = { "Content-Type": "application/json" };
+        opts.body = JSON.stringify(overrides);
+      }
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/clips/${index}/${action}`, opts);
       const body = await res.json().catch(() => null);
       if (res.status === 202) {
         const label = action === "regenerate-script" ? "Regenerate Script" : "Regenerate Scene";
@@ -525,7 +1045,13 @@
 
   form.addEventListener("change", (event) => {
     if (event.target.name === "clip_duration") fillDurations();
-    if (event.target.name === "mode") updateHint();
+    if (event.target.name === "mode") {
+      updateHint();
+      if (radio("mode") === "story_videos") {
+        const r5 = form.querySelector('input[name="clip_duration"][value="5"]');
+        if (r5 && !r5.checked) { r5.checked = true; fillDurations(); }
+      }
+    }
   });
 
   fillDurations();
