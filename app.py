@@ -59,7 +59,7 @@ celery_app.conf.broker_connection_retry_on_startup = True
 Resolution = Literal["480p", "720p"]
 Mode = Literal["talking_head", "story_time", "story_videos"]
 ClipDuration = Literal[5, 10]  # production is always 10; 5 exists only to save credits while testing
-Status = Literal["pending", "generating", "done", "failed"]  # shared by clips and jobs
+Status = Literal["pending", "generating", "plan_ready", "done", "failed"]  # shared by clips and jobs
 
 
 class ClipRequest(BaseModel):
@@ -86,6 +86,17 @@ class ClipRequest(BaseModel):
     @property
     def num_clips(self) -> int:
         return self.duration // self.clip_duration
+
+
+class EnhancePromptRequest(BaseModel):
+    topic: str = Field(min_length=1)
+    duration: int = 30
+    clip_duration: int = 5
+    mode: str = "story_videos"
+
+
+class EnhancePromptResponse(BaseModel):
+    enhanced_topic: str
 
 
 class Clip(BaseModel):
@@ -121,6 +132,16 @@ class ClipUpdate(BaseModel):
     movie_script: dict | None = None
     custom_edited: bool | None = None
     custom_prompt: str | None = None
+
+
+class PlanApprovalRequest(BaseModel):
+    beats: list[dict] | None = None
+    movie_bible: dict | None = None
+
+
+class ExtendStoryRequest(BaseModel):
+    continuation_prompt: str
+    duration: int = Field(default=30, description="Additional duration in seconds (must be multiple of 5)")
 
 
 class Job(BaseModel):
@@ -479,11 +500,11 @@ def build_clip_prompt(mode: Mode, scene_bible: str, clip: Clip, is_first_clip: b
             raise ValueError("a talking_head clip needs dialogue")
         if is_first_clip:
             return (
-                f'{bible}. She speaks directly to camera, {clip.delivery}: "{clip.dialogue}" '
+                f'{bible}. The speaker speaks directly to camera, {clip.delivery}: "{clip.dialogue}" '
                 "Natural lip sync to dialogue, no background music, no score."
             )
         return (
-            f'Continuing directly from <Video 1>, {bible}, still speaking to camera, {clip.delivery}: "{clip.dialogue}" '
+            f'Continuing directly from @Video1, {bible}, still speaking to camera, {clip.delivery}: "{clip.dialogue}" '
             "Natural lip sync to dialogue, same lighting and camera style, no background music, no score."
         )
     if mode == "story_time":
@@ -820,28 +841,30 @@ def assemble_final_video(job: Job) -> Path:
 
 # --- Story Videos Helpers ---
 import movie_scene_multispeaker as movie
-def _generate_flux_images(job_id: str, bible: dict) -> tuple[dict, dict]:
-    """Generate FLUX images for all cast and locations. Returns (cast_bank, location_bank)."""
-    cast_bank = {}
-    for c in bible["characters"]:
-        url = movie.generate_flux_image(c["image_prompt"])
-        if url:
-            cast_bank[c["name"]] = url
-            task_log.info("job %s: FLUX cast image for %s", job_id, c["name"])
-        else:
-            task_log.warning("job %s: FLUX cast image failed for %s", job_id, c["name"])
+def _generate_flux_images(job_id: str, bible: dict, existing_cast: dict | None = None, existing_locs: dict | None = None) -> tuple[dict, dict]:
+    """Generate FLUX images for all cast and locations. Only generates images for characters/locations not already present in the banks. Returns (cast_bank, location_bank)."""
+    cast_bank = dict(existing_cast or {})
+    for c in bible.get("characters", []):
+        if c["name"] not in cast_bank:
+            url = movie.generate_flux_image(c["image_prompt"])
+            if url:
+                cast_bank[c["name"]] = url
+                task_log.info("job %s: FLUX cast image for %s", job_id, c["name"])
+            else:
+                task_log.warning("job %s: FLUX cast image failed for %s", job_id, c["name"])
 
-    location_bank = {}
-    for loc in bible["locations"]:
-        master = movie.generate_flux_image(loc["image_prompt"])
-        views = [master] if master else []
-        if master:
-            for view_desc in loc.get("views", [])[1:3]:  # up to 2 additional angles
-                angle = movie.generate_flux_image(movie._view_prompt(view_desc), input_image=master)
-                if angle:
-                    views.append(angle)
-        location_bank[loc["id"]] = views
-        task_log.info("job %s: FLUX location images for %s (%d views)", job_id, loc["id"], len(views))
+    location_bank = dict(existing_locs or {})
+    for loc in bible.get("locations", []):
+        if loc["id"] not in location_bank:
+            master = movie.generate_flux_image(loc["image_prompt"])
+            views = [master] if master else []
+            if master:
+                for view_desc in loc.get("views", [])[1:3]:  # up to 2 additional angles
+                    angle = movie.generate_flux_image(movie._view_prompt(view_desc), input_image=master)
+                    if angle:
+                        views.append(angle)
+            location_bank[loc["id"]] = views
+            task_log.info("job %s: FLUX location images for %s (%d views)", job_id, loc["id"], len(views))
 
     return cast_bank, location_bank
 
@@ -878,31 +901,65 @@ def _local_clip_movie(job_id: str, clip_index: int, video_url: str) -> Path:
     return path
 
 
-def _run_movie_job(job_id: str) -> None:
-    """The Story Videos pipeline: outline -> FLUX images -> per-clip (script + render) -> assemble."""
+def _save_master_plan_file(job: Job) -> Path:
+    folder = job_media_dir(job.id)
+    folder.mkdir(parents=True, exist_ok=True)
+    plan_path = folder / "master_plan.json"
+    num = len(job.clips) if job.clips else job.request.num_clips
+    clip_dur = job.request.clip_duration or 5
+    data = {
+        "topic": job.request.topic,
+        "duration": num * clip_dur,
+        "total_clips": num,
+        "scene_bible": job.movie_bible,
+        "beats": job.beats,
+    }
+    plan_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return plan_path
+
+
+def _generate_movie_plan(job_id: str) -> None:
+    """Phase 1: Master Plan (outline) generation. Pauses with status='plan_ready' for user review."""
     job = get_job(job_id)
     topic = job.request.topic
     total_clips = job.request.num_clips
 
-    # Phase 1: Master Plan (outline)
     task_log.info("job %s: generating master plan for %d clips", job_id, total_clips)
     outline, problems = movie.write_outline(topic, job.request.duration, total_clips)
     bible = outline["scene_bible"]
     beats = outline["beats"]
     update_job(job_id, movie_bible=bible, beats=beats,
-               scene_bible=json.dumps(bible, ensure_ascii=False))
-    task_log.info("job %s: master plan done (%d characters, %d locations, %d beats)",
+               scene_bible=json.dumps(bible, ensure_ascii=False),
+               status="plan_ready")
+    _save_master_plan_file(get_job(job_id))
+    task_log.info("job %s: master plan ready (%d characters, %d locations, %d beats) - waiting for review",
                   job_id, len(bible["characters"]), len(bible["locations"]), len(beats))
 
-    # Phase 1.5: FLUX images
-    task_log.info("job %s: generating FLUX reference images", job_id)
-    cast_bank, location_bank = _generate_flux_images(job_id, bible)
+
+def _continue_movie_job(job_id: str) -> None:
+    """Phase 1.5: FLUX images -> Phase 2: Per-clip script + render -> assemble."""
+    job = get_job(job_id)
+    topic = job.request.topic
+    total_clips = len(job.clips)
+    bible = job.movie_bible
+    beats = job.beats
+
+    # Phase 1.5: FLUX images (check and generate any missing cast/locations)
+    cast_bank = job.cast_bank or {}
+    location_bank = job.location_bank or {}
+    task_log.info("job %s: checking/generating FLUX reference images", job_id)
+    cast_bank, location_bank = _generate_flux_images(job_id, bible, cast_bank, location_bank)
     update_job(job_id, cast_bank=cast_bank, location_bank=location_bank)
 
     # Phase 2: Per-clip script + generate (interleaved, 1 clip at a time)
-    voice_bank = {}
+    voice_bank = job.voice_bank or {}
     prev_clips = []
     for i in range(total_clips):
+        # Skip clips that are already generated in an earlier run, keeping their script for continuity
+        if i < len(job.clips) and job.clips[i].status == "done" and job.clips[i].movie_script:
+            prev_clips.append(job.clips[i].movie_script)
+            continue
+
         update_clip(job_id, i, status="generating")
 
         # Script this clip (1 clip per chapter)
@@ -915,8 +972,9 @@ def _run_movie_job(job_id: str) -> None:
         update_clip(job_id, i, movie_script=clip_script)
 
         # Build prompt and render
+        prev_clip_script = prev_clips[-1] if prev_clips else None
         prompt, image_urls, audio_urls = movie.build_multi_prompt(
-            clip_script, bible, cast_bank, location_bank, voice_bank
+            clip_script, bible, cast_bank, location_bank, voice_bank, prev_clip=prev_clip_script
         )
         task_log.info("job %s: rendering clip %d of %d (%d images, %d audios)",
                       job_id, i + 1, total_clips, len(image_urls), len(audio_urls))
@@ -1076,13 +1134,9 @@ def run_generation_job(job_id: str) -> None:
     update_job(job_id, status="generating")
     if job.mode == "story_videos":
         try:
-            _run_movie_job(job_id)
+            _generate_movie_plan(job_id)
         except Exception as e:
-            _fail_job(job_id, f"Story Videos generation failed: {type(e).__name__}: {e}")
-            return
-        _assemble(job_id)
-        update_job(job_id, status="done")
-        task_log.info("job %s done", job_id)
+            _fail_job(job_id, f"Story Videos planning failed: {type(e).__name__}: {e}")
         return
     try:
         script = generate_script(job.request.topic, job.request.num_clips, job.mode, job.request.clip_duration)
@@ -1116,6 +1170,65 @@ def run_generation_job(job_id: str) -> None:
     task_log.info("job %s done", job_id)
 
 
+@celery_app.task
+def execute_movie_job(job_id: str) -> None:
+    """Execute the Story Videos pipeline after Master Plan approval: FLUX images -> per-clip render -> assemble."""
+    job = get_job(job_id)
+    if job is None:
+        raise KeyError(f"job {job_id} not found")
+    try:
+        _continue_movie_job(job_id)
+        _assemble(job_id)
+        update_job(job_id, status="done")
+        task_log.info("job %s done", job_id)
+    except Exception as e:
+        _fail_job(job_id, f"Story Videos generation failed: {type(e).__name__}: {e}")
+
+
+@celery_app.task
+def extend_movie_plan_task(job_id: str, continuation_prompt: str, additional_duration: int) -> None:
+    """Analyze previous story, generate continuation outline/beats, and pause at plan_ready for review."""
+    job = get_job(job_id)
+    if job is None or job.mode != "story_videos":
+        return
+    additional_clips = additional_duration // (job.request.clip_duration or 5)
+    prev_clips = [c.movie_script for c in job.clips if c.movie_script]
+    bible = job.movie_bible or (json.loads(job.scene_bible) if job.scene_bible else {})
+
+    task_log.info("job %s: generating continuation outline for %d new clips", job_id, additional_clips)
+    try:
+        outline, problems = movie.write_continuation_outline(
+            job.request.topic, continuation_prompt, bible, prev_clips, additional_clips
+        )
+    except Exception as e:
+        task_log.error("job %s: continuation outline failed: %s", job_id, e)
+        update_job(job_id, status="done", error=f"Continuation planning failed: {e}")
+        return
+
+    updated_bible = outline.get("scene_bible", bible)
+    new_beats = outline.get("beats", [])
+
+    all_beats = list(job.beats or [])
+    all_beats.extend(new_beats)
+
+    existing_count = len(job.clips)
+    clips = list(job.clips)
+    for idx in range(len(new_beats)):
+        clips.append(Clip(index=existing_count + idx, status="pending"))
+
+    update_job(
+        job_id,
+        beats=all_beats,
+        movie_bible=updated_bible,
+        scene_bible=json.dumps(updated_bible, ensure_ascii=False),
+        clips=clips,
+        status="plan_ready",
+        error=None,
+    )
+    _save_master_plan_file(get_job(job_id))
+    task_log.info("job %s: continuation plan ready (%d total beats) - waiting for review", job_id, len(all_beats))
+
+
 REGENERATE_LABELS = {"script": "Regenerate Script", "scene": "Regenerate Scene"}
 
 
@@ -1126,8 +1239,9 @@ def _render_movie_clip_at(job_id: str, clip: Clip) -> None:
     location_bank = job.location_bank or {}
     voice_bank = job.voice_bank or {}
     clip_script = clip.movie_script
+    prev_clip_script = job.clips[clip.index - 1].movie_script if (clip.index > 0 and clip.index - 1 < len(job.clips)) else None
     prompt, image_urls, audio_urls = movie.build_multi_prompt(
-        clip_script, bible, cast_bank, location_bank, voice_bank
+        clip_script, bible, cast_bank, location_bank, voice_bank, prev_clip=prev_clip_script
     )
     if clip.custom_prompt:
         prompt = clip.custom_prompt
@@ -1221,12 +1335,142 @@ DASHBOARD = Path(__file__).with_name("dashboard.html")
 @app.get("/", include_in_schema=False)
 def dashboard() -> FileResponse:
     """The single-page dashboard (plain HTML/JS); it talks to POST /jobs and GET /jobs/{job_id}."""
-    return FileResponse(DASHBOARD, media_type="text/html")
+    return FileResponse(
+        DASHBOARD,
+        media_type="text/html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate, max-age=0"},
+    )
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/enhance-prompt", response_model=EnhancePromptResponse)
+def enhance_prompt_endpoint(req: EnhancePromptRequest) -> EnhancePromptResponse:
+    """Enhance and expand a short story premise into a rich, cinematic screenplay synopsis tailored to the selected duration."""
+    topic = req.topic.strip()
+    if not topic:
+        raise HTTPException(status_code=400, detail="topic cannot be empty")
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured")
+
+    duration = req.duration or 30
+    clip_duration = req.clip_duration or 5
+    num_clips = max(1, duration // clip_duration)
+
+    if req.mode == "talking_head":
+        mode_directive = (
+            "- MODE: Talking Head video (one person speaking directly to camera with natural lip sync).\n"
+            "Establish the speaker's name, personality/costume, specific indoor setting, and write their continuous spoken monologue "
+            "with natural emotion, vivid personal anecdotes, and exact spoken words in quotes."
+        )
+    elif req.mode == "story_time":
+        mode_directive = (
+            "- MODE: Story Time video (dynamic changing scenes guided by voiceover narration).\n"
+            "Establish character visual appearance, specific physical environments across cuts, concrete visual actions, "
+            "and the voiceover narrative text."
+        )
+    else:  # story_videos (default)
+        mode_directive = (
+            "- MODE: Story Videos cinematic drama (multi-character dramatic scenes with physical acting, blocking, props, and dialogue).\n"
+            "Focus on physical staging, character interactions, tangible environmental props, and exact spoken dialogue."
+        )
+
+    if duration <= 45:
+        p1_end = max(10, round(duration * 0.5))
+        pacing_directive = (
+            f"6. DURATION-CALIBRATED 2-ACT PROGRESSION ({num_clips} CLIPS, {duration}s):\n"
+            f"   Even in a compact {duration}s scene, write rich cinematic drama with concrete staging, tangible props, and exact spoken dialogue in quotes.\n"
+            f"   Structure into exactly 2 high-impact Acts:\n"
+            f"   * ACT 1: THE DISRUPTION (0–{p1_end}s): Second-0 physical staging and action, sudden catalyst/arrival, initial shock, and sharp spoken confrontation in quotes.\n"
+            f"   * ACT 2: THE CONFRONTATION & CLIMAX ({p1_end}–{duration}s): Escalating tension, tangible physical proof, sharp retort/ultimatum in quotes, and a decisive turning point or cliffhanger.\n"
+            f"7. FORMAT & DIALOGUE DENSITY:\n"
+            f"   - Format with clear Act headings: 'ACT 1: ...', 'ACT 2: ...'.\n"
+            f"   - STRICT BAN ON CLIP LISTS: NEVER output 'Clip 1:', 'Clip 2:', or pre-chopped clip lists! Write immersive narrative paragraphs under each Act heading.\n"
+            f"   - DIALOGUE IN QUOTES: Every Act MUST contain 2 to 4 exact, punchy spoken lines of dialogue in quotation marks."
+        )
+    elif duration <= 90:
+        p1_end = max(15, round(duration * 0.33))
+        p2_end = max(p1_end + 15, round(duration * 0.67))
+        pacing_directive = (
+            f"6. DURATION-CALIBRATED 3-ACT PROGRESSION ({num_clips} CLIPS, {duration}s):\n"
+            f"   Develop an escalating dramatic sequence across 3 defined Acts with rich physical staging, tangible props, and dense dialogue in quotes:\n"
+            f"   * ACT 1: THE INCITING DISRUPTION (0–{p1_end}s): Concrete physical staging at second 0, sudden catalyst/arrival, initial shock, and opening dialogue clash in quotes.\n"
+            f"   * ACT 2: THE RISING CONFLICT & TANGIBLE PROOF ({p1_end}–{p2_end}s): Deepening stakes, tactical pushback, discovery of physical evidence or proof, and high-density verbal sparring in quotes.\n"
+            f"   * ACT 3: THE CLIMAX & IRREVERSIBLE TURN ({p2_end}–{duration}s): The confrontation reaches its peak, decisive physical/dramatic action, irreversible choice, and dramatic consequence.\n"
+            f"7. FORMAT & DIALOGUE DENSITY:\n"
+            f"   - Format with clear Act headings: 'ACT 1: ...', 'ACT 2: ...', 'ACT 3: ...'.\n"
+            f"   - STRICT BAN ON CLIP LISTS: NEVER output 'Clip 1:', 'Clip 2:', or pre-chopped clip lists! Write immersive narrative paragraphs under each Act heading.\n"
+            f"   - DIALOGUE IN QUOTES: Every Act MUST contain 2 to 4 exact, punchy spoken lines of dialogue in quotation marks."
+        )
+    else:
+        pacing_directive = (
+            f"6. DURATION-CALIBRATED 4-ACT MULTI-SEQUENCE STRUCTURE ({num_clips} CLIPS, {duration}s):\n"
+            f"   - DO NOT trap characters in one room or stretch the opening scene! The user premise is ONLY the opening incident (Act 1). "
+            f"You MUST advance the story into a complete 4-Act cinematic progression across progressive locations that fills the entire runtime:\n"
+            f"     * ACT 1 (The Inciting Disruption): The opening catalyst, immediate tension, and dramatic hook.\n"
+            f"     * ACT 2 (The Escalation / Rising Stakes): Moving to a new location, uncovering new complications, facing escalating pressure or pursuit.\n"
+            f"     * ACT 3 (The Discovery / Key Confrontation): Interacting with an ally, rival, or key figure, packed with sharp, snappy back-and-forth dialogue in quotes!\n"
+            f"     * ACT 4 (The Climax & Resolution): High-stakes physical confrontation, decisive turning point, and a satisfying, memorable resolution.\n"
+            f"7. FORMAT & DIALOGUE DENSITY:\n"
+            f"   - Format with clear Act headings: 'ACT 1: ...', 'ACT 2: ...', 'ACT 3: ...', 'ACT 4: ...' (300 to 500 words).\n"
+            f"   - STRICT BAN ON CLIP LISTS: NEVER output 'Clip 1:', 'Clip 2:', or pre-chopped clip lists! Write immersive narrative paragraphs under each Act heading.\n"
+            f"   - DIALOGUE IN QUOTES: Across every act (especially Act 3), include frequent, sharp, witty or intense dialogue lines in quotation marks so there is zero dead-air or dragging!"
+        )
+
+    system_prompt = (
+        f"You are an expert cinematic screenwriter converting a raw user story idea into a concrete, production-ready screenplay premise for an AI video generator.\n"
+        f"The resulting video is exactly {duration} seconds long ({num_clips} clips of {clip_duration}s each).\n"
+        f"{mode_directive}\n\n"
+        f"CRITICAL DIRECTIVES FOR ADDING REAL CINEMATIC DETAILS:\n"
+        f"1. CONCRETE FILMABLE REALITY ONLY (STRICTLY BAN NOVELISTIC FLUFF):\n"
+        f"   - NEVER write abstract emotional summaries or internal thoughts (e.g. BANNED: 'she feels heartbroken', 'a devastating truth', 'wonders if it is a dream', 'every relationship is doomed to slip away'). An AI camera CANNOT film internal thoughts or generic summaries!\n"
+        f"   - EVERYTHING MUST BE PHYSICALLY VISIBLE OR AUDIBLE: Describe physical actions, bodily reactions, tangible props, and environmental details that an actor can perform and a camera can capture.\n"
+        f"2. SPECIFIC CHARACTER NAMES & STARTING ACTION:\n"
+        f"   - Assign concrete, realistic names to unnamed characters.\n"
+        f"   - Establish the specific physical setting and what the character is physically doing at second 0 based on the user's premise.\n"
+        f"3. EXACT SPOKEN DIALOGUE IN QUOTES (HIGH DENSITY):\n"
+        f"   - Include snappy, dramatic lines of spoken dialogue in quotation marks matching the genre and characters. In dialogue scenes, write sharp back-and-forth lines between characters so the scene is alive with speech.\n"
+        f"4. TANGIBLE PROPS & PHYSICAL PROOF:\n"
+        f"   - Include real physical props and visible manifestations of the conflict that fit the user's world (e.g. dropped objects, slammed doors, drawn tools, cracked screens, glowing artifacts).\n"
+        f"5. STRICT CHRONOLOGICAL CONTINUITY (NO EVENT REPETITION):\n"
+        f"   - Every action, arrival, phone alert, and physical event MUST occur in strict chronological sequence. NEVER repeat the same arrival, same notification buzz, or same action across different acts.\n"
+        f"{pacing_directive}\n"
+        f"   - Do NOT use technical script headers like 'INT./EXT.' or camera instructions like 'the camera pans' or 'we see'."
+    )
+
+    user_content = f"User Premise: {topic}\nTarget Runtime: {duration} seconds ({num_clips} clips)"
+    if duration >= 100:
+        user_content += (
+            f"\n\nCRITICAL MULTI-ACT DIRECTIVE: The user premise above is ONLY the opening inciting incident (Act 1)! "
+            f"Because the target duration is {duration} seconds ({num_clips} clips), you MUST actively continue the story forward across all acts. "
+            f"Do NOT stop at the opening scene! Progress the narrative through Act 2 (The Escalation), Act 3 (The Discovery/Confrontation with rapid snappy dialogue), "
+            f"and Act 4 (The Climax & Resolution), introducing where the characters go next, who they encounter, and exact spoken dialogue lines in quotes. "
+            f"STRICTLY format with clear Act headings ('ACT 1: ...', 'ACT 2: ...', 'ACT 3: ...', 'ACT 4: ...') — NEVER output 'Clip 1:', 'Clip 2:' lists!"
+        )
+    else:
+        user_content += (
+            f"\n\nCRITICAL DIRECTIVE: Format strictly with clear Act headings ('ACT 1: ...', 'ACT 2: ...'). "
+            f"NEVER output 'Clip 1:', 'Clip 2:', or numbered clip lists! Write rich narrative paragraphs with exact quoted dialogue."
+        )
+
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY, timeout=60)
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ],
+        )
+        enhanced = response.choices[0].message.content.strip()
+        if enhanced.startswith('"') and enhanced.endswith('"'):
+            enhanced = enhanced[1:-1].strip()
+        return EnhancePromptResponse(enhanced_topic=enhanced)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OpenAI enhancement failed: {e}")
 
 
 @app.post("/jobs", status_code=201)
@@ -1317,6 +1561,139 @@ def _start_regeneration(job_id: str, clip_index: int, task, overrides: dict | No
         update_job(job_id, status=before.status, error=before.error)
         raise HTTPException(status_code=503, detail="could not queue the regeneration; try again") from e
     return {"job_id": job_id, "clip_index": clip_index}
+
+
+@app.get("/jobs/{job_id}/plan")
+def get_job_plan(job_id: str) -> dict:
+    """Return the Master Plan file contents or Redis state for this job."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    plan_path = job_media_dir(job_id) / "master_plan.json"
+    if plan_path.is_file():
+        try:
+            return json.loads(plan_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {
+        "topic": job.request.topic,
+        "duration": job.request.duration,
+        "total_clips": job.request.num_clips,
+        "scene_bible": job.movie_bible,
+        "beats": job.beats,
+    }
+
+
+@app.patch("/jobs/{job_id}/plan")
+def save_plan(job_id: str, request: PlanApprovalRequest) -> Job:
+    """Save user edits to the story progression / master plan (beats or bible) without triggering video generation."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.status not in ("plan_ready", "pending"):
+        raise HTTPException(status_code=409, detail=f"cannot edit plan when job status is '{job.status}'")
+    fields = {}
+    if request.beats is not None:
+        fields["beats"] = request.beats
+    if request.movie_bible is not None:
+        fields["movie_bible"] = request.movie_bible
+        fields["scene_bible"] = json.dumps(request.movie_bible, ensure_ascii=False)
+    if fields:
+        job = update_job(job_id, **fields)
+        _save_master_plan_file(job)
+    return job
+
+
+@app.post("/jobs/{job_id}/approve-plan", status_code=202)
+def approve_plan(job_id: str, request: PlanApprovalRequest | None = None) -> dict:
+    """Approve the story progression / master plan, apply any edits, and start video generation."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.status != "plan_ready":
+        raise HTTPException(status_code=409, detail=f"cannot approve plan when job status is '{job.status}' (expected 'plan_ready')")
+    fields = {}
+    if request:
+        if request.beats is not None:
+            fields["beats"] = request.beats
+        if request.movie_bible is not None:
+            fields["movie_bible"] = request.movie_bible
+            fields["scene_bible"] = json.dumps(request.movie_bible, ensure_ascii=False)
+    if fields:
+        job = update_job(job_id, **fields)
+    _save_master_plan_file(job)
+    update_job(job_id, status="generating", error=None)
+    try:
+        execute_movie_job.delay(job_id)
+    except Exception as e:
+        update_job(job_id, status="plan_ready")
+        raise HTTPException(status_code=503, detail=f"could not queue video generation: {e}") from e
+    return {"job_id": job_id, "status": "generating"}
+
+
+@app.post("/jobs/{job_id}/replan", status_code=202)
+def replan_story(job_id: str) -> dict:
+    """Ask OpenAI to re-generate a new Master Plan outline for this job."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.status not in ("plan_ready", "failed"):
+        raise HTTPException(status_code=409, detail=f"cannot replan when job status is '{job.status}'")
+    update_job(job_id, status="generating", error=None)
+    try:
+        run_generation_job.delay(job_id)
+    except Exception as e:
+        update_job(job_id, status="plan_ready")
+        raise HTTPException(status_code=503, detail=f"could not queue replanning: {e}") from e
+    return {"job_id": job_id, "status": "generating"}
+
+
+@app.post("/jobs/{job_id}/extend", status_code=202)
+def extend_story(job_id: str, req: ExtendStoryRequest) -> dict:
+    """Extend a completed Story Videos job with a continuation scene/chapter."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.mode != "story_videos":
+        raise HTTPException(status_code=400, detail="continuation is only supported for Story Videos mode")
+    if job.status not in ("done", "plan_ready"):
+        raise HTTPException(status_code=409, detail=f"cannot extend story while job status is '{job.status}'")
+    if req.duration % 5 != 0:
+        raise HTTPException(status_code=400, detail="duration must be a multiple of 5 seconds")
+    if not req.continuation_prompt.strip():
+        raise HTTPException(status_code=400, detail="continuation_prompt is required")
+
+    update_job(job_id, status="generating", error=None)
+    try:
+        extend_movie_plan_task.delay(job_id, req.continuation_prompt.strip(), req.duration)
+    except Exception as e:
+        update_job(job_id, status="done")
+        raise HTTPException(status_code=503, detail=f"could not queue continuation planning: {e}") from e
+    return {"job_id": job_id, "status": "generating"}
+
+
+@app.delete("/jobs/{job_id}")
+def delete_job(job_id: str) -> dict:
+    """Cancel / discard a job, remove its local media files, and delete its Redis record.
+    If the job has finished clips and was only in plan_ready for a continuation, roll back
+    the continuation so completed clips and video are preserved."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    done_clips = [c for c in job.clips if c.status == "done"]
+    if done_clips and job.status == "plan_ready":
+        kept_clips = done_clips
+        kept_beats = (job.beats or [])[:len(kept_clips)]
+        update_job(job_id, clips=kept_clips, beats=kept_beats, status="done", error=None)
+        _save_master_plan_file(get_job(job_id))
+        return {"ok": True, "job_id": job_id, "action": "rolled_back_to_done"}
+
+    media_dir = job_media_dir(job_id)
+    if media_dir.exists():
+        import shutil
+        shutil.rmtree(media_dir, ignore_errors=True)
+    redis_client.delete(f"job:{job_id}")
+    return {"ok": True, "job_id": job_id, "action": "deleted"}
 
 
 @app.patch("/jobs/{job_id}/clips/{clip_index}")

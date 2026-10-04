@@ -928,8 +928,253 @@ We upgraded `assemble_test_video()` inside `movie_scene_multispeaker.py` to dire
   - `generate_flux_image` in `movie_scene_multispeaker.py` sets `"nsfw_checker": False`.
 - **UI & Dashboard Updates:**
   - `dashboard.html`: `.seg video` and `.final video` updated with `aspect-ratio: 9/16` and `object-fit: contain` for vertical display.
-  - Hover popover inspection displays `Aspect Ratio: 9:16 (Vertical)` and `NSFW Checker: Disabled`.
-  - Resolution selector hint updated to reflect vertical video and disabled NSFW filtering.
+---
+
+## Update: Master Plan Review & Story Progression Approval (2026-10-03)
+
+- **Two-Phase Story Videos Pipeline:**
+  - **Phase 1 (Master Plan Generation):** When a Story Videos job starts, `run_generation_job` asks OpenAI for the outline (`scene_bible` + `beats`), writes `master_plan.json` to the job's media directory, saves the plan to Redis, and pauses with `status="plan_ready"`. No FLUX images or video clips are rendered yet, avoiding unwanted credit consumption.
+  - **Phase 2 (Approval & Execution):** When the user approves the plan on the dashboard, `POST /jobs/{id}/approve-plan` saves any edited beats/bible, updates `master_plan.json`, marks `status="generating"`, and enqueues Celery task `execute_movie_job`. This proceeds with FLUX cast/location image generation and per-clip scripting and rendering.
+- **Master Plan Review & Editing UI (`dashboard.html`):**
+  - Dedicated **Story Progression & Master Plan Review** card appears when `status === "plan_ready"` (with purple `Plan Ready for Review` badge).
+  - Displays each planned beat with editable **Action text area**, **Location ID input**, and **Dialogue / Silent beat toggle**.
+  - Includes collapsible **Scene Bible Overview** showing generated characters (looks, voices) and locations.
+  - Actions: **"▶ Approve & Start Video Generation"**, **"💾 Save Edits"**, and **"🔄 Re-plan Story"**.
+- **Backend Endpoints:**
+  - `GET /jobs/{id}/plan`: Returns the master plan JSON.
+  - `PATCH /jobs/{id}/plan`: Saves user edits to beats and bible without triggering generation.
+  - `POST /jobs/{id}/approve-plan`: Saves plan edits and triggers video generation (`execute_movie_job`).
+  - `POST /jobs/{id}/replan`: Re-runs OpenAI outline generation for a fresh take.
+
+---
+
+## Update: Character Direction & Head Orientation Continuity System (2026-10-03)
+
+Implemented the 4-Pillar Architectural Solution documented in `Fix character directions inconsistences.md` to permanently eliminate "jump-cut orientation snaps" and "puff switches" between consecutive clips in Story Videos mode:
+
+1. **Pillar 1: Cinematic Camera Policy (`[SAME SETUP]` vs `[ANGLE CUT]`):**
+   - In `_chapter_prompt()`, established strict camera continuity rules: Continuous scenes and multi-speaker exchanges default to locked camera setups (`[SAME SETUP]`) holding identical camera placement, focal length, lens aim, and 2D frame composition for up to 3 clips.
+   - Any angle cut (`[ANGLE CUT]`) must be motivated by cinema grammar and strictly preserve the 180-degree rule so character screen directions and eye-lines match.
+2. **Pillar 2: Head Pose & Screen Direction Schema & Memory:**
+   - Extended `_chapter_schema()`'s `blocking` properties with:
+     - `screen_profile`: 2D screen-relative profile at clip start (0.0s) (e.g. `three_quarter_facing_screen_right`, `profile_facing_screen_left`, `frontal_facing_camera`).
+     - `head_tilt`: Head tilt angle at clip start (0.0s) (e.g. `tilted slightly left`, `upright neutral`, `chin raised`, `chin down`).
+     - `eyeline`: Eye gaze direction at clip start (0.0s).
+     - `end_screen_profile`, `end_head_tilt`, and `end_eyeline`: State at clip end (5.0s).
+   - Enhanced `_state_so_far()` to report previous clip's ending camera setup, `end_screen_profile`, `end_head_tilt`, and `end_eyeline` to OpenAI.
+   - Enforced the Golden Continuity Rule: The starting posture, `screen_profile`, `head_tilt`, and `eyeline` of Clip $N+1$ at 0.0s must be an exact 1:1 match to Clip $N$'s ending state.
+3. **Pillar 3: Smooth Animated Motion (No 0.0s Snapping):**
+   - Instructed OpenAI that head turns, shifts in gaze, or posture changes cannot occur at frame 0.0s.
+   - All head turns or posture adjustments must be written as explicit timed action steps (e.g. `[1.5s to 3.0s] Elena smoothly rotates her head toward screen-left...`).
+4. **Pillar 4: Seedance Temporal Continuity Anchor Directives:**
+   - In `build_multi_prompt()`, dynamically compiles and injects a temporal continuity anchor into every Seedance prompt:
+     `"CONTINUITY ANCHOR: At 0.0s cut, character body posture, head tilt, and screen direction strictly match the preceding shot: [{name}: {posture}, {screen_profile}, head {head_tilt}, eyeline {eyeline}]. STRICT RULE: No sudden snapping, jump-cut warping, or mirroring of face or body direction across the cut. Any change in gaze, head orientation, or posture must occur as a smooth, continuous physical movement during the action timeline."`
+   - For Clip 1, injects a corresponding `STARTING POSE ANCHOR` to prevent initial frame hallucinations.
+5. **Supervisor & Code Validation:**
+   - In `_check_chapter()`, added strict posture, `screen_profile`, and `head_tilt` continuity verification between consecutive clips. Any unmotivated 180° flip or head tilt mismatch is caught as a hard problem, triggering OpenAI automatic retries before rendering.
+   - Updated `_supervisor_prompt()` rules 2 and 8 to inspect blocking orientation continuity and camera setup holds across cuts.
+
+---
+
+## Update: Airborne Entity Mechanics & Vertical Pitch Continuity (2026-10-03)
+
+Implemented airborne entity mechanics and vertical head pitch continuity in `movie_scene_multispeaker.py` to fix character elevation issues (e.g., fairies/spirits spawning on the floor instead of hovering in mid-air, causing human characters' heads to tilt downward toward the ground across cuts):
+
+1. **Airborne Posture Support (`POSTURES` Enum):**
+   - Added `"hovering"` and `"floating"` to `POSTURES` in `movie_scene_multispeaker.py`.
+   - Propagated automatically to `_chapter_schema()`'s `posture` and `end_posture` enums.
+2. **Vertical Head Pitch & Gaze Schema & Prompting:**
+   - Updated `head_tilt` and `end_head_tilt` descriptions in `_chapter_schema()` to explicitly require vertical pitch: `'tilted upward (chin raised, looking up at mid-air)'`, `'level at eye height'`, `'tilted downward (chin down, looking down at floor)'`, or lateral roll `'tilted slightly left'`.
+   - Updated `_chapter_prompt()` with strict directives for airborne entities:
+     - Airborne characters (fairies, spirits, floating lights) must use posture `"hovering"` or `"floating"` (never `"standing"` or `"walking"`).
+     - Must explicitly record 3D vertical elevation in mid-air in `position` and `end_position` (e.g. `'hovering mid-air 1.5m above the floorboards, suspended at eye level with Elena'`).
+     - Entities must emerge directly from their mid-air light/cloud and NEVER spawn on or from the floorboards/ground.
+     - On-ground characters interacting with airborne entities must gaze UP or level at mid-air elevation, never down at the floor.
+   - Enforced vertical pitch continuity across cuts: if a character ended clip $N$ looking UP at a hovering entity, they must start clip $N+1$ at 0.0s looking UP with chin raised.
+3. **Enhanced Pitch Conflict Detection (`_tilts_conflict`):**
+   - Implemented regex word-boundary detection (`\bup\b`, `\bupward\b`, `\braised\b` vs `\bdown\b`, `\blowered\b` vs `\blevel\b`, `\bneutral\b`, `\bupright\b` vs `\bleft\b`, `\bright\b`).
+   - Detects all conflicting vertical pitch combinations (`upward` vs `downward`, `upward` vs `level`, `downward` vs `level`) and lateral roll discrepancies (`left` vs `right`, `lateral` vs `level`) across consecutive clips.
+   - Accurately distinguishes neutral upright poses from upward tilts without false substring collisions (`"up"` vs `"upright"`).
+4. **Automated Airborne Blocking Checks (`_check_chapter`):**
+   - Added validation detecting if any character described as airborne/hovering/floating in their position text is erroneously assigned posture `"standing"` or `"walking"`, triggering automatic OpenAI retry.
+   - Added validation detecting if any airborne entity is mistakenly positioned on the floor or groundboards.
+5. **Prompt Injection (`AIRBORNE DIRECTIVE` & Anchors):**
+   - Updated `build_multi_prompt()` to include `f"{cname}: {post} in mid-air (airborne)"` in continuity anchors.
+   - Injects explicit directive whenever airborne characters are present:
+     `"AIRBORNE DIRECTIVE: [Names] is/are completely airborne in mid-air (hovering/floating), suspended above the floorboards with feet off the ground; do NOT ground their feet, stand them on the floor, or spawn them from the floorboards. Their elevation must remain strictly suspended in mid-air."`
+6. **Docker Containers Synchronized:**
+   - Successfully verified against comprehensive unit tests in Docker.
+   - Restarted `aivideoextender-api-1` and `aivideoextender-worker-1`.
+
+---
+
+## Update: Dynamic Acting Mandate & Kinetic Physics (2026-10-03)
+
+Implemented active physicality and kinetic physics directives in `movie_scene_multispeaker.py` to eliminate mannequin/frozen acting and static visual effects:
+
+1. **Active Physicality & Dynamic Acting Mandate:**
+   - In `_chapter_prompt()`, added `STRICT RULE: NO MANNEQUIN ACTING` explicitly forbidding passive, frozen verbs (`staring blankly`, `remains rigidly upright`, `holds breath without moving`, `stares without blinking`, `watches motionless`).
+   - Mandated multi-phase dynamic bodily reactions for human characters (e.g. flinching, jolting, leaning in, clutching items, shielding eyes, gesturing, or trembling).
+   - Enforced emotional and postural progression within every 5-second clip (e.g. initial startle/recoil -> followed by leaning forward in wonder or clutching chest).
+2. **Kinetic Physics for Effects & Phenomena:**
+   - In `_chapter_prompt()`, added `KINETIC PHYSICS FOR EFFECTS, LIGHTS & PHENOMENA`: magical lights, energy swirls, sparks, fire, and supernatural phenomena must never be described as static or merely spinning in place.
+   - Mandated active spatial trajectory & velocity (arcs, zipping, dipping, soaring, vibration), dynamic light-casting & moving shadows across faces/walls, and environmental physical disturbances (billowing curtains, stirring hair).
+3. **Seedance Motion Prompt Directive:**
+   - In `build_multi_prompt()`, injected a global cinematic motion directive:
+     `"Fluid cinematic physical motion throughout: render active character bodily reactions, natural momentum, and dynamic responsive lighting; characters must not freeze or remain static."`
+4. **Verification & Synchronization:**
+   - Syntax compiled cleanly and all unit tests passed in Docker.
+   - Restarted `aivideoextender-api-1` and `aivideoextender-worker-1`.
+
+---
+
+## Update: "✨ Enhance Story" Duration-Adaptive Prompt Expansion (2026-10-03)
+
+Implemented an intelligent LLM-powered prompt enhancer enabling users to turn brief one-liner premises into rich, cinematic screenplays calibrated specifically to their chosen duration (e.g. 15s/30s/60s):
+
+1. **Backend Endpoint (`POST /enhance-prompt`):**
+   - Added `EnhancePromptRequest` (`topic`, `duration`, `clip_duration`, `mode`) and `EnhancePromptResponse` (`original_topic`, `enhanced_topic`, `duration`, `num_clips`) models in `app.py`.
+   - Structured prompt for OpenAI (`OPENAI_MODEL` / `gpt-5.6`):
+     - **Duration-Calibrated Story Arc:**
+       - Micro (15–30s): Focused single-scene confrontation with immediate hook, rising pressure, and a punchy turn/cliffhanger.
+       - Medium (45–90s): Escalating multi-phase drama with clear inciting event, tactical pushback, climax, and aftermath.
+       - Long (2m+): Multi-sequence story with distinct locations and character arcs.
+     - **Cinematic Specificity:** Concrete sensory details, character motivations, physical setting, lighting, and explicit conflict.
+     - Kept output as a clean synopsis ready to be planned by the Master Plan without token-wasting meta-chatter.
+   - Fixed `gpt-5.6` compatibility: omitted `temperature` and `max_tokens` (unsupported on this model) to prevent HTTP 500 errors.
+2. **Frontend UI Integration (`dashboard.html`):**
+   - Converted the topic `<input>` into an expandable, auto-resizing `<textarea id="topic">`.
+   - Added prominent **"✨ Enhance Story"** button with a status indicator (`✨ Expanding for [duration]s...`, `✅ Enhanced for [duration]s!`).
+   - Dynamically fills the textarea with glowing blue visual feedback, allowing the user to review or edit the expanded story before submitting the job.
+3. **Verification & Synchronization:**
+   - Verified via automated HTTP tests on port 8001; validated 30s vs 60s outputs.
+   - Docker containers synchronized and restarted.
+
+---
+
+## Update: Master Plan Adaptive Act Planner & Anti-Stagnation Engine (2026-10-03)
+
+Implemented the duration-adaptive sequence scaling architecture and Universal Law of State Changes in `movie_scene_multispeaker.py` to prevent narrative stagnation, scene dragging, and repetitive dialogue:
+
+1. **Duration-Adaptive Sequence Scaling (`_outline_prompt`):**
+   - **Micro-Drama ($<= 6$ clips / 15–30s):** High-density single-scene progression with immediate *in medias res* hook $\to$ rapid friction/tactical counter-moves $\to$ decisive climax, turning point, or cliffhanger punchline. Eliminates generic setup or wandering.
+   - **Medium Drama (7–18 clips / 35–90s):** Defined three-phase dramatic escalation:
+     - Phase 1 (First 25%): Inciting disruption & immediate friction.
+     - Phase 2 (Middle 50%): Deepening stakes, tactical maneuvers, secrets/leverage exposed, escalating obstacles.
+     - Phase 3 (Final 25%): Breaking point, climax, and irreversible consequence/resolution.
+   - **Cinematic Multi-Sequence Epics ($> 18$ clips / 2m–10m):** Modular sequence architecture dividing total clips into sequences of 6–10 clips each across varied locations (e.g. Discovery $\to$ Confrontation & Flight $\to$ Kinetic Pursuit $\to$ Cornered Standoff $\to$ Climax). Mandates location transitions and exterior establishing shots.
+2. **The Universal Law of State Changes (Anti-Stagnation Mandate):**
+   - Mandated that every single 5-second beat must produce an explicit, observable state change:
+     - **Emotional Shift:** Character's psychological state visibly transforms (denial $\to$ rage; disbelief $\to$ dread; shock $\to$ defiance).
+     - **Informational Turn:** A secret is spoken, a lie is exposed, an ultimatum is delivered, or leverage alters power dynamics.
+     - **Physical / Spatial Turn:** Physical relationship shifts (closing distance, drawing weapons, slamming doors, entities materializing, flight/pursuit).
+3. **Strict Anti-Dilution Rule (No Event Stretching):**
+   - Forbade diluting a single physical or magical emergence across multiple beats (e.g., banned "Beat 1: light appears, Beat 2: light glows brighter, Beat 3: fairy steps out").
+   - Mandated that any physical appearance, transformation, or entrance completes its emergence within ONE clip, allowing subsequent clips to immediately advance into dialogue and dramatic interaction.
+4. **Conversational Momentum (No Echo Chambers):**
+   - Forbade consecutive dialogue beats repeating identical opinions or circling around the same debate. Every turn must escalate: Proposition $\to$ Objection $\to$ Leverage $\to$ Counter-Tactic $\to$ Ultimatum $\to$ Decision.
+5. **Outline Validation & Guardrails (`_check_outline` & `_check_continuation_outline`):**
+   - Added validation detecting overly brief beat actions ($< 4$ words) and consecutive duplicate actions, triggering automatic OpenAI retries before rendering.
+6. **Verification & Synchronization:**
+   - Unit tests covering 6, 12, and 30 clip prompts and beat check validation passed cleanly.
+   - Recompiled and restarted `aivideoextender-api-1` and `aivideoextender-worker-1`.
+
+---
+
+## Update: Prompt Enhancer Overhaul — Concrete Filmable Physics & Exact Dialogue (2026-10-04)
+
+Overhauled the `POST /enhance-prompt` endpoint in `app.py` to eliminate novelistic fluff, abstract summaries, and flowery marketing prose, replacing it with concrete physical details calibrated for AI video generation:
+
+1. **Strict Prohibition on Novelistic Fluff & Inner States:**
+   - Banned unfilmable emotional summaries (e.g., *"she feels devastated"*, *"a heartbreaking truth"*, *"every relationship is doomed to slip away"*, *"leaving her alone with a reality she must escape"*).
+   - Enforced that everything described must be physically visible to the camera or audible to the microphone.
+2. **Concrete Filmable Reality & Staging:**
+   - **Specific Setting & Starting State:** Mandated tangible room details and character activity at second 0 (e.g., fastening a silver necklace before a mirror, sitting at a wooden desk with tea).
+   - **Kinetic Inciting Emergence:** Physical disruption with tangible physics (e.g., fairy bursts from jewelry box scattering perfume bottles, wings crackling with blue light).
+   - **Exact Quoted Dialogue:** Requires 2 to 3 punchy spoken lines in quotation marks instead of summarized speech.
+   - **Tangible Physical Proof:** Mandated concrete visual proof of the conflict on screen (e.g., date's photo blackens on phone, thorn mark burns red into skin, identical scar revealed).
+3. **Mode-Tailored Directives:**
+   - Dynamic prompt directives customized for `story_videos` (dramatic staging, blocking, props), `talking_head` (character persona, continuous spoken monologue, personal anecdotes), and `story_time` (changing visual scenes, visual actions, voiceover text).
+4. **Verification:**
+   - Validated via live HTTP API call (`POST /enhance-prompt`). The test fairy prompt generated rich, sequential, filmable beats with exact dialogue, tangible props, and physical proof.
+
+---
+
+## Update: Full Forensic Harmonization of OpenAI Instructions & Feature Scaling (2026-10-04)
+
+Conducted a full audit across `movie_scene_multispeaker.py` and `app.py` to eliminate contradictory instructions and calibrate the engine for long-form (5m, 10m, and beyond) cinematic outputs:
+
+1. **Pacing & Beat Harmonization:**
+   - Replaced old legacy 3-clip arrival examples with active two-speaker arrival/revelation beats, aligning with the Anti-Dilution and Anti-Stagnation rules.
+2. **Word Count & Mathematical Calibration:**
+   - Adjusted `MIN_WORDS, MAX_WORDS = 6, 12` (previously 8, 16) to ensure spoken lines mathematically fit a 5-second window at 2.5 words/second while allowing natural gaps between speakers.
+3. **Voice Banking & Ping-Pong Dialogue Calibration:**
+   - Updated dialogue example timings to `0.2s to 2.3s` (2.1s span) and `2.6s to 4.8s` (2.2s span), guaranteeing that any character's first line meets the mandatory 2.0s voice-banking threshold.
+4. **Unified Camera Hierarchy:**
+   - Unified camera rules into a 3-phase progression: Locked Master Shot `[SAME SETUP]` for the first 1-2 clips to establish geography, followed by motivated `[ANGLE CUT]` (OTS, Close-Up, Profile) for dramatic turns, strictly adhering to the 180-degree rule.
+5. **Feature-Length Structure Directive:**
+   - Enhanced the multi-sequence structure directive for long-duration videos ($>18$ clips, 2m–10m+) to generate complete feature narrative arcs (Opening Sequence $\to$ Rising Stakes & Movement across progressive locations $\to$ Climax & Resolution) with mandatory exterior establishing shots for new locations.
+
+---
+
+## Update: Prompt & Syntax Harmonization for Findings 2, 3, 4, 5 (2026-10-04)
+
+Applied targeted fixes to eliminate subtle contradictions and reference mismatches across modes:
+
+1. **Finding 2 (Talking Head Gender Generalization):**
+   - Replaced hardcoded `"She speaks directly to camera"` in `app.py` line 503 with `"The speaker speaks directly to camera"`, ensuring gender-neutral versatility for male, female, or non-binary speakers.
+2. **Finding 3 (Seedance Reference Syntax Standardization):**
+   - Standardized Talking Head continuation prompt from `<Video 1>` to `@Video1` in `app.py` line 507, matching Kie.ai Seedance's official reference tagging syntax used across Story Time and Story Videos.
+3. **Finding 4 (Audio Foley Explicit Restriction):**
+   - Restricted ambient sound directives in `movie_scene_multispeaker.py` to physical room tone, foley, and environmental sound cues only (e.g. footsteps, ticking clocks, rain, distant traffic, keys, floorboards). Explicitly banned musical instruments, score, melodies, humming, or synth drones to prevent triggering Kie.ai's automated audio copyright filter.
+4. **Finding 5 (Continuation Generator Anti-Stagnation & Dialogue Density):**
+   - Copied the High-Density Dialogue and No-Dead-Air directives into `_continuation_outline_prompt` in `movie_scene_multispeaker.py`, ensuring extended movie sequences maintain rapid dialogue pacing.
+5. **Finding 1 Preserved:**
+   - Per user instruction, left `[SAME SETUP]` and `[ANGLE CUT]` camera tracking tags untouched.
+
+---
+
+## Update: Universal Rich Act Structure Across All Durations (2026-10-04)
+
+Overhauled `POST /enhance-prompt` in `app.py` to completely eliminate robotic pre-chopped `Clip 1:`, `Clip 2:` output and enforce rich dramatic Act structures regardless of duration:
+
+1. **Duration-Calibrated Universal Act Hierarchy:**
+   - **15s – 45s:** 2 High-Stakes Acts (Act 1: The Disruption $\to$ Act 2: The Confrontation & Climax).
+   - **50s – 90s:** 3 Dynamic Acts (Act 1: The Inciting Disruption $\to$ Act 2: The Rising Conflict & Tangible Proof $\to$ Act 3: The Climax & Irreversible Turn).
+   - **100s – 300s+:** 4 Full Feature Acts (Act 1: Inciting Disruption $\to$ Act 2: Escalation across locations $\to$ Act 3: Key Discovery/Confrontation $\to$ Act 4: Climax & Resolution).
+2. **Strict Ban on Clip Lists:**
+   - Strictly prohibited outputting `Clip 1:`, `Clip 2:` or shot boundaries in the screenwriter premise. Everything is formatted into immersive dramatic paragraphs under clear Act headings.
+3. **High Dialogue & Content Richness:**
+   - Enforced 2 to 4 exact quoted dialogue lines in every Act.
+   - Enforced strict chronological progression (no repeated phone buzzes, arrivals, or actions).
+4. **Live Verification:**
+   - Verified via live HTTP call with the 60s fairy prompt. Generated a rich 3-Act cinematic screenplay premise (0–20s, 20–40s, 40–60s) with intense dialogue, physical manifestations, and zero clip-fragmentation.
+
+---
+
+## Update: Universal "No Re-Takeoff / No Re-Emergence" Rule (2026-10-04)
+
+Added genre-agnostic continuity rules to prevent video models from re-rendering takeoff flashes, launches, or re-emergence eruptions across consecutive cuts:
+
+1. **Genre-Agnostic Scripting Rule (`_chapter_prompt`):**
+   - Applies to all drones, spirits, airborne creatures, floating lights, or aerial entities.
+   - Once an entity completes its arrival, emergence, or ascent to its destination flight elevation in clip $N$ (e.g. hovering at eye level in mid-air): in all subsequent clips ($N+1$ onward), OpenAI is strictly forbidden from re-describing them launching, taking off, rising upward, emerging, or flying up from their origin point, container, or floor/ground again.
+   - The entity must start the clip ALREADY suspended and cruising/hovering in mid-air at its established elevation.
+   - Strictly forbidden from re-focusing the camera on the floor or origin container as a launchpad.
+2. **Supervisor Continuity Verification (`_supervisor_prompt`):**
+   - Script supervisor verifies that once an entity has completed its arrival/ascent in a previous clip, it does not re-takeoff or emerge again.
+3. **Explicit Negative Constraint in Seedance Prompt (`build_multi_prompt`):**
+   - Added explicit prompt directive: *"If already airborne in the scene, they are ALREADY hovering in mid-air at second 0.0; do NOT render another takeoff, eruption, or launch from the ground."*
+
+
+
+
+
+
+
+
+
+
 
 
 

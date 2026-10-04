@@ -49,7 +49,7 @@ OUTPUT_DIR = Path("/srv/media/movie_scene_multispeaker")
 SCRIPTS_DIR = Path("/srv/media/movie_scene_scripts")  # saved scripts; outside OUTPUT_DIR, which every run wipes
 CLIPS_PER_CHAPTER = 1  # 1 clip (5 seconds) per chapter: write script for clip, then generate video for clip, then next
 WORDS_PER_SECOND = 2.5  # speaking pace every line is timed at
-MIN_WORDS, MAX_WORDS = 8, 16  # per SPEECH clip, all speakers together
+MIN_WORDS, MAX_WORDS = 6, 12  # per SPEECH clip, all speakers together
 MAX_VOICE_REFS = 3  # kie.ai takes at most 3 reference audios per request
 MAX_REF_IMAGES = 9  # kie.ai's limit for reference pictures per request (seedance-2-mini and -fast)
 MAX_ON_SCREEN = 7  # characters visible (fully or partly) in one clip; 6-7 is for group and action scenes
@@ -61,7 +61,7 @@ VOICE_REUPLOAD_AFTER = 23 * 3600  # kie.ai deletes uploaded files after 24 h; ol
 AUDIO_RETRY_NOTE = "No background music, no singing, no humming: only the spoken dialogue and natural room sound."  # replaces "No background music." when a clip is retried after kie.ai's audio copyright filter
 IN_FRAME = ["visible", "partly visible", "off screen", "has left"]
 ON_SCREEN = ("visible", "partly visible")
-POSTURES = ["standing", "walking", "sitting", "kneeling", "lying down", "crouching"]
+POSTURES = ["standing", "walking", "sitting", "kneeling", "lying down", "crouching", "hovering", "floating"]
 
 # ---------------------------------------------------------------------------
 # Image Generation (FLUX)
@@ -238,14 +238,26 @@ def _chapter_schema(location_ids: list[str], names: list[str], prop_ids: list[st
                                 "properties": {
                                     "character": {"type": "string", "enum": names},
                                     "in_frame": {"type": "string", "enum": IN_FRAME},
-                                    "position": {"type": "string", "description": "Where exactly they are at the START of the clip, using the place's layout; for 'partly visible', which part the camera sees."},
-                                    "posture": {"type": "string", "enum": POSTURES, "description": "Posture at the start of the clip."},
-                                    "end_position": {"type": "string", "description": "Where exactly they are at the END of the clip (the same as position if they don't move); the next clip starts from here."},
-                                    "end_posture": {"type": "string", "enum": POSTURES, "description": "Posture at the end of the clip."},
-                                    "facing": {"type": "string", "description": "Which way they face / what they look at."},
+                                    "position": {"type": "string", "description": "Where exactly they are at the START of the clip (0.0s), using the place's layout; for 'partly visible', which part the camera sees."},
+                                    "posture": {"type": "string", "enum": POSTURES, "description": "Posture at the start of the clip (0.0s)."},
+                                    "screen_profile": {"type": "string", "description": "2D screen-relative profile at START (0.0s), e.g. 'three_quarter_facing_screen_right', 'profile_facing_screen_left', 'frontal_facing_camera' ('none' if off-screen)."},
+                                    "head_tilt": {"type": "string", "description": "Head tilt, roll, and vertical pitch at START (0.0s), e.g. 'tilted upward (chin raised, looking up at mid-air)', 'level at eye height', 'tilted downward (chin down, looking down at floor)', 'tilted slightly left' ('none' if off-screen)."},
+                                    "eyeline": {"type": "string", "description": "Eye gaze direction at START (0.0s), e.g. 'looking across table at eye level toward screen-right', 'downward toward hands' ('none' if off-screen)."},
+                                    "end_position": {"type": "string", "description": "Where exactly they are at the END of the clip (5.0s) (the same as position if they don't move); the next clip starts from here."},
+                                    "end_posture": {"type": "string", "enum": POSTURES, "description": "Posture at the end of the clip (5.0s)."},
+                                    "end_screen_profile": {"type": "string", "description": "2D screen-relative profile at END (5.0s), e.g. 'three_quarter_facing_screen_right' ('none' if off-screen)."},
+                                    "end_head_tilt": {"type": "string", "description": "Head tilt, roll, and vertical pitch at END (5.0s), e.g. 'tilted upward (chin raised, looking up at mid-air)', 'level at eye height', 'tilted downward (chin down, looking down at floor)', 'tilted slightly left' ('none' if off-screen)."},
+                                    "end_eyeline": {"type": "string", "description": "Eye gaze direction at END (5.0s), e.g. 'looking across table toward screen-right' ('none' if off-screen)."},
+                                    "facing": {"type": "string", "description": "Which way they face / what they look at in 3D scene space."},
                                     "awareness": {"type": "string", "description": "What they have noticed so far that matters, e.g. 'has not noticed the door opening'."}
                                 },
-                                "required": ["character", "in_frame", "position", "posture", "end_position", "end_posture", "facing", "awareness"],
+                                "required": [
+                                    "character", "in_frame", "position", "posture",
+                                    "screen_profile", "head_tilt", "eyeline",
+                                    "end_position", "end_posture",
+                                    "end_screen_profile", "end_head_tilt", "end_eyeline",
+                                    "facing", "awareness"
+                                ],
                                 "additionalProperties": False,
                             },
                         },
@@ -292,6 +304,31 @@ def _chapter_schema(location_ids: list[str], names: list[str], prop_ids: list[st
     }
 
 def _outline_prompt(topic: str, duration: int, total_clips: int) -> str:
+    if total_clips <= 6:
+        structure_directive = f"""   - DURATION-ADAPTIVE STRUCTURE (MICRO-DRAMA: {duration}s, {total_clips} CLIPS):
+     This is a rapid, high-density single-scene drama. Do NOT waste clips on slow windups or generic walking.
+     * Opening Beat (Beat 1): Immediate in medias res hook — jump straight into the inciting dilemma, statement, or dramatic disruption.
+     * Escalation Beats (Beats 2 to {max(2, total_clips - 1)}): Rapid escalation — friction, moral pushback, revealing leverage/proof, tactical maneuver, or sudden magical/physical threat.
+     * Final Beat (Beat {total_clips}): Decisive climax, irreversible commitment, punchline, or cliffhanger cutoff."""
+    elif total_clips <= 18:
+        p1_end = max(2, round(total_clips * 0.25))
+        p2_end = max(p1_end + 2, round(total_clips * 0.75))
+        structure_directive = f"""   - DURATION-ADAPTIVE STRUCTURE (MEDIUM DRAMA: {duration}s, {total_clips} CLIPS):
+     Develop an escalating dramatic confrontation across a defined three-phase progression:
+     * Phase 1 (Beats 1 to {p1_end}): Inciting Disruption — establish the core dilemma, immediate friction, or shock event.
+     * Phase 2 (Beats {p1_end + 1} to {p2_end}): Deepening Stakes & Tactical Conflict — characters test tactics, reveal leverage/secrets, clash emotionally, or face rising obstacles. Every beat increases the pressure.
+     * Phase 3 (Beats {p2_end + 1} to {total_clips}): The Breaking Point & Aftermath — the confrontation reaches its climax, an irreversible action or decision is taken, leading to the dramatic consequence or resolution."""
+    else:
+        seq_count = max(3, round(total_clips / 8))
+        structure_directive = f"""   - DURATION-ADAPTIVE STRUCTURE (CINEMATIC MULTI-SEQUENCE FEATURE: {duration}s, {total_clips} CLIPS):
+     This is an extended, feature-style cinematic film. Structure the {total_clips} clips into approximately {seq_count} distinct dramatic sequences (around 6-10 clips per sequence) across varied locations that build a complete feature narrative arc:
+     * Progressive Narrative Arc:
+       - Opening Sequence: Inciting incident, immediate disruption, and initial confrontation.
+       - Rising Stakes & Movement: Characters must move, investigate, pursue, escape, or transition to new locations as stakes escalate (e.g. Discovery -> Flight & Pursuit -> Hidden Revelation -> Escalating Confrontation).
+       - Climax & Resolution: The decisive physical/dramatic confrontation, resolution of the core conflict, and consequences.
+     * Dynamic Location Progression: Do NOT trap characters in one room for the entire duration! Characters navigate progressive settings.
+     * Sequence Transitions: Whenever transitioning to a major new setting, the first beat of that new place MUST be an exterior establishing shot to orient the audience before plunging into the interior drama."""
+
     return f"""You are planning an AI drama scene that is exactly {duration} seconds long: {total_clips} clips of {CLIP_SECONDS} seconds each.
 The user's story prompt is: {topic}
 
@@ -305,9 +342,23 @@ Return a JSON object with:
    - LAYOUT: for every location, a fixed map that every clip set there will follow: each door, staircase and window and the main furniture, placed relative to the main entrance (e.g. 'The only door is in the near-left corner and opens inward; the bed stands against the far wall facing the door, about four metres from it; bedside tables on both sides; wardrobes along the right wall'). For a hallway, say where each door is and where it leads; for an exterior, where the front door, steps and path are. State how many of each thing there are ('the only sofa', 'two doors', 'a single desk'), so nothing gets duplicated. Include every feature the story will use in that place (a hiding spot, a back door, a gap in a hedge, a curtain someone stands behind, the car someone drives off in). Characters' positions and camera placements will be described with this map, so be concrete.
    - VIEWS: for every location, 2 or 3 camera viewpoints for its reference pictures, all showing the place empty: the first is a wide view that shows the layout (the one "image_prompt" shows), the others look from other key spots (e.g. 'from beside the bed looking back at the door', 'from the doorway looking in').
    - "image_prompt": a text-to-image prompt for the first view, showing the layout's key permanent features, and ALWAYS naming, clearly visible, every feature the story uses in that place (the video model can only use what the picture shows: if someone slips out through a gap or a back door, the gap or door must be in the picture), with photography keywords for extreme photorealism (e.g., "Photorealistic, live-action movie still, shot on Arri Alexa, 8k, detailed textures, NO CGI, NO 3D render"). NO PEOPLE, and none of the story's props.
-   - PROPS: every object that a character carries, hands over, uses, changes or breaks in the story (e.g. a vase of flowers, divorce papers, a suitcase, a gun), with a snake_case "id" and a full fixed "description" of how it looks (e.g. 'a clear glass vase filled with a large bouquet of red and white roses'). Not furniture, and not what characters wear: clothes, shoes, jewellery and glasses belong in the character's "look" (a coat only becomes a prop if it is taken off and handed over or left somewhere). One prop is one object, never 'two pairs of...' or 'their bags'. An empty list if there are none.
+   - PROPS: every object that a character carries, picks up, sets down, uses, changes or breaks in the story (e.g. a vase of flowers, divorce papers, a suitcase, a gun), with a snake_case "id" and a full fixed "description" of how it looks (e.g. 'a clear glass vase filled with a large bouquet of red and white roses'). Not furniture, and not what characters wear: clothes, shoes, jewellery and glasses belong in the character's "look" (a coat only becomes a prop if it is taken off and handed over or left somewhere). One prop is one object, never 'two pairs of...' or 'their bags'. An empty list if there are none.
 2. "beats": exactly {total_clips} beats in order, one per {CLIP_SECONDS}-second clip. Each beat has "location_id", the id of the place where the clip happens (every place any beat uses must be in "locations", including stairs, corridors, cars and exteriors), "action", one sentence: what happens in this clip and who speaks, and "speech": true if anyone speaks in this clip. Keep every event from the user's story prompt, in its order, and the meaning of every line the user wrote for a character; add nothing that contradicts it.
-   - FLOWING CONVERSATIONS: a conversation does NOT have to fit inside one clip. When two characters talk, spread the exchange naturally across consecutive clips: clip N ends with character A saying something, clip N+1 starts with character B responding. Each clip shows one conversational beat (a line and a reaction, or a question and the start of an answer), and the next clip picks up from the exact same positions. Think of it as one continuous take sliced into {CLIP_SECONDS}-second pieces, not as separate scenes. The beat for each clip describes only what happens in THAT slice.
+{structure_directive}
+   - THE LAW OF STATE CHANGES (MANDATORY ANTI-STAGNATION RULE):
+     Every single 5-second beat MUST produce an explicit, observable STATE CHANGE that advances the scene. A beat can NEVER leave the characters in the same emotional, informational, or spatial status quo as the previous beat.
+     Each beat must achieve at least ONE of:
+     (1) Emotional Shift: A character's psychological state visibly changes (e.g., from calm denial to defensive rage; from amused disbelief to trembling dread; from shock to defiance).
+     (2) Informational Turn: A secret is spoken, a lie is exposed, an ultimatum is delivered, or a new fact changes the balance of power.
+     (3) Physical / Spatial Turn: The physical dynamic changes (e.g., closing distance to intimidate, drawing an object/weapon, slamming a door, an entity fully materializing, an abrupt entrance or flight).
+   - STRICT RULE: NO EVENT STRETCHING (ANTI-DILUTION RULE):
+     Never dilute a single physical action or event emergence across multiple beats (e.g., NEVER plan Beat 1: an anomaly begins, Beat 2: the anomaly grows, Beat 3: a visitor finally steps out).
+     Any appearance, transformation, arrival, or physical action MUST complete its full emergence within ONE clip (using active kinetic action steps), so the subsequent clip immediately advances into dialogue, emotional reaction, or direct confrontation.
+   - DIALOGUE DENSITY & RAPID MULTI-TURN EXCHANGES (HIGH PACING):
+     In conversational, negotiation, or confrontation scenes, do NOT restrict dialogue to one solitary line per 5 seconds! Keep the scene lively with snappy two-way dialogue exchanges (e.g. Speaker A asks or accuses; Speaker B retorts or reacts within the same clip, or delivers a punchy hook answered in the next). In a dialogue-heavy sequence of 10 to 15 clips, aim for 15 to 22 total dialogue turns across speakers so the scene feels fast, punchy, and alive rather than dragging out with long pauses.
+   - NO DEAD-AIR IN DISCUSSION SCENES:
+     Once a conversation or dramatic encounter begins, EVERY consecutive beat must be a SPEECH beat ("speech": true). Never insert random silent filler clips in the middle of an ongoing dialogue exchange. Silent clips ("speech": false) belong ONLY to exterior establishing shots, stealth/sneaking, or brief moments of physical paralysis/shock.
+   - FLOWING CONVERSATIONS ACROSS CUTS: A conversation flows like one continuous take sliced into {CLIP_SECONDS}-second pieces. When characters exchange rapid dialogue, clip N can feature a quick two-turn exchange or end on a burning question, with clip N+1 picking up immediately from the exact same positions with the response.
    - SPEECH: make a beat silent ("speech": false) only when the user's story says nobody speaks there, or when talking would make no sense: someone sneaking, hiding or frozen in shock, a character alone with nothing meaningful to say, an establishing shot. Otherwise characters talk.
    - LOCATION CHANGES: Whenever the story transitions to a completely new building or major location, the VERY FIRST beat for that new location MUST be an Establishing Shot ("speech": false, "action": "A highly dynamic cinematic exterior establishing shot of the building, showing active life like passing road traffic, pedestrians walking, or shifting weather to set the mood and tell the viewer where the next scene takes place. Nobody from the main cast is visible.").
    - PACING: give each part of the story the clips it needs. The set-up moves quickly; the parts with the most events (usually the confrontation and the climax) get the most clips, so no clip has to cram in several big actions. Every beat moves the story forward with a new action, line or reveal: never two beats of the same thing (no second clip of walking, no repeated kiss) and no padding. If the story has more events than clips, fold small moments into a neighbouring beat, never two big actions into one.
@@ -334,9 +385,18 @@ def _state_so_far(prev_clips: list) -> str:
         for p in c.get("prop_state", []):
             props[p["prop_id"]] = (n, c["location_id"], p)
     lines = []
+    if prev_clips:
+        last_clip = prev_clips[-1]
+        lines.append(f"  - Camera setup at end of clip {len(prev_clips)}: {last_clip.get('shot', 'standard framing')}")
     for name, (n, loc, b) in people.items():
         where = f"{b.get('end_posture', b['posture'])}, {b.get('end_position', b['position'])}"
-        lines.append(f"  - {name} (at the end of clip {n}, in {loc}, {b['in_frame']}): {where}; facing {b['facing']}; {b['awareness']}")
+        end_prof = b.get("end_screen_profile", b.get("screen_profile", "frontal"))
+        end_tilt = b.get("end_head_tilt", b.get("head_tilt", "upright neutral"))
+        end_eye = b.get("end_eyeline", b.get("eyeline", "looking forward"))
+        lines.append(
+            f"  - {name} (at the end of clip {n}, in {loc}, {b['in_frame']}): {where}; "
+            f"screen_profile: {end_prof}; head_tilt: {end_tilt}; eyeline: {end_eye}; facing {b['facing']}; {b['awareness']}"
+        )
     for pid, (n, loc, p) in props.items():
         lines.append(f"  - prop {pid} (as of clip {n}): held by {p['holder']}; {p['state']}")
     return "\n".join(lines)
@@ -386,13 +446,31 @@ The beat plan for the whole video, one beat per clip, each marked SPEECH or SILE
 RULES for the clips:
 - "location_id": the place its beat is set in (in [brackets] in the beat plan), one of these locations, and the same id for every camera angle inside the same place (every clip there is rendered from fixed pictures of it, so the room always looks the same). Follow each place's LAYOUT exactly: doors, stairs and furniture are always where it puts them.
 {locations}
-- CAMERA WORK: film it like a high-budget movie. Choose each angle for what the moment needs: a wide or medium shot to set up a place or show movement, two-shots and over-the-shoulders for conversations, close-ups for key lines and reactions, low or high angles for power, tracking shots to follow someone. Keep screen direction consistent (the 180-degree rule: in a conversation each character stays on the same side of the frame across cuts). One clear camera move per clip (e.g., a slow push-in, a pan, a dolly), not several.
-  CONTINUITY CUTS: when a conversation flows across consecutive clips (the dialogue continues from one clip into the next), you MAY hold the same camera angle, framing and character positions across 2 or 3 clips so they feel like one continuous take sliced into pieces. The video model renders each clip separately, so re-state the full shot setup, blocking and positions identically in each clip of the held angle. Change the angle when the story beat changes (a new character enters, someone moves, the emotion shifts) or after 3 consecutive clips at most.
+- CINEMATIC CAMERA POLICY ([SAME SETUP] vs [ANGLE CUT]):
+  CRITICAL: Every shot description MUST explicitly begin with either "[SAME SETUP]" or "[ANGLE CUT]".
+  UNIFIED THREE-PHASE APPROACH:
+  (1) ESTABLISHING PHASE — LOCKED MASTER SHOT ([SAME SETUP], first 1-2 clips of a new conversation or location):
+      When a conversation begins or the scene moves to a new location, open with a locked wide or medium two-shot that establishes the geography: who is where, what the room looks like, and each character's screen position (frame-left vs frame-right).
+      Re-state the exact same camera placement, lens, aim direction, and 2D frame composition across these opening clips.
+      DO NOT arbitrarily aim at a different wall, door, or window from clip to clip (e.g. aiming North toward the bed in Clip 1, then aiming East toward the sash window in Clip 2 completely ruins character perspective and flips their orientation).
+  (2) COVERAGE PHASE — MOTIVATED CUTS ([ANGLE CUT], from clip 2-3 onward in the same conversation):
+      Once geography is established, use motivated angle cuts to add cinematic rhythm:
+      - Over-the-Shoulder (OTS): camera behind one character's shoulder, focused on the other's face. Alternate whose shoulder for dialogue back-and-forth.
+      - Close-Up / Extreme Close-Up: cut in tight on a face, trembling hands, clenched jaw, or a key prop during emotional peaks.
+      - Profile Two-Shot: both characters in profile, facing each other, for balanced confrontations.
+      - Power Dynamics: dominator shot from LOW angle, vulnerable character from HIGH angle.
+      - Reveals: open on a close detail (a hand, a doorknob), then pull back or tilt to reveal the full scene.
+      - Walking Scenes: low-angle tracking tight on boots and legs, OR rear tracking behind the shoulders.
+      Every [ANGLE CUT] must be motivated by the drama (a reaction to absorb, a shift in power, a prop to emphasize). Never cut just for visual variety alone.
+  (3) THE 180-DEGREE RULE & SCREEN DIRECTION (ALWAYS ENFORCED, BOTH PHASES):
+      NEVER cross the axis of action. In any conversation or cut, each character MUST maintain their screen direction:
+      The character on frame-left MUST still look toward screen-right in their close-up, and the character on frame-right MUST still look toward screen-left.
+      Their eye-lines MUST match across cuts. Never flip character screen placement across consecutive clips unless an action step shows them physically walking across the room.
 - ESTABLISHING SHOTS: only when the user's story asks for one, or the story jumps to a new place without showing anyone arrive. It shows an exterior location, nobody is visible and there is NO dialogue. Keep them rare.
-- ONE MAIN MOMENT OR BEAT: each clip captures ONE natural cinematic beat that plays out comfortably in {CLIP_SECONDS} seconds. Never cram an entire scene's setup, revelation, and resolution into a single 5-second clip. For example, if someone arrives to deliver bad news: Clip 1 can show them walking in and asking for their attention ('Oliver, got a second?'); Clip 2 delivers the shocking revelation ('Only one of you can make the team'); Clip 3 captures the stunned reaction and pushback. Small supporting movement (breathing, glances, shifting posture) makes it feel alive. Give dramatic moments room to breathe across cuts!
-- "shot": You are the Director of Photography. Write the exact camera setup for this 5-second clip as a single continuous physical sentence. You MUST include ALL FIVE of these elements:
-  (1) CAMERA PLACEMENT: where is the camera physically positioned, using the place's layout? (e.g., "camera placed low on the pavement behind his ankles", "from just inside the bedroom doorway", "tight over her left shoulder")
-  (2) CAMERA MOVEMENT: what does it physically do during the 5 seconds? (e.g., "tracks with him as he climbs", "slowly pushes in", "tilts up from his boots to his face")
+- ONE MAIN MOMENT OR BEAT: each clip captures ONE natural cinematic beat that plays out comfortably in {CLIP_SECONDS} seconds. Never cram an entire scene's setup, revelation, and resolution into a single 5-second clip. But equally, never stretch a single action (an entrance, a reveal, a kiss) across multiple clips — complete it in one beat and move on (see ANTI-DILUTION above). For example, if someone arrives to deliver bad news: Clip 1 shows the arrival and the bombshell in one beat with a quick two-turn exchange ('Got a second? Only one of you can make the team.'); Clip 2 captures the stunned reaction and rapid pushback ('You can't be serious.'). Small supporting movement (breathing, glances, shifting posture) makes it feel alive.
+- "shot": You are the Director of Photography. Write the exact camera setup for this 5-second clip as a single continuous physical sentence starting with "[SAME SETUP]" or "[ANGLE CUT]". You MUST include ALL FIVE of these elements:
+  (1) CAMERA PLACEMENT: where is the camera physically positioned, using the place's layout? (e.g., "[SAME SETUP] Camera placed low on the pavement behind his ankles", "[SAME SETUP] From just inside the bedroom doorway looking North-East toward the bed", "[ANGLE CUT] Tight over her left shoulder facing Daniel")
+  (2) CAMERA MOVEMENT: what does it physically do during the 5 seconds? (e.g., "tracks with him as he climbs", "slowly pushes in", "tilts up from his boots to his face", "locked static hold")
   (3) WHAT IT FOLLOWS: what specific body part, prop or detail does the camera stay tight on? (e.g., "stays tight on his polished boots and trouser hem", "locks on her eyes", "follows his trembling hand")
   (4) ENDING FRAME: where does the shot resolve at the end of 5 seconds? (e.g., "ending on a close-up of his face at the door", "resolving on an over-the-shoulder frame of the open bedroom")
   (5) LIGHTING + DEPTH OF FIELD: what is the key light source and how does it hit the subject? Does the background blur into bokeh? (e.g., "warm amber streetlamp from camera left rims his jaw; background window glow blooms into soft bokeh", "single harsh overhead bulb throws deep shadows under his eyes")
@@ -400,28 +478,50 @@ RULES for the clips:
   STORY-CRITICAL MOVEMENT ON CAMERA: when the story depends on where someone goes or where they come from (they hide, leave, slip away, sneak in, arrive, return), the camera must point that way and keep the start and end of the movement in frame, e.g. following her until she disappears through the back door, or holding on the doorway as he walks in. Never let the move that matters happen outside the frame.
   EXITS THAT LEAVE OTHERS ALONE: when someone leaves so that the others can be alone, the camera follows them until they are clearly gone (through the door, round the far corner, out of earshot) and the shot ends holding on the people left behind, alone, so the next clip plainly reads as a private moment.
   BAD EXAMPLE (never write this): "Wide shot, eye-level, slow push-in as he walks to the door."
-  GOOD EXAMPLE (write like this): "Camera placed at knee height on the pavement behind Daniel's black dress shoes, tracking forward as he climbs the stone steps, staying tight on his ankles and the brass key in his hand, tilting up his torso to resolve on a close-up of his face at the door; warm interior lamplight spills around the doorframe and the background street blurs into amber bokeh."
+  GOOD EXAMPLE (write like this): "[SAME SETUP] Camera placed at knee height on the pavement behind Daniel's black dress shoes, tracking forward as he climbs the stone steps, staying tight on his ankles and the brass key in his hand, tilting up his torso to resolve on a close-up of his face at the door; warm interior lamplight spills around the doorframe and the background street blurs into amber bokeh."
   SHOT SIZES: Extreme Wide, Wide, Medium-Wide (knees up), Medium (waist up), Medium Close-Up (chest up), Close-Up (face), Extreme Close-Up (eyes, mouth, hands, one object).
-  SPECIFIC HOLLYWOOD TECHNIQUES:
-  - CONVERSATION SCENES: alternate OTS (camera behind one person's shoulder looking at the other's face) and Profile Two-Shots. Cut between them.
-  - EMOTIONAL MOMENTS: Extreme Close-Up on eyes, trembling hands, clenched jaw, or a single object.
-  - WALKING SCENES: low-angle tracking tight on boots and legs, OR rear tracking behind the shoulders.
-  - REVEALS: open on a close detail (a hand, a doorknob), then pull back or tilt to reveal the full scene.
-  - POWER DYNAMICS: dominator shot from LOW angle, vulnerable character from HIGH angle.
   - SCREEN PLACEMENT: the video model has NO memory of previous clips and cannot parse architectural text ('near-left corner'). In every shot with two or more visible characters, explicitly state where each person is IN THE FRAME using screen-relative language: 'frame left', 'frame right', 'foreground', 'background', 'centre frame' (e.g. 'ending with the Coach standing frame left and Oliver seated frame right'). Keep each character on the same side of the frame across consecutive conversation clips (the 180-degree rule).
 - "blocking" (THE POSITION DIARY, REQUIRED): one entry for EVERY character who is in this clip's place, whether the camera sees them or not:
   - "in_frame": "visible" (face and body in the shot), "partly visible" (only part of them, e.g. the hand that pushes the door open; say which part in "position"), "off screen" (in the place but outside the frame), or "has left" (only in the clip where they walk out; after that, leave them out).
-  - "position" and "posture": exactly where they are and how at the START of the clip, using the place's layout (e.g. 'at the far side of the room beside the bed, about four metres from the door', 'just outside the open doorway; only his right hand and sleeve are visible'). Posture is standing, walking, sitting, kneeling, lying down or crouching.
-  - "end_position" and "end_posture": where they are and how at the END of the clip (the same as the start if they don't move), e.g. 'out of sight behind the parked van', 'on the same spot of the only sofa'. The next clip starts from these.
-  - "facing": which way they face and what they look at.
+  - "position" and "posture": exactly where they are and how at the START of the clip (0.0s), using the place's layout (e.g. 'at the far side of the room beside the bed, about four metres from the door', 'hovering in mid-air 1.5m above the floorboards, suspended at eye level with Elena'). Posture is standing, walking, sitting, kneeling, lying down, crouching, hovering, or floating.
+  - AIRBORNE & FLOATING ENTITIES (CRITICAL):
+    For drones, spirits, airborne creatures, floating lights, or any aerial entities, posture MUST be "hovering" or "floating" (never "standing" or "walking"). Explicitly specify their 3D vertical elevation in mid-air above the floorboards/ground in "position" and "end_position" (e.g. 'hovering mid-air 1.5m above the floorboards, completely airborne with feet suspended off the ground'). NEVER spawn an airborne entity on or from the floor/ground! If they materialize, they must emerge directly from their mid-air light/cloud in mid-air, NOT from the floorboards. Characters on the ground watching them must look UP or directly across at their mid-air elevation, never down at the floor!
+    STRICT NO RE-TAKEOFF RULE (CONTINUITY ACROSS CUTS):
+    Once any airborne entity, drone, creature, or floating object has completed its arrival, emergence, or ascent to its destination flight elevation in a previous clip (e.g. now hovering at eye level in mid-air):
+    In all subsequent clips, NEVER re-describe them launching, taking off, rising upward, emerging, or flying up from their origin point, container, or the floor/ground again!
+    They MUST start the clip ALREADY suspended and cruising/hovering in mid-air at their established elevation.
+    Action steps must describe only their ongoing airborne flight, drift, or conversation gestures at their established elevation (e.g. 'already hovering at eye height, drifts forward 0.5m toward the headboard while speaking').
+    Never re-focus the camera on the floor or origin container as a launchpad, as the video model will misinterpret that as a second takeoff eruption!
+  - "screen_profile": 2D screen-relative profile at START (0.0s), e.g. 'three_quarter_facing_screen_right', 'profile_facing_screen_left', 'frontal_facing_camera' ('none' if off-screen).
+  - "head_tilt": head tilt, roll, and vertical pitch at START (0.0s), e.g. 'tilted upward (chin raised, looking up at mid-air)', 'level at eye height', 'tilted downward (chin lowered, looking down at floor)', 'tilted slightly left' ('none' if off-screen).
+  - "eyeline": gaze direction vector at START (0.0s), e.g. 'looking across table at eye level toward screen-right', 'upward toward floating entity in mid-air', 'downward toward hands' ('none' if off-screen).
+  - "end_position" and "end_posture": where they are and how at the END of the clip (5.0s) (the same as the start if they don't move). The next clip starts from these.
+  - "end_screen_profile", "end_head_tilt", "end_eyeline": profile, head tilt, and gaze at clip END (5.0s). The next clip starts from these. Always record vertical pitch: if looking up at clip end, record 'tilted upward (chin raised)'.
+  - "facing": which way they face and what they look at in 3D scene space.
   - CLEAR POSITIONS: never describe a position in terms that contradict each other ('on the entrance side of the bench, directly in front of him' when he faces away from the entrance). 'In front of' and 'behind' are relative to where that person faces; when in doubt, use the layout's fixed things instead ('between the bench and the lockers').
   - "awareness": what they have noticed so far that matters (e.g. 'has not noticed the door opening', 'sees Daniel in the doorway').
-  - CONTINUITY: every character starts this clip exactly where and how the previous clip ended them (its end_position and end_posture), and their awareness carries over, unless one of this clip's action steps shows the change. Characters CANNOT teleport: someone standing does not end up sitting on a bed unless an action step shows them sit down; nobody crosses the room off screen; nobody notices anything before an action step shows it.
+  - THE GOLDEN CONTINUITY RULE (MANDATORY):
+    Every character starts this clip (at 0.0s) EXACTLY where and how the previous clip ended them: its end_position, end_posture, end_screen_profile, end_head_tilt, and end_eyeline.
+    NEVER snap, flip, or mirror a character's body orientation, head tilt, or screen facing across a cut!
+    Preserve vertical pitch across cuts: if a character ended clip N looking UP at a hovering entity or light in mid-air, they MUST start clip N+1 at 0.0s with chin raised looking UP at that same elevation. NEVER let a character's gaze or head tilt snap downward to the floor across a cut!
+  - SMOOTH MOTION TIMING (NO 0.0s SNAPS):
+    If a character shifts their attention, turns to another speaker, or reacts to an object, they CANNOT start this clip already turned!
+    They MUST start at 0.0s in their exact previous posture and head tilt. The head turn or shift in gaze MUST be written as an explicit timed action step in "action_steps" (e.g. [0.0s to 1.0s] Elena sits still with head tilted left, gazing toward screen-right; [1.0s to 2.5s] Elena smoothly rotates her head toward screen-left to look at the light; [2.5s to 5.0s] Elena watches the light intently).
+    The "end_screen_profile", "end_head_tilt", and "end_eyeline" will then record the new orientation at 5.0s.
   - ANCHORS: describe positions against fixed things in the layout, and keep using the same words ('on the left end of the only bench', 'at the counter by the till'). When someone comes back to a place, the others are exactly where they were left, on the same spot of the same furniture, and it's said so; an empty spot someone left can be named ('the place beside him on the bench is empty').
   - OFF-SCREEN ACTORS: if someone outside the frame causes something the camera sees (opens a door, throws something in), make them "partly visible" and show it in the action steps. Otherwise the video model gives the action to whoever is on screen (a door opening with no visible hand looks as if the person inside opened it).
   - ON SCREEN: at most {MAX_ON_SCREEN} characters "visible" or "partly visible" in one clip. Five to seven are for group scenes and action scenes only.
 - "action_steps" (REQUIRED, 1 to 4 steps): the clip's physical action in time order. Each has "start_est"/"end_est" in seconds inside this clip and one plain sentence of what visibly happens, naming who does it (e.g. [0.0 to 1.5] "Daniel's right hand pushes the bedroom door open from the hallway"; [1.5 to 5.0] "Emily and Mark keep kissing beside the bed, unaware"). Every change of position, posture, prop or awareness appears here.
   - LIVE REACTIONS: the video model renders each character independently — if you don't tell it what a bystander does, it freezes them like a mannequin. Every action step that has a visible bystander MUST describe what that bystander physically does at the same time (e.g. 'Ethan walks toward the door while Oliver's head turns, tracking him all the way until he disappears', NOT just 'Ethan walks toward the door' with Oliver's reaction left to "others"). Watching, flinching, turning, stepping back — if the camera sees it, the action step says it.
+  - STRICT RULE: NO MANNEQUIN ACTING:
+    Avoid passive, frozen states like 'staring blankly', 'remains rigidly upright', 'holds breath without moving', 'stares without blinking', 'watches motionless'.
+    Human characters must exhibit dynamic bodily reactions: flinching, jolting, leaning in, clutching items or blankets, shielding eyes, gesturing, or trembling. Every 5-second clip must show an active progression in character emotion and physical posture (e.g. initial startle/recoil -> followed by leaning forward in wonder or clutching chest).
+  - KINETIC PHYSICS FOR EFFECTS, LIGHTS & PHENOMENA:
+    Magical lights, sparks, fire, smoke, energy swirls, and supernatural phenomena must NEVER be described as static or merely 'spinning in place'.
+    Assign active spatial trajectories, velocity changes, and dynamic light-casting physics to all environmental and magical phenomena:
+    (1) Trajectory & Velocity: specify active spatial motion across the room (e.g. 'the golden spark shudders violently, zips in an erratic arc across the room trailing brilliant stardust, swoops downward, then shoots up and pulses rapidly in mid-air').
+    (2) Light-Casting & Moving Shadows: describe dynamic illumination (e.g. 'the pulsing flare casts flickering, rhythmic amber highlights across Elena’s face and throws moving shadows across the walls').
+    (3) Physical Impact on Environment: describe how the phenomenon disturbs the surroundings (e.g. 'a resonant magical vibration billows the curtains and stirs loose hair').
   - REAL TIME: every step lasts at least {MIN_STEP_SECONDS:g} second (merge smaller moments into a neighbouring step), and movement takes realistic time: walking covers about 1 to 1.5 metres per second, running about 4, standing up or sitting down about 1 second, opening a door and stepping through about 1.5 seconds. Every step where someone walks or runs states the distance in digits, taken from the layout (e.g. 'walks the 5 metres from the bench to the gap'), so its time can be checked. If a movement doesn't fit, start the clip with the character already partway there, or end it before they arrive; never squeeze it, and never shorten or invent distances to make it fit: positions and distances always come from the layout.
   - ONLY WHAT THE CAMERA SEES: action steps describe only what is visible in this shot. Never mention an off-screen character or what they do off screen (the video model would draw them); their movement lives in the blocking only.
 - "prop_state" (THE PROP DIARY, REQUIRED): one entry for every prop in the Scene Bible's "props" that has appeared in the story so far, in every clip from its first appearance to the end, even when it is not in the shot: "prop_id", "holder" (the character holding or carrying it, or 'scene' when it rests somewhere), "in_frame" (true only if the camera clearly sees it where the action happens; a prop far in the background or left in another part of the place is false, otherwise the video model draws it into the scene) and "state" (its condition and exactly where it is, e.g. 'intact, in his right hand behind his back', 'shattered across the floor beside the bed'). The system writes each prop's full fixed description into the video prompt for you. Props in the Scene Bible:
@@ -432,16 +532,22 @@ RULES for the clips:
   - KNOWLEDGE: characters only say what they know at that moment. Nobody mentions, reacts to or answers something they have not noticed yet (see "awareness"). A character whose arrival must come as a surprise never calls out, greets anyone or announces themselves before the discovery.
   - PRIVACY: a secret is only spoken when the speakers have a reason to believe the person it's about can't hear (they saw them leave, a door closed, water is running, they are far away), and their "awareness" says why (e.g. 'believes Sam went out to the car park'). A character who secretly overhears is somewhere plausible for that, and the speakers don't know they are there.
   - SPEAKERS IN FRAME: whenever a character speaks, they must be in the frame (direct view, profile, three-quarter angle, or pacing/moving naturally in the shot). Natural cinematic movement—such as turning while talking, walking, or pacing the room—is encouraged. Never give dialogue to a character who is completely off-screen, out of frame, or seen strictly from behind with no head/body context; never during an over-the-shoulder shot from behind the speaker or the speaker's own POV; never during a close-up exclusively on hands, objects, or floor. When two characters speak in the same clip, frame both characters (two-shot, profile two-shot, medium shot). At most {MAX_VOICE_REFS} different speakers per clip.
-  - FLOWING DIALOGUE ACROSS CUTS: when two or more characters talk, dialogue can either be a short exchange within the clip OR a single punchy line that hangs and is answered in the NEXT clip. Dialogue DOES NOT have to resolve within the same 5-second clip! A clip can end on a shocking question, proposition, or cliffhanger line ('Only one of you makes the team, Oliver.'), with the next clip starting immediately with the other character's reaction and spoken reply. A character who is alone may say short, meaningful lines to themselves only when the beat is SPEECH, never filler.
+  - HIGH-DENSITY DIALOGUE & TWO-SPEAKER EXCHANGES (CRITICAL FOR PACING):
+    Do NOT let dialogue drag by restricting scenes to only one solitary line per 5 seconds! In dramatic conversations, arguments, and discovery scenes, actively write rapid, rhythmic two-speaker exchanges within the 5-second window:
+    * Speaker A delivers a sharp 4-5 word line or question (e.g. from 0.2s to 2.3s, lasting 2.1s).
+    * Speaker B delivers a sharp 4-5 word retort or counter-point (e.g. from 2.6s to 4.8s, lasting 2.2s).
+    * Total words across both speakers must remain within {MIN_WORDS} to {MAX_WORDS} words (e.g. 5 words + 5 words = 10 words).
+    This creates snappy verbal ping-pong that makes dialogue sequences feel fast, intense, and natural, providing 15 to 22 total lines across a 10 to 12 clip scene!
+  - FLOWING DIALOGUE ACROSS CUTS: When a line needs deeper weight, a clip may feature a single punchy line or ultimatum that hangs, with the next clip starting immediately with the other character's spoken reply. Dialogue must never stall or leave long silent pauses in a conversation scene. A character who is alone may say short, meaningful lines to themselves only when the beat is SPEECH, never filler.
   - PLAIN, EVERYDAY SPEECH: characters talk like real people in a modern film, in simple, common words and short sentences that anyone understands the first time they hear them. No formal, poetic or old-fashioned phrasing, no fancy vocabulary, no jargon (not 'solicitor' or 'northbound' but 'lawyer' or 'the last train'), and no semicolons.
   - TIMING: "start_est" and "end_est" are seconds from the start of THIS clip (0 to {CLIP_SECONDS}), not of the whole video. Lines come in order and never overlap, with 0.2 to 0.5 s between speakers; the first line starts at 0.2 s or later and the last ends by {CLIP_SECONDS - 0.2:g} s. Each line's window is at least its word count divided by {WORDS_PER_SECOND:g} seconds long.
   - VOICE SAMPLES: The FIRST line a character speaks in the film is cut out of the clip and reused as that character's voice for the rest of the video, so it must be at least 5 words and 2 seconds long, spoken in a clear, fully voiced way (quiet or low is fine; never whispered, shouted, sobbed or breathless), and never a short reply.
   - "delivery": how THIS line is said: emotion, volume and pace (e.g., 'shaking with rage', 'cold, clipped and quiet'). Never describe the voice itself (tenor, baritone, accent): the system already sends each character's voice. The volume must match the story: if the story or beat says someone speaks quietly, whispers or shouts, the delivery says so (a secret is never at normal conversational volume). A character's very first line (their voice sample) may be quiet or low, but never whispered, shouted, sobbed or breathless.
   - STORY: keep the meaning of every line the user wrote for a character (quoted or described). Never write a line that contradicts the user's story or anything said or shown earlier (e.g. if a return is a surprise, nobody knew about it).
 - "others": the visible acting and ambient sound in this clip. Write these things:
-  (1) PHYSICAL ACTING: what the face, eyes, mouth, hands, and body visibly do ('his chin trembles; he swallows hard; her gaze drops'). SHOW EMOTIONS, NEVER NAME THEM — no inner states ('heartbreak', 'feels', 'realizes').
+  (1) PHYSICAL ACTING & DYNAMIC PROGRESSION: what the face, eyes, mouth, hands, and body visibly do ('his chin trembles; he swallows hard; she flinches back against the pillows, clutching her blanket, then leans forward with parted lips'). Show active, multi-phase physical reactions instead of frozen expressions. SHOW EMOTIONS, NEVER NAME THEM — no inner states ('heartbreak', 'feels', 'realizes').
   (2) PROP INTERACTION (only if props are in the shot): how characters physically touch the props, consistent with the prop diary. If there are no props, skip this — do NOT invent props.
-  (3) AMBIENT SOUND: 2 or 3 specific sound cues that Seedance should generate for the audio bed (e.g., 'keys jingle softly against the lock; a faint creak of floorboards; distant traffic murmurs outside'). These make the clip feel real and alive.
+  (3) AMBIENT SOUND: 2 or 3 specific sound cues that Seedance should generate for the audio bed: Physical room tone, foley, and environmental sound cues ONLY (e.g. footsteps, ticking clocks, rain, distant traffic, fabric rustle, keys jingling, faint floorboard creak). Strictly NO musical instruments, score, melodies, humming, or synth drones. These make the clip feel real and alive.
 - AI VIDEO LIMITATIONS (STRICT):
   - NO HAND-OFFS: AI cannot animate characters handing items to each other (e.g., handing cash, passing a phone). Instead, describe the item already in their hand, or being placed on a counter.
   - SPATIAL BLOCKING (SHOCK SCENES ONLY): when a character is meant to STOP and react the moment they open a door or enter a room (e.g., catching someone doing something), put them "standing frozen in the open doorway" in the blocking, never "enters the room and freezes". This prevents Seedance from making him walk deep into the room before stopping. For any normal walking scene, write the walking naturally.
@@ -474,7 +580,7 @@ NEW clips to check, clips {first} to {first + len(new_clips) - 1}: {json.dumps(n
 
 List the real problems in the NEW clips, most serious first, each as one short sentence starting with 'clip N:' and saying what to change. Check:
 1. BEAT: does the clip do what its beat says?
-2. BLOCKING CONTINUITY: every character starts where and how the previous clip ended them (its end_position and end_posture), and their facing and awareness continue, unless an action step in this clip shows the change. Nobody teleports, sits down or stands up off screen, or ends up somewhere the layout makes impossible. Someone who returns finds the others exactly where they were left, on the same spot of the same furniture.
+2. BLOCKING & ORIENTATION CONTINUITY: every character starts where and how the previous clip ended them (its end_position, end_posture, end_screen_profile, and end_head_tilt), and their facing and awareness continue, unless an action step in this clip shows the change. No jump-cut orientation snapping: starting screen direction (facing left vs right) and head tilt at 0.0s must match the end of the previous clip. Vertical pitch continuity (chin raised looking up at mid-air vs level vs chin down) must be preserved across cuts. Airborne/hovering entities must remain suspended in mid-air and never spawn on or drop to the floor. Once an entity has completed its arrival or ascent in a previous clip, verify it is NOT re-described taking off or emerging from the floor/origin again, but starts already suspended and hovering at its established flight elevation. Any turn or shift of gaze must happen smoothly within an action step. The camera setup must follow the 180-degree rule across cuts. Nobody teleports, sits down or stands up off screen, or ends up somewhere the layout makes impossible. Someone who returns finds the others exactly where they were left, on the same spot of the same furniture.
 3. TIMING: every action step lasts at least {MIN_STEP_SECONDS:g} second, and movement takes realistic time (walking about 1 to 1.5 metres per second). A long walk or an entrance squeezed into a second, or a walk plus a whole conversation in one clip, is a problem. Check each stated walking distance against the layout: an understated distance (5 metres called 2), or furniture moved closer so that a walk fits, is a problem.
    Action steps must describe only what the camera sees; a step that mentions an off-screen character is a problem.
 4. STORY-CRITICAL MOVEMENT: when where someone goes or comes from matters to the story (hiding, leaving, arriving, returning), does the camera actually show it, start and end? A key exit that happens outside the frame is a problem. When someone leaves so that others can be alone, does the shot follow them until they are clearly gone and end on the people left behind?
@@ -482,7 +588,7 @@ List the real problems in the NEW clips, most serious first, each as one short s
 5. KNOWLEDGE: nobody says, answers or reacts to something they have not noticed yet; nobody behaves as if they noticed someone before an action step shows it; a character whose arrival must be a surprise does not call out or announce themselves.
 6. SPACE: doors, stairs and furniture are where the location's layout puts them; it is clear who opens each door (an off-screen person who does it is "partly visible" and named in the action steps); entrances, exits and distances make physical sense; no position is described in terms that contradict each other ('on the entrance side, directly in front of him' when he faces away from the entrance).
 7. PROPS: every prop keeps its state and holder unless an action step changes them; a held prop stays in hand; broken things stay broken; a prop is marked in_frame only when the camera clearly sees it where the action happens.
-8. CLARITY FOR THE VIDEO MODEL: could the model misread who does what (e.g. a door opening with no visible hand looks as if the person inside opened it)? Does the camera placement agree with the blocking? Is anyone doing two things at once, or is too much packed into {CLIP_SECONDS} seconds?
+8. CAMERA WORK & CLARITY FOR THE VIDEO MODEL: verify that conversation scenes open with a [SAME SETUP] locked master shot to establish geography (first 1-2 clips in a location), then use only motivated [ANGLE CUT]s (OTS, close-ups) — never random aim jumps to different walls. Verify the 180-degree rule is respected. Check that visible characters exhibit active physical reactions rather than freezing like mannequins or staring blankly for 5 seconds. Check that magical or environmental effects have dynamic spatial motion and lighting rather than hovering static. Could the model misread who does what (e.g. a door opening with no visible hand looks as if the person inside opened it)? Does the camera placement agree with the blocking? Is anyone doing two things at once, or is too much packed into {CLIP_SECONDS} seconds?
 9. STORY: the lines and actions keep the user's story and never contradict an earlier clip, and each line's delivery matches how the story says it is spoken (said quietly or whispered in the story means a quiet delivery, never 'normal conversational volume').
 BEFORE reporting anything, check it against the location's layout and the blocking (for example, a door that opens inward is pushed from outside and pulled from inside); if your note is wrong or unsure, drop it. Report only problems that would visibly show in the video or break the story, never style preferences or details the camera would not see. Return {{"problems": []}} if there are none."""
 
@@ -516,6 +622,61 @@ _DISTANCE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:-\s*)?(?:m|metres?|meters?)\b", re
 def _words(line: str) -> int:
     return len(_WORD.findall(line))
 
+_IGNORE_DIRECTIONS = {"none", "off-screen", "off screen", "not visible", ""}
+
+def _norm_desc(val: str | None) -> str:
+    if not val:
+        return ""
+    return re.sub(r"[\s\-_]+", " ", str(val)).strip().lower()
+
+def _profiles_conflict(prof_a: str | None, prof_b: str | None) -> bool:
+    if not prof_a or not prof_b:
+        return False
+    a, b = _norm_desc(prof_a), _norm_desc(prof_b)
+    if a in _IGNORE_DIRECTIONS or b in _IGNORE_DIRECTIONS:
+        return False
+    if a == b:
+        return False
+    left_a, left_b = ("left" in a), ("left" in b)
+    right_a, right_b = ("right" in a), ("right" in b)
+    if (left_a and right_b) or (right_a and left_b):
+        return True
+    if ("frontal" in a and "back" in b) or ("back" in a and "frontal" in b):
+        return True
+    return a != b
+
+_TILT_UP = re.compile(r"\b(up|upward|upwards|raised)\b", re.I)
+_TILT_DOWN = re.compile(r"\b(down|downward|downwards|lowered)\b", re.I)
+_TILT_LEVEL = re.compile(r"\b(level|neutral|horizontal|upright)\b", re.I)
+_TILT_LEFT = re.compile(r"\bleft\b", re.I)
+_TILT_RIGHT = re.compile(r"\bright\b", re.I)
+
+def _tilts_conflict(tilt_a: str | None, tilt_b: str | None) -> bool:
+    if not tilt_a or not tilt_b:
+        return False
+    a, b = _norm_desc(tilt_a), _norm_desc(tilt_b)
+    if a in _IGNORE_DIRECTIONS or b in _IGNORE_DIRECTIONS:
+        return False
+    if a == b:
+        return False
+    left_a, left_b = bool(_TILT_LEFT.search(a)), bool(_TILT_LEFT.search(b))
+    right_a, right_b = bool(_TILT_RIGHT.search(a)), bool(_TILT_RIGHT.search(b))
+    if (left_a and right_b) or (right_a and left_b):
+        return True
+    up_a, up_b = bool(_TILT_UP.search(a)), bool(_TILT_UP.search(b))
+    down_a, down_b = bool(_TILT_DOWN.search(a)), bool(_TILT_DOWN.search(b))
+    level_a = bool(_TILT_LEVEL.search(a)) and not (up_a or down_a or left_a or right_a)
+    level_b = bool(_TILT_LEVEL.search(b)) and not (up_b or down_b or left_b or right_b)
+    if (up_a and down_b) or (down_a and up_b):
+        return True
+    if (up_a and level_b) or (level_a and up_b):
+        return True
+    if (down_a and level_b) or (level_a and down_b):
+        return True
+    if ((left_a or right_a) and level_b) or (level_a and (left_b or right_b)):
+        return True
+    return False
+
 def _check_outline(outline: dict, total_clips: int) -> list[str]:
     bible, problems = outline["scene_bible"], []
     if len(outline["beats"]) != total_clips:
@@ -534,9 +695,16 @@ def _check_outline(outline: dict, total_clips: int) -> list[str]:
     prop_ids = [p["id"] for p in bible.get("props", [])]
     if len(set(prop_ids)) != len(prop_ids):
         problems.append("every prop needs its own unique id")
+    prev_act = ""
     for n, b in enumerate(outline["beats"], 1):
         if b["location_id"] not in ids:
             problems.append(f"beat {n} happens in '{b['location_id']}', which is not in \"locations\": add that place to the locations (with its own description and image_prompt), or use the listed id of the place it means")
+        act = b.get("action", "").strip()
+        if _words(act) < 4:
+            problems.append(f"beat {n}: action description is too brief ('{act}'); describe the specific physical action, dialogue turn, or state change (needs at least 4 words)")
+        if prev_act and act.lower() == prev_act.lower():
+            problems.append(f"beat {n}: action is an exact duplicate of beat {n-1} ('{act}'); every beat must produce a new state change or advance the narrative")
+        prev_act = act
     return problems
 
 def _normalize_clips(clips: list, bible: dict) -> None:
@@ -580,14 +748,63 @@ def _check_chapter(clips: list, bible: dict, first_clip_number: int, chapter_bea
             m = _INNER_STATE.search(text)
             if m:
                 problems.append(f"clip {n}: \"{field}\" names an inner state ('{m.group(0)}'); describe what the face and body visibly do instead")
+        shot_text = clip.get("shot", "")
+        if prev and not re.search(r"\[(SAME SETUP|ANGLE CUT)\]", shot_text, re.I):
+            problems.append(f"[SOFT] clip {n}: shot description should specify camera continuity tag [SAME SETUP] or [ANGLE CUT] at the start")
         if "blocking" in clip:  # scripts saved before the position diary existed have none
             listed = [b["character"].lower() for b in clip["blocking"]]
             if len(set(listed)) != len(listed):
                 problems.append(f"clip {n}: a character is listed twice in the blocking")
+            for b in clip.get("blocking", []):
+                pos_text = f"{b.get('position', '')} {b.get('end_position', '')}".lower()
+                post_val = b.get("posture", "")
+                end_post_val = b.get("end_posture", post_val)
+                if any(w in pos_text for w in ["hover", "float", "airborne", "mid-air", "mid air", "in the air", "aloft"]):
+                    if post_val in ("standing", "walking") or end_post_val in ("standing", "walking"):
+                        problems.append(
+                            f"clip {n}: {b['character']} is described as airborne/hovering/floating, but posture is '{post_val}' (end_posture: '{end_post_val}'); "
+                            f"use posture 'hovering' or 'floating' for airborne entities (never 'standing' or 'walking')."
+                        )
+                if post_val in ("hovering", "floating") or end_post_val in ("hovering", "floating"):
+                    if "on the floor" in pos_text or "on the ground" in pos_text or "on the floorboards" in pos_text:
+                        problems.append(
+                            f"clip {n}: {b['character']} has posture '{post_val}' but position is on the floor/ground; "
+                            f"airborne entities must remain suspended in mid-air at an explicit height above the floor."
+                        )
             if prev and prev.get("blocking") and prev["location_id"] == clip["location_id"]:
+                prev_by_name = {b["character"].lower(): b for b in prev["blocking"]}
                 for b in prev["blocking"]:
                     if b["in_frame"] != "has left" and b["character"].lower() not in listed:
                         problems.append(f"clip {n}: {b['character']} was in {clip['location_id']} in the previous clip and hasn't left, so they must be in this clip's blocking (as 'off screen' if the camera doesn't see them)")
+                for b in clip.get("blocking", []):
+                    cname = b["character"].lower()
+                    if cname in prev_by_name:
+                        pb = prev_by_name[cname]
+                        if pb.get("in_frame") in ON_SCREEN and b.get("in_frame") in ON_SCREEN:
+                            # 1. Posture continuity at 0.0s
+                            prev_end_posture = pb.get("end_posture", pb.get("posture"))
+                            curr_start_posture = b.get("posture")
+                            if prev_end_posture and curr_start_posture and prev_end_posture != curr_start_posture:
+                                problems.append(
+                                    f"clip {n}: {b['character']} starts with posture '{curr_start_posture}', but ended clip {n-1} with '{prev_end_posture}' "
+                                    f"(start posture at 0.0s must match previous clip's ending posture; any posture change must occur within action_steps)"
+                                )
+                            # 2. Screen profile continuity at 0.0s
+                            prev_end_prof = pb.get("end_screen_profile", pb.get("screen_profile"))
+                            curr_prof = b.get("screen_profile")
+                            if _profiles_conflict(prev_end_prof, curr_prof):
+                                problems.append(
+                                    f"clip {n}: {b['character']} starts with screen_profile '{curr_prof}', but ended clip {n-1} with '{prev_end_prof}'. "
+                                    f"Starting pose at 0.0s must match previous clip's ending state. Any head/body rotation must occur smoothly within action_steps."
+                                )
+                            # 3. Head tilt continuity at 0.0s
+                            prev_end_tilt = pb.get("end_head_tilt", pb.get("head_tilt"))
+                            curr_tilt = b.get("head_tilt")
+                            if _tilts_conflict(prev_end_tilt, curr_tilt):
+                                problems.append(
+                                    f"clip {n}: {b['character']} starts with head_tilt '{curr_tilt}', but ended clip {n-1} with '{prev_end_tilt}'. "
+                                    f"Head tilt at 0.0s must match previous clip; write any head motion as a smooth timeline action step."
+                                )
             steps = clip.get("action_steps", [])
             if not steps:
                 problems.append(f"clip {n}: it needs 1 to 4 action steps")
@@ -696,6 +913,97 @@ def write_outline(topic: str, duration: int, total_clips: int) -> tuple[dict, li
     return _ask_checked("Outline", _outline_prompt(topic, duration, total_clips), "Generate Outline", "movie_outline",
                         _outline_schema(), lambda d: _check_outline(d, total_clips))
 
+
+def _continuation_outline_prompt(
+    original_topic: str,
+    continuation_prompt: str,
+    bible: dict,
+    prev_clips: list,
+    additional_clips: int,
+) -> str:
+    start_clip_idx = len(prev_clips) + 1
+    end_clip_idx = len(prev_clips) + additional_clips
+    state = _state_so_far(prev_clips)
+    recent_summary = ""
+    if prev_clips:
+        last_clip = prev_clips[-1]
+        recent_summary = f"The previous video ended at clip {len(prev_clips)} in location '{last_clip.get('location_id', '')}'.\n"
+        if last_clip.get("action_steps"):
+            recent_summary += "Last clip action: " + "; ".join(a.get("action", "") for a in last_clip.get("action_steps", [])) + "\n"
+        if last_clip.get("dialogue"):
+            recent_summary += "Last clip dialogue: " + "; ".join(f'{d.get("speaker")}: "{d.get("line")}"' for d in last_clip.get("dialogue", [])) + "\n"
+
+    return f"""You are continuing an ongoing AI drama scene.
+Original Scene Premise: {original_topic}
+
+Existing Scene Bible:
+{json.dumps(bible, indent=2, ensure_ascii=False)}
+
+Where the previous film left off:
+{recent_summary}
+{state}
+
+User's continuation prompt for the next part of the story:
+{continuation_prompt}
+
+Plan exactly {additional_clips} NEW clips of {CLIP_SECONDS} seconds each (clips {start_clip_idx} to {end_clip_idx}).
+
+Return a JSON object with:
+1. "scene_bible": The updated scene bible.
+   - Keep ALL existing characters, locations, props, and style intact. Do NOT rename or remove any existing character or location.
+   - If the continuation introduces any NEW characters, add them to "characters" with their full permanent look, voice, and photorealistic "image_prompt" (Arri Alexa, 35mm lens, 8k, natural skin texture, NO CGI, NO 3D render).
+   - If the continuation visits any NEW location or set, add it to "locations" with its fixed description, layout map, views, and photorealistic "image_prompt" (NO PEOPLE).
+   - If any new handled props are introduced, add them to "props".
+2. "beats": Exactly {additional_clips} beats in order, one per clip, for clips {start_clip_idx} to {end_clip_idx}.
+   - Beat {start_clip_idx} must connect seamlessly with the ending state of clip {len(prev_clips)}.
+   - If transitioning to a new building or major location, the very first beat in that new place MUST be an Establishing Shot (speech: false).
+   - Each beat has "location_id" (must exist in locations), "action", and "speech" (true/false).
+   - THE LAW OF STATE CHANGES: Every single 5-second beat must produce an explicit observable state change (emotional shift, informational turn, or physical/spatial change). Never repeat the same action or leave characters in a stagnant state across consecutive beats.
+   - NO EVENT STRETCHING: Complete any physical emergence or action within one clip rather than diluting it across multiple beats.
+   - DIALOGUE DENSITY & RAPID MULTI-TURN EXCHANGES (HIGH PACING):
+     In conversational, negotiation, or confrontation scenes, do NOT restrict dialogue to one solitary line per 5 seconds! Keep the scene lively with snappy two-way dialogue exchanges (e.g. Speaker A asks or accuses; Speaker B retorts or reacts within the same clip, or delivers a punchy hook answered in the next). In a dialogue-heavy sequence, aim for high dialogue density so the scene feels fast, punchy, and alive rather than dragging out with long pauses.
+   - NO DEAD-AIR IN DISCUSSION SCENES:
+     Once a conversation or dramatic encounter begins, EVERY consecutive beat must be a SPEECH beat ("speech": true). Never insert random silent filler clips in the middle of an ongoing dialogue exchange. Silent clips ("speech": false) belong ONLY to exterior establishing shots, stealth/sneaking, or brief moments of physical paralysis/shock.
+"""
+
+
+def _check_continuation_outline(outline: dict, additional_clips: int) -> list[str]:
+    bible = outline.get("scene_bible", {})
+    problems = []
+    if len(outline.get("beats", [])) != additional_clips:
+        problems.append(f"'beats' must have exactly {additional_clips} entries, not {len(outline.get('beats', []))}")
+    ids = [loc["id"] for loc in bible.get("locations", [])]
+    prev_act = ""
+    for n, b in enumerate(outline.get("beats", []), 1):
+        if b.get("location_id") not in ids:
+            problems.append(f"continuation beat {n} uses '{b.get('location_id')}' which is not in locations")
+        act = b.get("action", "").strip()
+        if _words(act) < 4:
+            problems.append(f"continuation beat {n}: action description is too brief ('{act}'); describe the specific physical action, dialogue turn, or state change")
+        if prev_act and act.lower() == prev_act.lower():
+            problems.append(f"continuation beat {n}: action is an exact duplicate of beat {n-1} ('{act}'); every beat must produce a new state change")
+        prev_act = act
+    return problems
+
+
+def write_continuation_outline(
+    original_topic: str,
+    continuation_prompt: str,
+    bible: dict,
+    prev_clips: list,
+    additional_clips: int,
+) -> tuple[dict, list[str]]:
+    prompt = _continuation_outline_prompt(original_topic, continuation_prompt, bible, prev_clips, additional_clips)
+    return _ask_checked(
+        "Continuation Outline",
+        prompt,
+        "Generate Continuation Outline",
+        "movie_continuation_outline",
+        _outline_schema(),
+        lambda d: _check_continuation_outline(d, additional_clips),
+    )
+
+
 def write_chapter(topic: str, chap_idx: int, total_chapters: int, beats: list, bible: dict, prev_clips: list, supervise: bool = False) -> tuple[dict, list[str]]:
     first, mine = _chapter_beats(beats, chap_idx)
     schema = _chapter_schema([loc["id"] for loc in bible["locations"]], [c["name"] for c in bible["characters"]],
@@ -742,7 +1050,14 @@ def _delivery_only(delivery: str, voice: str) -> str:
 def _join(items: list[str]) -> str:
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
-def build_multi_prompt(clip: dict, bible: dict, cast_bank: dict[str, str], location_bank: dict[str, list[str]], voice_bank: dict[str, str]) -> tuple[str, list[str], list[str]]:
+def build_multi_prompt(
+    clip: dict,
+    bible: dict,
+    cast_bank: dict[str, str],
+    location_bank: dict[str, list[str]],
+    voice_bank: dict[str, str],
+    prev_clip: dict | None = None,
+) -> tuple[str, list[str], list[str]]:
     """The clip's Seedance prompt and references. Everything the clip needs is stated here, because Seedance sees nothing else:
     the place (pictures and layout), who is where (blocking), what props are in the shot and their state, the timed action,
     the dialogue and the acting."""
@@ -775,6 +1090,54 @@ def build_multi_prompt(clip: dict, bible: dict, cast_bank: dict[str, str], locat
 
     parts = [f"Five-second {shot}, {setting_note}."]
     parts.append(f"Characters: {'. '.join(char_tags)}." if on_screen else "Cinematic environmental shot, no people.")
+
+    blocking = [b for b in clip.get("blocking", []) if b["in_frame"] in ON_SCREEN]
+
+    # Pillar 4: Temporal Continuity Anchor
+    anchor_items = []
+    airborne_characters = []
+    for b in blocking:
+        cname = b["character"]
+        prof = b.get("screen_profile", "").strip()
+        tilt = b.get("head_tilt", "").strip()
+        eye = b.get("eyeline", "").strip()
+        post = b.get("posture", "").strip()
+        if post in ("hovering", "floating"):
+            airborne_characters.append(cname)
+            c_parts = [f"{cname}: {post} in mid-air (airborne)"]
+        else:
+            c_parts = [f"{cname}: {post}"]
+        if prof and prof.lower() not in _IGNORE_DIRECTIONS:
+            c_parts.append(prof.replace("_", " "))
+        if tilt and tilt.lower() not in _IGNORE_DIRECTIONS:
+            c_parts.append(f"head {tilt}")
+        if eye and eye.lower() not in _IGNORE_DIRECTIONS:
+            c_parts.append(f"eyeline {eye}")
+        anchor_items.append(", ".join(c_parts))
+
+    if anchor_items:
+        if prev_clip and prev_clip.get("location_id") == clip.get("location_id"):
+            parts.append(
+                f"CONTINUITY ANCHOR: At 0.0s cut, character body posture, head tilt, and screen direction strictly match the preceding shot: "
+                f"[{'; '.join(anchor_items)}]. "
+                f"STRICT RULE: No sudden snapping, jump-cut warping, or mirroring of face or body direction across the cut. "
+                f"Any change in gaze, head orientation, or posture must occur as a smooth, continuous physical movement during the action timeline."
+            )
+        else:
+            parts.append(
+                f"STARTING POSE ANCHOR: At 0.0s, character body posture, head tilt, and screen direction are strictly anchored: "
+                f"[{'; '.join(anchor_items)}]. "
+                f"Any change in gaze, head angle, or posture must be executed as a smooth, continuous physical movement during the action timeline."
+            )
+
+    if airborne_characters:
+        parts.append(
+            f"AIRBORNE DIRECTIVE: {_join(airborne_characters)} is/are completely airborne in mid-air (hovering/floating), "
+            f"suspended above the floorboards with feet off the ground; do NOT ground their feet, stand them on the floor, or spawn them from the floorboards. "
+            f"Their elevation must remain strictly suspended in mid-air. "
+            f"If already airborne in the scene, they are ALREADY hovering in mid-air at second 0.0; do NOT render another takeoff, eruption, or launch from the ground."
+        )
+
     def _at(posture: str, position: str) -> str:
         # OpenAI often repeats the posture inside the text ("standing frozen in..."); don't say it twice.
         position = position.rstrip(". ")
@@ -785,10 +1148,21 @@ def build_multi_prompt(clip: dict, bible: dict, cast_bank: dict[str, str], locat
         facing = facing if re.search(r"\b(fac(e|es|ing)|look(s|ing)?|turn(s|ing)?|watch(es|ing)?)\b", facing, re.I) else f"facing {facing}"
         start = _at(b["posture"], b["position"])
         end_pos, end_posture = b.get("end_position", b["position"]), b.get("end_posture", b["posture"])
+        profile = b.get("screen_profile", "").strip()
+        tilt = b.get("head_tilt", "").strip()
+        eye = b.get("eyeline", "").strip()
+        details = []
+        if profile and profile.lower() not in _IGNORE_DIRECTIONS:
+            details.append(profile.replace("_", " "))
+        if tilt and tilt.lower() not in _IGNORE_DIRECTIONS:
+            details.append(f"head {tilt}")
+        if eye and eye.lower() not in _IGNORE_DIRECTIONS:
+            details.append(f"eyeline {eye}")
+        head_str = f" ({', '.join(details)})" if details else ""
+
         if end_pos.rstrip(". ") == b["position"].rstrip(". ") and end_posture == b["posture"]:
-            return f"{start}; {facing}"
-        return f"starts {start}; ends {_at(end_posture, end_pos)}; {facing}"
-    blocking = [b for b in clip.get("blocking", []) if b["in_frame"] in ON_SCREEN]
+            return f"{start}{head_str}; {facing}"
+        return f"starts {start}{head_str}; ends {_at(end_posture, end_pos)}; {facing}"
     if blocking:
         parts.append("Blocking: " + " ".join(
             f"{b['character']} ({b['in_frame']}): {_where(b)}; {b['awareness'].rstrip('. ')}." for b in blocking))
@@ -825,6 +1199,7 @@ def build_multi_prompt(clip: dict, bible: dict, cast_bank: dict[str, str], locat
         parts.append(f"{_join(speakers)} {'is' if len(speakers) == 1 else 'are'} in the frame while speaking; natural dialogue delivery and lip movement matching their line, whether seen in direct view, profile, or dynamic cinematic motion; everyone else keeps their mouth closed.")
     if others:
         parts.append(_plain(others) + ".")
+    parts.append("Fluid cinematic physical motion throughout: render active character bodily reactions, natural momentum, and dynamic responsive lighting; characters must not freeze or remain static.")
     parts.append("No background music.")
     return " ".join(parts), ref_image_urls, ref_audio_urls
 
@@ -1152,7 +1527,8 @@ def main():
             for c_idx, clip_data in enumerate(script_data["clips"]):
                 print(f"\n  ▶ CLIP {(chap_idx * CLIPS_PER_CHAPTER) + c_idx + 1:02d} | Location: {clip_data['location_id']}")
                 print(f"    Shot Type: {clip_data['shot']}")
-                prompt_str, _, _ = build_multi_prompt(clip_data, bible, {}, {}, {})
+                prev_preview = script_data["clips"][c_idx - 1] if c_idx > 0 else (all_clips_json[-1] if all_clips_json else None)
+                prompt_str, _, _ = build_multi_prompt(clip_data, bible, {}, {}, {}, prev_clip=prev_preview)
                 print(f"    SEEDANCE PROMPT:\n    > {prompt_str}")
 
             if chap_num < chapters_count:
@@ -1184,7 +1560,8 @@ def main():
 
             active_script = script_path if (script_path and Path(script_path).exists()) else (Path(args.from_script) if (args.from_script and Path(args.from_script).exists()) else None)
             while True:
-                prompt, ref_image_urls, ref_audio_urls = build_multi_prompt(clip_data, bible, cast_bank, location_bank, voice_bank)
+                prev_clip_script = all_clips_json[-1] if all_clips_json else None
+                prompt, ref_image_urls, ref_audio_urls = build_multi_prompt(clip_data, bible, cast_bank, location_bank, voice_bank, prev_clip=prev_clip_script)
                 print(f"\n  🎬 COMPILED SEEDANCE PROMPT (Clip {global_idx}/{total_clips}):\n  > {prompt}\n", flush=True)
                 if args.interactive:
                     ans = input(f"  Generate Clip {global_idx} on kie.ai? [y = generate, r = reload from script json, q = quit]: ").strip().lower()

@@ -62,6 +62,7 @@
     color: #fff; background: var(--pending); text-transform: capitalize;
   }
   .badge.generating { background: var(--generating); }
+  .badge.plan_ready { background: #8b5cf6; }
   .badge.done { background: var(--done); }
   .badge.failed { background: var(--failed); }
   .timeline { display: flex; gap: 10px; overflow-x: auto; padding: 14px 2px 6px; scroll-snap-type: x proximity; }
@@ -71,6 +72,7 @@
     background: var(--panel);
   }
   .seg.generating { border-top-color: var(--generating); }
+  .seg.plan_ready { border-top-color: #8b5cf6; }
   .seg.done { border-top-color: var(--done); }
   .seg.failed { border-top-color: var(--failed); }
   .seg-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 600; }
@@ -94,6 +96,8 @@
   .detail .meta { color: var(--muted); font-size: 13.5px; }
   .detail-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); padding: 8px 16px; }
+  button.danger { background: transparent; color: var(--failed); border: 1px solid var(--failed); padding: 8px 16px; }
+  button.danger:hover { background: rgba(197, 48, 48, 0.1); }
   .final { margin: 14px 0 4px; display: grid; gap: 10px; }
   .final[hidden] { display: none; }
   .final-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
@@ -150,6 +154,65 @@
   .preview-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 600; color: var(--muted); }
   .prompt-code { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.4; color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow-y: auto; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
   .modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
+
+  /* Master Plan Review Box */
+  .plan-review-box {
+    margin: 16px 0; padding: 18px; border: 1px solid var(--accent);
+    border-top: 5px solid var(--accent); border-radius: 10px;
+    background: var(--panel); display: grid; gap: 14px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  }
+  .plan-review-box[hidden] { display: none; }
+  .plan-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .plan-head h3 { margin: 0; font-size: 16.5px; display: flex; align-items: center; gap: 8px; }
+  .plan-sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .plan-head-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .plan-msg { font-size: 13px; font-weight: 500; min-height: 18px; }
+  .plan-msg.success { color: var(--done); }
+  .plan-msg.error { color: var(--failed); }
+
+  .beats-list { display: grid; gap: 10px; margin-top: 4px; }
+  .beat-card {
+    border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+    background: var(--soft); display: grid; gap: 8px;
+  }
+  .beat-card-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 600; }
+  .beat-badge { background: var(--accent); color: var(--accent-text); padding: 2px 8px; border-radius: 99px; font-size: 11px; }
+  .beat-loc-wrap { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+  .beat-loc-input { font: inherit; font-size: 12.5px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: inherit; }
+  .beat-action-input {
+    width: 100%; font: inherit; font-size: 13.5px; line-height: 1.45; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: inherit;
+    resize: vertical; box-sizing: border-box;
+  }
+  .beat-action-input:focus, .beat-loc-input:focus { border-color: var(--accent); outline: none; }
+  .beat-card-footer { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; color: var(--muted); }
+  .beat-speech-label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+
+  .bible-details { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; background: var(--soft); }
+  .bible-details summary { cursor: pointer; font-size: 13.5px; font-weight: 600; user-select: none; }
+  .bible-content { margin-top: 10px; display: grid; gap: 12px; font-size: 13px; }
+  .bible-sec { display: grid; gap: 6px; }
+  .bible-item { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+
+  /* Extend Story Panel */
+  .extend-panel {
+    margin: 18px 0 6px; padding: 18px; border: 1px solid var(--accent);
+    border-radius: 10px; background: var(--soft); display: grid; gap: 14px;
+  }
+  .extend-panel[hidden] { display: none; }
+  .extend-head h3 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+  .extend-sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .extend-body { display: grid; gap: 12px; }
+  .extend-body textarea {
+    width: 100%; font: inherit; font-size: 13.5px; line-height: 1.45; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: inherit;
+    resize: vertical; box-sizing: border-box;
+  }
+  .extend-body textarea:focus { border-color: var(--accent); outline: none; }
+  .extend-row { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+  .extend-row .field { flex: 1 1 200px; }
+  .extend-row button { padding: 9px 20px; font-size: 13.5px; height: 38px; }
 </style>
 </head>
 <body>
@@ -159,10 +222,16 @@
 
   <section class="panel">
     <form id="form" novalidate>
-      <label class="field">
-        <span class="label">Topic</span>
-        <input type="text" id="topic" name="topic" placeholder="e.g. a woman telling why she didn't like her husband at first" autocomplete="off" required>
-      </label>
+      <div class="field">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <label for="topic" class="label" style="margin: 0; cursor: pointer;">Topic / Story Premise</label>
+          <button type="button" id="btn-enhance-prompt" style="padding: 4px 12px; font-size: 12.5px; border-radius: 6px; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; background: var(--soft); border: 1px solid var(--line); color: var(--text); font-weight: 600; transition: all 0.15s ease;">
+            <span>✨ Enhance Story</span>
+          </button>
+        </div>
+        <textarea id="topic" name="topic" rows="3" placeholder="e.g. A small fairy appears to a woman and tells her she is cursed and won't get a man ever..." autocomplete="off" required style="width: 100%; font: inherit; font-size: 13.5px; line-height: 1.45; padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: inherit; resize: vertical; box-sizing: border-box;"></textarea>
+        <div id="enhance-status" style="font-size: 12px; margin-top: 4px; min-height: 18px; color: var(--muted); display: none;"></div>
+      </div>
 
       <fieldset>
         <legend>Mode</legend>
@@ -211,6 +280,31 @@
     </div>
     <p class="job-meta" id="job-meta"></p>
     <p class="error" id="job-error" hidden></p>
+
+    <!-- Master Plan & Story Progression Review -->
+    <div id="plan-review" class="plan-review-box" hidden>
+      <div class="plan-head">
+        <div>
+          <h3>📋 Story Progression & Master Plan Review</h3>
+          <p class="plan-sub">OpenAI has planned the story progression below. Review or edit the beats before generating video.</p>
+        </div>
+        <div class="plan-head-actions">
+          <button type="button" id="approve-plan" class="button">▶ Approve & Start Video Generation</button>
+          <button type="button" id="save-plan-btn" class="secondary">💾 Save Edits</button>
+          <button type="button" id="replan-btn" class="secondary">🔄 Re-plan Story</button>
+          <button type="button" id="discard-plan-btn" class="danger">🗑️ Discard & Cancel Idea</button>
+        </div>
+      </div>
+      <div id="plan-msg" class="plan-msg" role="status"></div>
+      
+      <div class="beats-list" id="beats-editor"></div>
+
+      <details class="bible-details" id="bible-details">
+        <summary>🎭 Scene Bible Overview (Characters & Locations)</summary>
+        <div id="bible-content" class="bible-content"></div>
+      </details>
+    </div>
+
     <div class="final" id="final" hidden>
       <div class="final-head"><strong>Final video</strong><span class="meta" id="final-meta"></span></div>
       <video id="final-video" controls preload="metadata" hidden></video>
@@ -218,6 +312,37 @@
         <a class="button" id="final-download" hidden>Download video</a>
         <button type="button" class="secondary" id="final-build" hidden>Build final video</button>
         <span id="final-msg" role="status" aria-live="polite"></span>
+      </div>
+    </div>
+
+    <!-- Story Continuation / Extension Panel (Story Videos Mode) -->
+    <div id="extend-story" class="extend-panel" hidden>
+      <div class="extend-head">
+        <div>
+          <h3>🎬 Extend Story / Continuation</h3>
+          <p class="extend-sub">Write a continuation idea for the next scene or chapter. Previous characters, locations, and voices will automatically carry forward.</p>
+        </div>
+      </div>
+      <div class="extend-body">
+        <label class="field">
+          <span class="label">Continuation Idea / Next Scene Event</span>
+          <textarea id="extend-prompt" rows="2" placeholder="e.g. The next morning, Elena goes to the ancient library in town to research the curse and meets a mysterious archivist named David..."></textarea>
+        </label>
+        <div class="extend-row">
+          <label class="field">
+            <span class="label">Additional Duration</span>
+            <select id="extend-duration">
+              <option value="15">15 s · 3 clips</option>
+              <option value="20">20 s · 4 clips</option>
+              <option value="30" selected>30 s · 6 clips</option>
+              <option value="40">40 s · 8 clips</option>
+              <option value="60">60 s · 12 clips</option>
+              <option value="75">75 s · 15 clips</option>
+            </select>
+          </label>
+          <button type="button" id="extend-submit-btn">✨ Plan Continuation</button>
+        </div>
+        <div id="extend-msg" class="plan-msg" role="status"></div>
       </div>
     </div>
     <div class="timeline" id="timeline" aria-label="Clips: select one to see its script and actions"></div>
@@ -281,7 +406,7 @@
 
 <script>
 (() => {
-  const CLIP_COUNTS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 18, 24, 30, 60];
+  const CLIP_COUNTS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 24, 30, 60];
   const DEFAULT_CLIPS = 3;
   const POLL_MS = 4000;
   const STORE_KEY = "videoExtender.lastJob";
@@ -340,14 +465,15 @@
   }
 
   function renderSegment(clip, job, previous) {
-    const seg = el("article", `seg ${clip.status}`);
+    const isPlanReady = clip.status === "pending" && job.status === "plan_ready";
+    const seg = el("article", `seg ${isPlanReady ? "plan_ready" : clip.status}`);
     seg.dataset.index = String(clip.index);
     seg.tabIndex = 0; // selectable from the keyboard (Enter or Space), like a click
     const head = el("div", "seg-head");
     head.append(el("span", null, `Clip ${clip.index + 1}`));
     const right = el("span");
     if (clip.resolution) right.append(el("span", "res", `${clip.resolution} `));
-    right.append(el("span", `badge ${clip.status}`, clip.status));
+    right.append(el("span", `badge ${isPlanReady ? "plan_ready" : clip.status}`, isPlanReady ? "plan ready" : clip.status));
     head.append(right);
     seg.append(head);
 
@@ -361,6 +487,11 @@
         }
         const loc = (clip.movie_script.location_id || "").replace(/_/g, " ");
         seg.append(el("p", "visual", `📍 ${loc}`));
+      } else if (job.beats && job.beats[clip.index]) {
+        const b = job.beats[clip.index];
+        seg.append(el("p", "line", `Beat ${clip.index + 1}: ${b.action}`));
+        const loc = (b.location_id || "").replace(/_/g, " ");
+        seg.append(el("p", "visual", `📍 ${loc}${b.speech === false ? " (silent)" : ""}`));
       } else {
         seg.append(el("p", "waiting", "Waiting for the script…"));
       }
@@ -406,7 +537,7 @@
     $("job-title").textContent = job.request.topic;
     const badge = $("job-status");
     badge.className = `badge ${job.status}`;
-    badge.textContent = job.status;
+    badge.textContent = job.status === "plan_ready" ? "Plan Ready for Review" : job.status;
     const done = job.clips.filter((c) => c.status === "done").length;
     $("job-meta").replaceChildren(
       `${modeName} · ${job.clips.length} × ${job.request.clip_duration} s clips · ${job.resolution} · ${done} of ${job.clips.length} done · job `,
@@ -424,6 +555,8 @@
       return node;
     }));
     renderFinal(job);
+    renderPlanReview(job);
+    renderExtendStory(job);
     renderDetail();
   }
 
@@ -472,6 +605,320 @@
       $("final-msg").textContent = `Could not reach the server (${e.message}).`;
     } finally {
       finalBusy = false;
+    }
+  });
+
+  // --- Master Plan / Story Progression Review ---
+  let planBusy = false;
+
+  function gatherEditedBeats() {
+    const job = shownJob;
+    if (!job || !job.beats) return [];
+    const container = $("beats-editor");
+    const beats = JSON.parse(JSON.stringify(job.beats));
+    container.querySelectorAll(".beat-card").forEach((card) => {
+      const idx = Number(card.dataset.beatIdx);
+      const action = card.querySelector('[data-field="action"]')?.value;
+      const loc = card.querySelector('[data-field="location_id"]')?.value;
+      const speech = card.querySelector('[data-field="speech"]')?.checked;
+      if (beats[idx]) {
+        if (action !== undefined) beats[idx].action = action.trim();
+        if (loc !== undefined) beats[idx].location_id = loc.trim();
+        if (speech !== undefined) beats[idx].speech = speech;
+      }
+    });
+    return beats;
+  }
+
+  function renderPlanReview(job) {
+    const box = $("plan-review");
+    if (!box) return;
+    const isPlanReady = job.mode === "story_videos" && (job.status === "plan_ready" || (job.beats && job.beats.length > 0));
+    box.hidden = !isPlanReady;
+    if (!isPlanReady) return;
+
+    const canEdit = job.status === "plan_ready";
+    const isContinuation = (job.clips || []).some((c) => c.status === "done");
+    $("approve-plan").hidden = !canEdit;
+    $("approve-plan").disabled = planBusy;
+    $("save-plan-btn").hidden = !canEdit;
+    $("save-plan-btn").disabled = planBusy;
+    $("replan-btn").hidden = !canEdit || isContinuation;
+    $("replan-btn").disabled = planBusy;
+    $("discard-plan-btn").hidden = !canEdit;
+    $("discard-plan-btn").disabled = planBusy;
+    $("discard-plan-btn").textContent = isContinuation ? "🗑️ Discard Continuation" : "🗑️ Discard & Cancel Idea";
+
+    const msg = $("plan-msg");
+    if (!canEdit) {
+      msg.className = "plan-msg";
+      msg.textContent = "Plan approved · Video generation in progress or complete.";
+    }
+
+    const container = $("beats-editor");
+    if (!container.contains(document.activeElement)) {
+      container.innerHTML = "";
+      (job.beats || []).forEach((b, idx) => {
+        const isClipDone = job.clips[idx] && job.clips[idx].status === "done";
+        const canEditCard = canEdit && !isClipDone;
+        const card = el("div", `beat-card${isClipDone ? " beat-done" : ""}`);
+        card.dataset.beatIdx = String(idx);
+
+        const head = el("div", "beat-card-head");
+        const titleSpan = el("span");
+        if (isClipDone) {
+          titleSpan.innerHTML = `<span class="beat-badge" style="background: var(--done);">Clip ${idx + 1} · Generated</span> <strong>Clip ${idx + 1}</strong> (${job.request.clip_duration || 5}s)`;
+        } else if (isContinuation) {
+          titleSpan.innerHTML = `<span class="beat-badge" style="background: #8b5cf6;">Beat ${idx + 1} · Continuation</span> <strong>Clip ${idx + 1}</strong> (${job.request.clip_duration || 5}s)`;
+        } else {
+          titleSpan.innerHTML = `<span class="beat-badge">Beat ${idx + 1}</span> <strong>Clip ${idx + 1}</strong> (${job.request.clip_duration || 5}s)`;
+        }
+        head.appendChild(titleSpan);
+
+        const locWrap = el("div", "beat-loc-wrap");
+        locWrap.appendChild(el("span", null, "📍 Location:"));
+        const locInput = el("input", "beat-loc-input");
+        locInput.value = b.location_id || "";
+        locInput.dataset.field = "location_id";
+        locInput.disabled = !canEditCard;
+        locWrap.appendChild(locInput);
+        head.appendChild(locWrap);
+        card.appendChild(head);
+
+        const actionText = el("textarea", "beat-action-input");
+        actionText.rows = 2;
+        actionText.value = b.action || "";
+        actionText.dataset.field = "action";
+        actionText.disabled = !canEditCard;
+        actionText.placeholder = "Describe the visual action and event that happens in this beat...";
+        card.appendChild(actionText);
+
+        const footer = el("div", "beat-card-footer");
+        const speechLabel = el("label", "beat-speech-label");
+        const speechCheck = el("input");
+        speechCheck.type = "checkbox";
+        speechCheck.checked = b.speech !== false;
+        speechCheck.dataset.field = "speech";
+        speechCheck.disabled = !canEditCard;
+        const speechText = el("span", null, speechCheck.checked ? "🗣️ Character Dialogue" : "🤫 Silent / Ambient Beat");
+        speechCheck.addEventListener("change", () => {
+          speechText.textContent = speechCheck.checked ? "🗣️ Character Dialogue" : "🤫 Silent / Ambient Beat";
+        });
+        speechLabel.appendChild(speechCheck);
+        speechLabel.appendChild(speechText);
+        footer.appendChild(speechLabel);
+        card.appendChild(footer);
+
+        container.appendChild(card);
+      });
+    }
+
+    const bibleDiv = $("bible-content");
+    bibleDiv.innerHTML = "";
+    if (job.movie_bible) {
+      const chars = job.movie_bible.characters || [];
+      if (chars.length) {
+        const sec = el("div", "bible-sec");
+        sec.innerHTML = `<h4>Characters (${chars.length})</h4>`;
+        chars.forEach((c) => {
+          const item = el("div", "bible-item");
+          item.innerHTML = `<strong>${escapeHtml(c.name)}</strong>: ${escapeHtml(c.look)} <br><small style="color: var(--muted);">Voice: ${escapeHtml(c.voice)}</small>`;
+          sec.appendChild(item);
+        });
+        bibleDiv.appendChild(sec);
+      }
+      const locs = job.movie_bible.locations || [];
+      if (locs.length) {
+        const sec = el("div", "bible-sec");
+        sec.innerHTML = `<h4>Locations (${locs.length})</h4>`;
+        locs.forEach((l) => {
+          const item = el("div", "bible-item");
+          item.innerHTML = `<strong>${escapeHtml(l.id)}</strong>: ${escapeHtml(l.description)} ${l.layout ? `<br><small style="color: var(--muted);">Layout: ${escapeHtml(l.layout)}</small>` : ""}`;
+          sec.appendChild(item);
+        });
+        bibleDiv.appendChild(sec);
+      }
+    }
+  }
+
+  $("approve-plan")?.addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job || planBusy) return;
+    planBusy = true;
+    const msg = $("plan-msg");
+    msg.className = "plan-msg";
+    msg.textContent = "Approving plan & starting video generation…";
+    $("approve-plan").disabled = true;
+    try {
+      const beats = gatherEditedBeats();
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/approve-plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ beats }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(describeError(err));
+      }
+      msg.className = "plan-msg success";
+      msg.textContent = "Plan approved! Video generation started.";
+      poll(job.id);
+    } catch (e) {
+      msg.className = "plan-msg error";
+      msg.textContent = `Approval failed: ${e.message}`;
+    } finally {
+      planBusy = false;
+      renderPlanReview(job);
+    }
+  });
+
+  $("save-plan-btn")?.addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job || planBusy) return;
+    planBusy = true;
+    const msg = $("plan-msg");
+    msg.className = "plan-msg";
+    msg.textContent = "Saving plan edits…";
+    try {
+      const beats = gatherEditedBeats();
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/plan`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ beats }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(describeError(err));
+      }
+      msg.className = "plan-msg success";
+      msg.textContent = "Plan edits saved successfully!";
+      const updated = await res.json();
+      renderJob(updated);
+    } catch (e) {
+      msg.className = "plan-msg error";
+      msg.textContent = `Save failed: ${e.message}`;
+    } finally {
+      planBusy = false;
+    }
+  });
+
+  $("replan-btn")?.addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job || planBusy) return;
+    if (!confirm("Ask OpenAI to generate a completely new Master Plan for this story? Existing beats will be replaced.")) return;
+    planBusy = true;
+    const msg = $("plan-msg");
+    msg.className = "plan-msg";
+    msg.textContent = "Requesting new Master Plan from OpenAI…";
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/replan`, { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(describeError(err));
+      }
+      poll(job.id);
+    } catch (e) {
+      msg.className = "plan-msg error";
+      msg.textContent = `Re-plan failed: ${e.message}`;
+    } finally {
+      planBusy = false;
+    }
+  });
+
+  $("discard-plan-btn")?.addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job || planBusy) return;
+    const isContinuation = (job.clips || []).some((c) => c.status === "done");
+    const confirmMsg = isContinuation
+      ? "Discard this continuation? Your previously completed video and clips will remain intact."
+      : "Are you sure you want to completely cancel and discard this video idea? All planned beats and settings will be deleted.";
+    if (!confirm(confirmMsg)) return;
+    planBusy = true;
+    const msg = $("plan-msg");
+    msg.className = "plan-msg";
+    msg.textContent = isContinuation ? "Rolling back continuation…" : "Cancelling and deleting video idea…";
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}`, { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(describeError(err));
+      }
+      const data = await res.json().catch(() => ({}));
+      if (data.action === "rolled_back_to_done") {
+        msg.className = "plan-msg success";
+        msg.textContent = "Continuation discarded. Reverting to completed video.";
+        poll(job.id);
+        return;
+      }
+      clearTimeout(pollTimer);
+      try { localStorage.removeItem(STORE_KEY); } catch (e) {}
+      shownJob = null;
+      shownJson = null;
+      shownClips.clear();
+      selected = null;
+      $("job").hidden = true;
+      $("plan-review").hidden = true;
+      setBusy(false);
+      formMsg.className = "";
+      formMsg.textContent = "Video idea has been cancelled and deleted.";
+      $("topic").value = "";
+      $("topic").focus();
+    } catch (e) {
+      msg.className = "plan-msg error";
+      msg.textContent = `Could not delete job: ${e.message}`;
+    } finally {
+      planBusy = false;
+    }
+  });
+
+  // --- Story Continuation Panel ---
+  let extendBusy = false;
+  function renderExtendStory(job) {
+    const box = $("extend-story");
+    if (!box) return;
+    const canExtend = job.mode === "story_videos" && job.status === "done";
+    box.hidden = !canExtend;
+    if (!canExtend) return;
+    $("extend-submit-btn").disabled = extendBusy;
+  }
+
+  $("extend-submit-btn")?.addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job || extendBusy) return;
+    const promptInput = $("extend-prompt");
+    const continuationPrompt = promptInput.value.trim();
+    if (!continuationPrompt) {
+      $("extend-msg").className = "plan-msg error";
+      $("extend-msg").textContent = "Please write your continuation idea or next scene event first.";
+      promptInput.focus();
+      return;
+    }
+    const duration = Number($("extend-duration").value) || 30;
+    extendBusy = true;
+    $("extend-submit-btn").disabled = true;
+    const msg = $("extend-msg");
+    msg.className = "plan-msg";
+    msg.textContent = "Analyzing previous story & planning continuation with OpenAI…";
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/extend`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ continuation_prompt: continuationPrompt, duration }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(describeError(err));
+      }
+      msg.className = "plan-msg success";
+      msg.textContent = "Continuation planned! Review the new beats in the Master Plan card above.";
+      promptInput.value = "";
+      poll(job.id);
+    } catch (e) {
+      msg.className = "plan-msg error";
+      msg.textContent = `Could not plan continuation: ${e.message}`;
+    } finally {
+      extendBusy = false;
+      $("extend-submit-btn").disabled = false;
     }
   });
 
@@ -989,6 +1436,11 @@
         }
         return;
       }
+      if (job.status === "plan_ready") {
+        setBusy(false);
+        formMsg.textContent = "Master Plan is ready! Please review and approve the story progression below.";
+        return;
+      }
       setBusy(true);
       const joining = job.clips.length > 0 && job.clips.every((c) => c.status === "done");
       formMsg.textContent = pendingAction
@@ -1051,6 +1503,70 @@
         const r5 = form.querySelector('input[name="clip_duration"][value="5"]');
         if (r5 && !r5.checked) { r5.checked = true; fillDurations(); }
       }
+    }
+  });
+
+  // --- Enhance Prompt Button ---
+  const enhanceBtn = $("btn-enhance-prompt");
+  const enhanceStatus = $("enhance-status");
+  let enhanceBusy = false;
+
+  enhanceBtn?.addEventListener("click", async () => {
+    if (enhanceBusy) return;
+    const topicInput = $("topic");
+    const rawTopic = topicInput.value.trim();
+    if (!rawTopic) {
+      enhanceStatus.style.display = "block";
+      enhanceStatus.style.color = "var(--warn, #c53030)";
+      enhanceStatus.textContent = "Please write a brief story premise first.";
+      topicInput.focus();
+      return;
+    }
+
+    const duration = Number(durationSel.value) || 30;
+    const clipDuration = Number(radio("clip_duration")) || 5;
+    const mode = radio("mode") || "story_videos";
+    const modeName = {talking_head: "Talking Head", story_time: "Story Time", story_videos: "Story Videos"}[mode] || mode;
+
+    enhanceBusy = true;
+    enhanceBtn.disabled = true;
+    enhanceBtn.innerHTML = `<span>⏳ Enhancing (${duration}s · ${modeName})…</span>`;
+    enhanceStatus.style.display = "block";
+    enhanceStatus.style.color = "var(--muted)";
+    enhanceStatus.textContent = `Consulting Hollywood story architect for a ${duration}s ${modeName} progression…`;
+
+    try {
+      const res = await fetch("/enhance-prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topic: rawTopic,
+          duration: duration,
+          clip_duration: clipDuration,
+          mode: mode,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(describeError(data));
+
+      topicInput.value = data.enhanced_topic;
+      topicInput.style.borderColor = "var(--accent)";
+      topicInput.style.boxShadow = "0 0 0 3px rgba(43, 114, 186, 0.25)";
+      setTimeout(() => {
+        topicInput.style.borderColor = "";
+        topicInput.style.boxShadow = "";
+      }, 1500);
+
+      enhanceStatus.style.color = "var(--accent)";
+      enhanceStatus.textContent = `✓ Story expanded into a ${duration}s multi-act roadmap for ${modeName}! You can edit or tweak any details.`;
+    } catch (e) {
+      enhanceStatus.style.color = "var(--warn, #c53030)";
+      enhanceStatus.textContent = `Could not enhance prompt: ${e.message}`;
+    } finally {
+      enhanceBusy = false;
+      enhanceBtn.disabled = false;
+      enhanceBtn.innerHTML = `<span>✨ Enhance Story</span>`;
     }
   });
 
