@@ -26,7 +26,17 @@ from celery import Celery
 from celery.utils.log import get_task_logger
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from openai import OpenAI
+try:
+    from langfuse.openai import OpenAI
+    from langfuse import observe, get_client
+except ImportError:
+    from openai import OpenAI
+    def observe(*args, **kwargs):
+        def decorator(f):
+            return f
+        return decorator
+    def get_client():
+        return None
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
@@ -34,6 +44,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 KIE_API_KEY = os.getenv("KIE_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6")
+LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
+LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"))
 KIE_API_BASE = "https://api.kie.ai"
 KIE_UPLOAD_BASE = "https://kieai.redpandaai.co"  # kie.ai's file host; uploads are deleted after 24 hours
 KIE_MODEL = "bytedance/seedance-2-mini"
@@ -50,6 +63,16 @@ CLIP_DURATION = 10  # seconds; production clip length. A job may also use 5-seco
 MASTER_RESOLUTION = "720p"
 
 
+def get_langfuse_trace_url(trace_id: str) -> str | None:
+    """Return the direct URL to inspect this trace in the Langfuse UI if credentials are set."""
+    if not LANGFUSE_PUBLIC_KEY or not LANGFUSE_SECRET_KEY:
+        return None
+    try:
+        return get_client().get_trace_url(trace_id=trace_id)
+    except Exception:
+        return None
+
+
 # --- Celery App ---
 celery_app = Celery("app", broker=REDIS_URL)
 celery_app.conf.broker_connection_retry_on_startup = True
@@ -57,7 +80,7 @@ celery_app.conf.broker_connection_retry_on_startup = True
 
 # --- Models ---
 Resolution = Literal["480p", "720p"]
-Mode = Literal["talking_head", "story_time", "story_videos"]
+Mode = Literal["talking_head", "story_time", "story_videos", "narrated_drama"]
 ClipDuration = Literal[5, 10]  # production is always 10; 5 exists only to save credits while testing
 Status = Literal["pending", "generating", "plan_ready", "done", "failed"]  # shared by clips and jobs
 
@@ -68,6 +91,7 @@ class ClipRequest(BaseModel):
     resolution: Resolution = "480p"
     mode: Mode = "talking_head"
     clip_duration: ClipDuration = CLIP_DURATION
+    supervise: bool = False
 
     @model_validator(mode="after")
     def duration_is_whole_clips(self):
@@ -77,10 +101,10 @@ class ClipRequest(BaseModel):
 
     @model_validator(mode="after")
     def story_videos_uses_5s_clips(self):
-        if self.mode == "story_videos" and self.clip_duration != 5:
+        if self.mode in ("story_videos", "narrated_drama") and self.clip_duration != 5:
             self.clip_duration = 5
             if self.duration % 5:
-                raise ValueError("story_videos duration must be a multiple of 5 seconds")
+                raise ValueError(f"{self.mode} duration must be a multiple of 5 seconds")
         return self
 
     @property
@@ -165,12 +189,15 @@ class Job(BaseModel):
     # Story Videos mode: the full scene bible dict, beat list, and reference banks
     movie_bible: dict | None = None
     beats: list | None = None
+    acts: list | None = None           # Narrated Drama: the act breakdown long plans are built from
     cast_bank: dict | None = None      # character name -> FLUX image URL
     location_bank: dict | None = None  # location id -> list of FLUX image URLs
     voice_bank: dict | None = None     # character name -> voice sample URL
     # The joined video (final_video_path(), served at GET /jobs/{id}/video): when it was last built, or why it failed.
     final_video_at: float | None = None
     final_error: str | None = None
+    # Langfuse direct trace URL for observability
+    langfuse_url: str | None = None
 
 
 # --- Redis Store Helpers ---
@@ -182,6 +209,8 @@ def _job_key(job_id: str) -> str:
 
 
 def save_job(job: Job) -> None:
+    if not job.langfuse_url:
+        job.langfuse_url = get_langfuse_trace_url(job.id)
     redis_client.set(_job_key(job.id), job.model_dump_json())
 
 
@@ -358,6 +387,7 @@ def generate_script(topic: str, num_clips: int, mode: Mode = "talking_head", cli
 def _ask_openai_json(system_prompt: str, user_content: str, name: str, schema: dict) -> dict:
     """One Structured Outputs call (strict JSON schema); returns the parsed JSON or raises ValueError."""
     response = OpenAI(api_key=OPENAI_API_KEY, timeout=300).chat.completions.create(
+        name=name,
         model=OPENAI_MODEL,
         messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
         response_format={"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
@@ -604,6 +634,7 @@ def _wait_for_clip(client: httpx.Client, task_id: str) -> dict:
     raise TimeoutError(f"task {task_id} did not finish within {KIE_POLL_TIMEOUT} seconds")
 
 
+@observe(name="kie_generate_clip", as_type="span")
 def generate_clip(
     prompt: str,
     resolution: str,
@@ -632,7 +663,19 @@ def generate_clip(
     }
     with _kie_client(KIE_API_BASE) as client:
         task_id = _unwrap(client.post("/api/v1/jobs/createTask", json=body))["taskId"]
-        return _wait_for_clip(client, task_id)
+        result = _wait_for_clip(client, task_id)
+        try:
+            get_client().update_current_span(
+                metadata={
+                    "task_id": task_id,
+                    "credits_consumed": result.get("credits_consumed"),
+                    "resolution": resolution,
+                    "duration": duration,
+                }
+            )
+        except Exception:
+            pass
+        return result
 
 
 def _run_ffmpeg(*args: str) -> None:
@@ -733,7 +776,10 @@ def _probe(path: Path) -> dict:
 
 def _local_clip(job_id: str, clip: Clip) -> Path:
     """The clip's video, downloaded once into the job's media folder (named after its URL, so a regenerated clip is a
-    new file and an unchanged one is never fetched twice)."""
+    new file and an unchanged one is never fetched twice). For story/narrated drama modes, check clip_NN.mp4 first."""
+    movie_path = job_media_dir(job_id) / "clips" / f"clip_{clip.index + 1:02d}.mp4"
+    if movie_path.exists():
+        return movie_path
     path = job_media_dir(job_id) / "clips" / f"{hashlib.sha1(clip.video_url.encode()).hexdigest()[:16]}.mp4"
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -807,6 +853,26 @@ def _normalized(src: Path, width: int, height: int, fps: str, trim_lead_in: bool
     return out
 
 
+def _wants_lead_in_trim(job: Job, index: int, clip: Clip) -> bool:
+    """Should this clip start just before its first word?
+
+    Clip 0 always keeps its opening. A Narrated Drama clip with no speech - a wordless shock beat, an
+    establishing shot of the place - has no first word, and its opening frames are the whole point of the
+    beat. _lead_in() keys on sound that is loud AND tonal, which a brass bell, a lift chime or a slammed
+    door all are, so it would read the jolt as the first word and cut the build-up before it."""
+    if index == 0:
+        return False
+    if job.mode == "talking_head":
+        return True
+    if job.mode != "narrated_drama":
+        return False
+    script = clip.movie_script or {}
+    turns = script.get("speech")
+    if turns is None:  # a clip planned before multi-speaker turns existed
+        return bool((script.get("audio_text") or "").strip())
+    return any((t.get("line") or "").strip() for t in turns)
+
+
 def assemble_final_video(job: Job) -> Path:
     """Join every clip, in order, into the job's final video and return its path.
 
@@ -824,7 +890,7 @@ def assemble_final_video(job: Job) -> Path:
     own = [p for p, c in zip(probes, job.clips) if (c.resolution or job.resolution) == job.resolution]
     width, height = (own[0]["width"], own[0]["height"]) if own else FINAL_SIZES[job.resolution]
     fps = (own or probes)[0]["fps"]
-    trims = [job.mode == "talking_head" and i > 0 for i in range(len(sources))]
+    trims = [_wants_lead_in_trim(job, i, c) for i, c in enumerate(job.clips)]
     parts = [_normalized(p, width, height, fps, trim) for p, trim in zip(sources, trims)]
     folder = job_media_dir(job.id)
     listing = folder / "concat.txt"
@@ -844,6 +910,13 @@ import movie_scene_multispeaker as movie
 def _generate_flux_images(job_id: str, bible: dict, existing_cast: dict | None = None, existing_locs: dict | None = None) -> tuple[dict, dict]:
     """Generate FLUX images for all cast and locations. Only generates images for characters/locations not already present in the banks. Returns (cast_bank, location_bank)."""
     cast_bank = dict(existing_cast or {})
+    # Narrated Drama derives look/image_prompt from each character's structured "appearance"; doing it here
+    # too covers a bible that reached this point without it (an older job, or a continuation's new cast).
+    try:
+        import hybrid_narrated_drama as _hnd
+        _hnd._compile_bible_visuals(bible)
+    except Exception:
+        pass
     for c in bible.get("characters", []):
         if c["name"] not in cast_bank:
             url = movie.generate_flux_image(c["image_prompt"])
@@ -879,7 +952,8 @@ def _bank_new_voices(job_id: str, clip_index: int, clip_script: dict, video_url:
             try:
                 wav = movie.trim_windowed_voice(
                     clip_path, speaker, d["start_est"], d["end_est"],
-                    turn_idx, clip_script["dialogue"]
+                    turn_idx, clip_script["dialogue"],
+                    out_dir=job_media_dir(job_id) / "voices",
                 )
                 if wav is not None and wav.exists():
                     voice_bank[speaker] = _upload_to_kie(wav)
@@ -912,6 +986,7 @@ def _save_master_plan_file(job: Job) -> Path:
         "duration": num * clip_dur,
         "total_clips": num,
         "scene_bible": job.movie_bible,
+        "acts": job.acts,
         "beats": job.beats,
     }
     plan_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -955,21 +1030,29 @@ def _continue_movie_job(job_id: str) -> None:
     voice_bank = job.voice_bank or {}
     prev_clips = []
     for i in range(total_clips):
-        # Skip clips that are already generated in an earlier run, keeping their script for continuity
-        if i < len(job.clips) and job.clips[i].status == "done" and job.clips[i].movie_script:
-            prev_clips.append(job.clips[i].movie_script)
+        clip_obj = job.clips[i] if i < len(job.clips) else None
+
+        # Skip clips that are already completely generated in an earlier run, keeping their script for continuity
+        if clip_obj and clip_obj.status == "done" and clip_obj.video_url and clip_obj.movie_script:
+            prev_clips.append(clip_obj.movie_script)
             continue
 
         update_clip(job_id, i, status="generating")
 
-        # Script this clip (1 clip per chapter)
-        task_log.info("job %s: scripting clip %d of %d", job_id, i + 1, total_clips)
-        chapter_data, _ = movie.write_chapter(
-            topic, i, total_clips, beats, bible, prev_clips, supervise=False
-        )
-        clip_script = chapter_data["clips"][0]
-        movie._normalize_clips([clip_script], bible)
-        update_clip(job_id, i, movie_script=clip_script)
+        # If this clip's script was already generated before an interruption, reuse it directly and skip OpenAI!
+        if clip_obj and clip_obj.movie_script and isinstance(clip_obj.movie_script, dict) and clip_obj.movie_script.get("location_id"):
+            task_log.info("job %s: clip %d script already exists, skipping OpenAI script generation", job_id, i + 1)
+            clip_script = clip_obj.movie_script
+        else:
+            # Script this clip (1 clip per chapter)
+            task_log.info("job %s: scripting clip %d of %d", job_id, i + 1, total_clips)
+            is_supervise = getattr(job.request, "supervise", False)
+            chapter_data, _ = movie.write_chapter(
+                topic, i, total_clips, beats, bible, prev_clips, supervise=is_supervise
+            )
+            clip_script = chapter_data["clips"][0]
+            movie._normalize_clips([clip_script], bible)
+            update_clip(job_id, i, movie_script=clip_script)
 
         # Build prompt and render
         prev_clip_script = prev_clips[-1] if prev_clips else None
@@ -993,6 +1076,129 @@ def _continue_movie_job(job_id: str) -> None:
         task_log.info("job %s: clip %d done", job_id, i + 1)
 
 
+def _generate_narrated_plan(job_id: str) -> None:
+    """Phase 1 for Narrated Drama: Master Plan outline generation with rapid micro-cycles."""
+    job = get_job(job_id)
+    topic = job.request.topic
+    total_clips = job.request.num_clips
+    import hybrid_narrated_drama as hnd
+    task_log.info("job %s: generating narrated drama master plan for %d clips", job_id, total_clips)
+    outline, problems = hnd.write_narrated_outline(topic, job.request.duration, total_clips)
+    hard = hnd._hard_problems(problems)
+    if hard:
+        # Nothing has been paid for yet: FLUX images and clips both come after the plan is approved. Saving
+        # the rejected plan for inspection and refusing it here is what keeps a broken plan from becoming a
+        # paid run. It is not stored on the job, so it cannot be resumed by accident.
+        folder = job_media_dir(job_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "master_plan_rejected.json").write_text(json.dumps(outline, indent=2, ensure_ascii=False), encoding="utf-8")
+        raise ValueError(
+            "the Master Plan still breaks these rules after retries, so nothing was generated and no credits "
+            "were spent (the rejected plan is saved as master_plan_rejected.json):\n- " + "\n- ".join(hard)
+        )
+    for p in hnd._soft_problems(problems):
+        task_log.warning("job %s: plan note: %s", job_id, p)
+    bible = outline["scene_bible"]
+    beats = outline["beats"]
+    update_job(job_id, movie_bible=bible, beats=beats, acts=outline.get("acts"),
+               scene_bible=json.dumps(bible, ensure_ascii=False),
+               status="plan_ready")
+    _save_master_plan_file(get_job(job_id))
+    task_log.info("job %s: narrated drama master plan ready (%d beats, protagonist %s)",
+                  job_id, len(beats), bible.get("pov_protagonist"))
+
+
+def _continue_narrated_drama_job(job_id: str) -> None:
+    """Phase 1.5: FLUX images -> Phase 2: Narrated drama per-clip (VO / Dialogue / Shock) -> assemble."""
+    job = get_job(job_id)
+    topic = job.request.topic
+    total_clips = len(job.clips)
+    bible = job.movie_bible
+    beats = job.beats
+    import hybrid_narrated_drama as hnd
+
+    # Phase 1.5: FLUX images
+    cast_bank = job.cast_bank or {}
+    location_bank = job.location_bank or {}
+    task_log.info("job %s: checking/generating FLUX reference images", job_id)
+    cast_bank, location_bank = _generate_flux_images(job_id, bible, cast_bank, location_bank)
+    update_job(job_id, cast_bank=cast_bank, location_bank=location_bank)
+
+    # Phase 2: Per-clip script + generate
+    voice_bank = job.voice_bank or {}
+    prev_clips = []
+    for i in range(total_clips):
+        clip_obj = job.clips[i] if i < len(job.clips) else None
+        if clip_obj and clip_obj.status == "done" and clip_obj.video_url and clip_obj.movie_script:
+            hnd._normalize_narrated_clip(clip_obj.movie_script, bible)
+            prev_clips.append(clip_obj.movie_script)
+            continue
+
+        update_clip(job_id, i, status="generating")
+
+        if clip_obj and clip_obj.movie_script and isinstance(clip_obj.movie_script, dict) and clip_obj.movie_script.get("delivery_mode"):
+            task_log.info("job %s: clip %d script already exists, skipping OpenAI script generation", job_id, i + 1)
+            clip_script = clip_obj.movie_script
+            hnd._normalize_narrated_clip(clip_script, bible)
+        else:
+            task_log.info("job %s: scripting narrated clip %d of %d", job_id, i + 1, total_clips)
+            is_supervise = getattr(job.request, "supervise", False)
+            ch_data, clip_problems = hnd.write_narrated_chapter(
+                topic, i, total_clips, beats, bible, prev_clips, supervise=is_supervise
+            )
+            clip_hard = hnd._hard_problems(clip_problems)
+            if clip_hard:
+                # Stop before rendering. Earlier clips keep their videos and the job can be resumed, so the
+                # cost of stopping is one unrendered clip instead of a whole broken video.
+                raise RuntimeError(
+                    f"clip {i + 1}'s script still breaks these rules after retries, so it was not rendered:\n- "
+                    + "\n- ".join(clip_hard)
+                )
+            for p in hnd._soft_problems(clip_problems):
+                task_log.warning("job %s: clip %d note: %s", job_id, i + 1, p)
+            clip_script = ch_data["clips"][0]
+            hnd._normalize_narrated_clip(clip_script, bible)
+            update_clip(job_id, i, movie_script=clip_script)
+
+        # Build prompt & render
+        prev_script = prev_clips[-1] if prev_clips else None
+        prompt, img_urls, aud_urls = hnd.build_narrated_prompt(
+            clip_script, bible, cast_bank, location_bank, voice_bank, prev_clip=prev_script
+        )
+        task_log.info("job %s: rendering narrated clip %d of %d [%s] (%d images, %d audios)",
+                      job_id, i + 1, total_clips, clip_script.get("delivery_mode"), len(img_urls), len(aud_urls))
+        res = hnd.render_narrated_clip(i + 1, prompt, img_urls, aud_urls, interactive=False,
+                                       out_dir=job_media_dir(job_id))
+        if res == "quit":
+            raise RuntimeError(f"narrated clip {i + 1} failed after retries")
+
+        video_url = res["video_url"]
+        update_clip(job_id, i, video_url=video_url, status="done", resolution="480p")
+
+        # Bank voice if speaker present
+        clip_file = _local_clip_movie(job_id, i, video_url)
+        clip_turns = hnd._clip_turns(clip_script)
+        banked = False
+        for t_idx, turn in enumerate(clip_turns):
+            spk = (turn.get("speaker") or "").strip()
+            if not spk or spk.lower() in {k.lower() for k in voice_bank}:
+                continue
+            if not hnd.should_bank_voice(turn, spk, beats, i):
+                task_log.info("job %s: clip %d: '%s' line is too short to bank a voice from; waiting for a longer one",
+                              job_id, i + 1, spk)
+                continue
+            s_est = float(turn.get("start_est", 0.5) or 0.5)
+            e_est = float(turn.get("end_est", 4.5) or 4.5)
+            hnd.bank_voice(clip_file, spk, voice_bank, start_est=s_est, end_est=e_est,
+                           turn_index=t_idx, turns=clip_turns)
+            banked = True
+        if banked:
+            update_job(job_id, voice_bank=voice_bank)
+
+        prev_clips.append(clip_script)
+        task_log.info("job %s: clip %d done", job_id, i + 1)
+
+
 # --- Celery Task ---
 task_log = get_task_logger(__name__)
 
@@ -1002,6 +1208,7 @@ def _fail_job(job_id: str, message: str) -> None:
     update_job(job_id, status="failed", error=message)
 
 
+@observe(name="assemble_final_video", as_type="span")
 def _assemble(job_id: str) -> None:
     """Build (or rebuild) the job's final video and record it on the job. A failure goes in final_error and removes
     any older final video, which no longer matches the clips; it never fails the job, whose clips are fine. Never
@@ -1017,11 +1224,22 @@ def _assemble(job_id: str) -> None:
         update_job(job_id, final_video_at=None, final_error=message)
 
 
+@observe(name="assemble_task")
+def _assemble_task_traced(job_id: str, **kwargs) -> None:
+    try:
+        _assemble(job_id)
+        update_job(job_id, status="done")
+    finally:
+        try:
+            get_client().flush()
+        except Exception:
+            pass
+
+
 @celery_app.task
 def assemble_task(job_id: str) -> None:
     """POST /jobs/{job_id}/assemble: build the final video on demand (the endpoint has marked the job generating)."""
-    _assemble(job_id)
-    update_job(job_id, status="done")
+    _assemble_task_traced(job_id, langfuse_trace_id=job_id)
 
 
 def _make_anchors(job_id: str, story: bool, video_url: str) -> None:
@@ -1104,102 +1322,150 @@ def _render_clip(job_id: str, clip: Clip) -> None:
         update_clip(job_id, i, muted_video_url=mute_video(video_url), muted_video_at=time.time())
 
 
-@celery_app.task
-def run_generation_job(job_id: str) -> None:
-    """Write the script, then generate each clip in order. What a clip after the first is generated from depends on
-    the mode.
-
-    Talking Head: clip 0 is the master, always rendered at MASTER_RESOLUTION (720p) whatever the job's resolution.
-    Every later clip is rendered at the job's resolution from exactly two references, the same two for the whole job:
-      - video: clip 0's video with its audio REMOVED (muted so it carries pictures only and can't leak clip 0's speech),
-      - audio: clip 0's audio.
-    Nothing is taken from the previous clip, so quality can't compound down the chain however long the video is.
-
-    Story Time: every clip is rendered at the job's resolution. Every later clip gets three references:
-      - video: the PREVIOUS clip's video with its audio removed (chained so the scene can move on; muted so its
-        soundtrack can't compete with the narrator's voice anchor),
-      - audio: clip 0's audio (the narrator's voice), fixed for the whole job,
-      - image: clip 0's last frame (the main character), fixed for the whole job.
-    Whether this chain degrades over long jobs the way Talking Head's did is still to be observed (PLAN.md question 14).
-
-    The original, unmuted videos stay in Clip.video_url and are what gets stitched into the final video. Every outcome
-    is written to the job in Redis (status and error). A failure marks the job failed and stops the chain; it never
-    raises. All writes go through update_job() / update_clip().
-    """
+@observe(name="generation_job")
+def _run_generation_job_traced(job_id: str, **kwargs) -> None:
     job = get_job(job_id)
     if job is None:
         raise KeyError(f"job {job_id} not found")
-    story = job.mode == "story_time"
-
-    update_job(job_id, status="generating")
-    if job.mode == "story_videos":
-        try:
-            _generate_movie_plan(job_id)
-        except Exception as e:
-            _fail_job(job_id, f"Story Videos planning failed: {type(e).__name__}: {e}")
-        return
     try:
-        script = generate_script(job.request.topic, job.request.num_clips, job.mode, job.request.clip_duration)
-    except Exception as e:
-        _fail_job(job_id, f"script generation failed: {type(e).__name__}: {e}")
-        return
+        client = get_client()
+        client.update_current_span(
+            name=f"{job.mode}_generation",
+            metadata={
+                "job_id": job.id,
+                "topic": job.request.topic,
+                "duration": job.request.duration,
+                "clip_duration": job.request.clip_duration,
+                "resolution": job.resolution,
+                "mode": job.mode,
+            },
+            tags=[job.mode, job.resolution],
+        )
+    except Exception:
+        pass
 
-    scene_bible = script["scene_bible"]
-    if story:
-        clips = [
-            Clip(index=i, narration=c["narration"], visual=c["visual"], delivery=c["delivery"])
-            for i, c in enumerate(script["clips"])
-        ]
-    else:
-        clips = [Clip(index=i, dialogue=c["dialogue"], delivery=c["delivery"]) for i, c in enumerate(script["clips"])]
-    update_job(job_id, scene_bible=scene_bible, clips=clips)
+    try:
+        story = job.mode == "story_time"
 
-    for i, clip in enumerate(clips):
-        update_clip(job_id, i, status="generating")
+        update_job(job_id, status="generating")
+        if job.mode == "narrated_drama":
+            try:
+                _generate_narrated_plan(job_id)
+            except Exception as e:
+                _fail_job(job_id, f"Narrated Drama planning failed: {type(e).__name__}: {e}")
+            return
+        if job.mode == "story_videos":
+            try:
+                _generate_movie_plan(job_id)
+            except Exception as e:
+                _fail_job(job_id, f"Story Videos planning failed: {type(e).__name__}: {e}")
+            return
         try:
-            _render_clip(job_id, clip)
-            update_clip(job_id, i, status="done")
+            script = generate_script(job.request.topic, job.request.num_clips, job.mode, job.request.clip_duration)
         except Exception as e:
-            message = f"{type(e).__name__}: {e}"
-            update_clip(job_id, i, status="failed", error=message)
-            _fail_job(job_id, f"clip {i + 1} of {len(clips)} failed: {message}")  # numbered from 1, as on the dashboard
+            _fail_job(job_id, f"script generation failed: {type(e).__name__}: {e}")
             return
 
-    _assemble(job_id)  # the job stays "generating" until the final video is ready (or has failed)
-    update_job(job_id, status="done")
-    task_log.info("job %s done", job_id)
+        scene_bible = script["scene_bible"]
+        if story:
+            clips = [
+                Clip(index=i, narration=c["narration"], visual=c["visual"], delivery=c["delivery"])
+                for i, c in enumerate(script["clips"])
+            ]
+        else:
+            clips = [Clip(index=i, dialogue=c["dialogue"], delivery=c["delivery"]) for i, c in enumerate(script["clips"])]
+        update_job(job_id, scene_bible=scene_bible, clips=clips)
+
+        for i, clip in enumerate(clips):
+            update_clip(job_id, i, status="generating")
+            try:
+                _render_clip(job_id, clip)
+                update_clip(job_id, i, status="done")
+            except Exception as e:
+                message = f"{type(e).__name__}: {e}"
+                update_clip(job_id, i, status="failed", error=message)
+                _fail_job(job_id, f"clip {i + 1} of {len(clips)} failed: {message}")  # numbered from 1, as on the dashboard
+                return
+
+        _assemble(job_id)  # the job stays "generating" until the final video is ready (or has failed)
+        update_job(job_id, status="done")
+        task_log.info("job %s done", job_id)
+    finally:
+        try:
+            get_client().flush()
+        except Exception:
+            pass
 
 
 @celery_app.task
-def execute_movie_job(job_id: str) -> None:
-    """Execute the Story Videos pipeline after Master Plan approval: FLUX images -> per-clip render -> assemble."""
+def run_generation_job(job_id: str) -> None:
+    """Write the script, then generate each clip in order. Traced with Langfuse."""
+    _run_generation_job_traced(job_id, langfuse_trace_id=job_id)
+
+
+@observe(name="execute_movie_job")
+def _execute_movie_job_traced(job_id: str, **kwargs) -> None:
     job = get_job(job_id)
     if job is None:
         raise KeyError(f"job {job_id} not found")
     try:
-        _continue_movie_job(job_id)
+        client = get_client()
+        client.update_current_span(
+            name="story_videos_execution",
+            metadata={
+                "job_id": job.id,
+                "topic": job.request.topic,
+                "duration": job.request.duration,
+                "mode": job.mode,
+            },
+            tags=[job.mode, "execution"],
+        )
+    except Exception:
+        pass
+    try:
+        if job.mode == "narrated_drama":
+            _continue_narrated_drama_job(job_id)
+        else:
+            _continue_movie_job(job_id)
         _assemble(job_id)
         update_job(job_id, status="done")
         task_log.info("job %s done", job_id)
     except Exception as e:
-        _fail_job(job_id, f"Story Videos generation failed: {type(e).__name__}: {e}")
+        _fail_job(job_id, f"{'Narrated Drama' if job.mode == 'narrated_drama' else 'Story Videos'} generation failed: {type(e).__name__}: {e}")
+    finally:
+        try:
+            get_client().flush()
+        except Exception:
+            pass
 
 
 @celery_app.task
-def extend_movie_plan_task(job_id: str, continuation_prompt: str, additional_duration: int) -> None:
-    """Analyze previous story, generate continuation outline/beats, and pause at plan_ready for review."""
+def execute_movie_job(job_id: str) -> None:
+    """Execute the Story Videos pipeline after Master Plan approval. Traced with Langfuse."""
+    _execute_movie_job_traced(job_id, langfuse_trace_id=job_id)
+
+
+@observe(name="extend_movie_plan")
+def _extend_movie_plan_task_traced(job_id: str, continuation_prompt: str, additional_duration: int, **kwargs) -> None:
     job = get_job(job_id)
-    if job is None or job.mode != "story_videos":
+    if job is None or job.mode not in ("story_videos", "narrated_drama"):
         return
     additional_clips = additional_duration // (job.request.clip_duration or 5)
-    prev_clips = [c.movie_script for c in job.clips if c.movie_script]
     bible = job.movie_bible or (json.loads(job.scene_bible) if job.scene_bible else {})
 
     task_log.info("job %s: generating continuation outline for %d new clips", job_id, additional_clips)
     try:
-        outline, problems = movie.write_continuation_outline(
-            job.request.topic, continuation_prompt, bible, prev_clips, additional_clips
-        )
+        if job.mode == "narrated_drama":
+            import hybrid_narrated_drama as hybrid
+            prev_beats = job.beats or []
+            outline, problems = hybrid.write_narrated_continuation_outline(
+                job.request.topic, continuation_prompt, bible, prev_beats, additional_clips
+            )
+        else:
+            prev_clips = [c.movie_script for c in job.clips if c.movie_script]
+            outline, problems = movie.write_continuation_outline(
+                job.request.topic, continuation_prompt, bible, prev_clips, additional_clips
+            )
     except Exception as e:
         task_log.error("job %s: continuation outline failed: %s", job_id, e)
         update_job(job_id, status="done", error=f"Continuation planning failed: {e}")
@@ -1227,6 +1493,16 @@ def extend_movie_plan_task(job_id: str, continuation_prompt: str, additional_dur
     )
     _save_master_plan_file(get_job(job_id))
     task_log.info("job %s: continuation plan ready (%d total beats) - waiting for review", job_id, len(all_beats))
+    try:
+        get_client().flush()
+    except Exception:
+        pass
+
+
+@celery_app.task
+def extend_movie_plan_task(job_id: str, continuation_prompt: str, additional_duration: int) -> None:
+    """Analyze previous story, generate continuation outline/beats. Traced with Langfuse."""
+    _extend_movie_plan_task_traced(job_id, continuation_prompt, additional_duration, langfuse_trace_id=job_id)
 
 
 REGENERATE_LABELS = {"script": "Regenerate Script", "scene": "Regenerate Scene"}
@@ -1263,7 +1539,7 @@ def _render_movie_clip_at(job_id: str, clip: Clip) -> None:
 def regenerate_script_task(job_id: str, clip_index: int, overrides: dict | None = None) -> None:
     """Regenerate Script (Prompt 9): a new line for the clip (Talking Head: dialogue and delivery; Story Time:
     narration and delivery, keeping its visual), then the clip rendered again from it. See _regenerate()."""
-    _regenerate(job_id, clip_index, "script", overrides)
+    _regenerate(job_id, clip_index, "script", overrides, langfuse_trace_id=job_id)
 
 
 @celery_app.task
@@ -1271,10 +1547,11 @@ def regenerate_scene_task(job_id: str, clip_index: int, overrides: dict | None =
     """Regenerate Scene (Prompt 10): the clip's words stay as they are. Talking Head: a new take of the clip from the
     same line. Story Time: a new visual (a different scene for the same narration), then the clip rendered from it.
     See _regenerate()."""
-    _regenerate(job_id, clip_index, "scene", overrides)
+    _regenerate(job_id, clip_index, "scene", overrides, langfuse_trace_id=job_id)
 
 
-def _regenerate(job_id: str, clip_index: int, action: str, overrides: dict | None = None) -> None:
+@observe(name="regenerate_clip")
+def _regenerate(job_id: str, clip_index: int, action: str, overrides: dict | None = None, **kwargs) -> None:
     """Regenerate one clip (the LAST clip only for now), with the same references as run_generation_job.
 
     The endpoint has already marked the job and the clip "generating". The clip keeps its old script and video until
@@ -1284,6 +1561,15 @@ def _regenerate(job_id: str, clip_index: int, action: str, overrides: dict | Non
     """
     job = get_job(job_id)
     label = REGENERATE_LABELS[action]
+    try:
+        client = get_client()
+        client.update_current_span(
+            name=f"regenerate_{action}_clip_{clip_index + 1}",
+            metadata={"job_id": job_id, "clip_index": clip_index, "action": action},
+            tags=[job.mode if job else "unknown", f"regenerate_{action}"],
+        )
+    except Exception:
+        pass
     try:
         clip = job.clips[clip_index]
         if overrides:
@@ -1325,6 +1611,11 @@ def _regenerate(job_id: str, clip_index: int, action: str, overrides: dict | Non
         has_video = bool(get_job(job_id).clips[clip_index].video_url)
         job = update_clip(job_id, clip_index, status="done" if has_video else "failed", error=message)
         update_job(job_id, status="done" if all(c.status == "done" for c in job.clips) else "failed", error=message)
+    finally:
+        try:
+            get_client().flush()
+        except Exception:
+            pass
 
 
 # --- FastAPI App & Routes ---
@@ -1348,6 +1639,7 @@ def health():
 
 
 @app.post("/enhance-prompt", response_model=EnhancePromptResponse)
+@observe(name="enhance_prompt")
 def enhance_prompt_endpoint(req: EnhancePromptRequest) -> EnhancePromptResponse:
     """Enhance and expand a short story premise into a rich, cinematic screenplay synopsis tailored to the selected duration."""
     topic = req.topic.strip()
@@ -1459,6 +1751,7 @@ def enhance_prompt_endpoint(req: EnhancePromptRequest) -> EnhancePromptResponse:
     try:
         client = OpenAI(api_key=OPENAI_API_KEY, timeout=60)
         response = client.chat.completions.create(
+            name="enhance_prompt",
             model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -1471,6 +1764,11 @@ def enhance_prompt_endpoint(req: EnhancePromptRequest) -> EnhancePromptResponse:
         return EnhancePromptResponse(enhanced_topic=enhanced)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OpenAI enhancement failed: {e}")
+    finally:
+        try:
+            get_client().flush()
+        except Exception:
+            pass
 
 
 @app.post("/jobs", status_code=201)
@@ -1487,13 +1785,14 @@ def create_job(request: ClipRequest) -> dict:
         mode=request.mode,
         clips=[Clip(index=i) for i in range(request.num_clips)],
     )
+    job.langfuse_url = get_langfuse_trace_url(job.id)
     save_job(job)
     try:
         run_generation_job.delay(job.id)
     except Exception as e:  # the broker didn't take it: without this the job would sit "pending" forever
         _fail_job(job.id, f"could not queue the job: {type(e).__name__}: {e}")
         raise HTTPException(status_code=503, detail="could not queue the job; try again") from e
-    return {"job_id": job.id}
+    return {"job_id": job.id, "langfuse_url": job.langfuse_url}
 
 
 @app.get("/jobs/{job_id}")
@@ -1546,6 +1845,8 @@ def _start_regeneration(job_id: str, clip_index: int, task, overrides: dict | No
     task, and return 202's body. Poll GET /jobs/{job_id}: the job and the clip show "generating", then "done" with
     the new clip (or the error, with the old clip kept)."""
     job = _require_clip(job_id, clip_index)
+    if job.mode in ("story_videos", "narrated_drama"):
+        raise HTTPException(status_code=501, detail=f"regeneration is not yet available for {job.mode.replace('_', ' ')}")
     if clip_index != len(job.clips) - 1:
         raise HTTPException(status_code=501, detail="mid-sequence regeneration not yet implemented")
     if overrides:
@@ -1580,6 +1881,7 @@ def get_job_plan(job_id: str) -> dict:
         "duration": job.request.duration,
         "total_clips": job.request.num_clips,
         "scene_bible": job.movie_bible,
+        "acts": job.acts,
         "beats": job.beats,
     }
 
@@ -1645,6 +1947,27 @@ def replan_story(job_id: str) -> dict:
     except Exception as e:
         update_job(job_id, status="plan_ready")
         raise HTTPException(status_code=503, detail=f"could not queue replanning: {e}") from e
+    return {"job_id": job_id, "status": "generating"}
+
+
+@app.post("/jobs/{job_id}/resume", status_code=202)
+def resume_job(job_id: str) -> dict:
+    """Resume an interrupted or failed Story Videos job from the first unrendered clip."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.mode not in ("story_videos", "narrated_drama"):
+        raise HTTPException(status_code=400, detail="resume is only supported for Story Videos and Narrated Drama modes")
+    if job.status not in ("failed", "generating"):
+        raise HTTPException(status_code=409, detail=f"cannot resume job when status is '{job.status}'")
+    if not job.movie_bible or not job.beats:
+        raise HTTPException(status_code=400, detail="job has no master plan to resume")
+    update_job(job_id, status="generating", error=None)
+    try:
+        execute_movie_job.delay(job_id)
+    except Exception as e:
+        update_job(job_id, status="failed", error=f"could not queue resume: {e}")
+        raise HTTPException(status_code=503, detail=f"could not queue resume: {e}") from e
     return {"job_id": job_id, "status": "generating"}
 
 

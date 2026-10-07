@@ -22,6 +22,17 @@ import argparse
 import urllib.request
 import shutil
 from pathlib import Path
+from typing import Optional
+
+try:
+    from langfuse import observe, get_client
+except ImportError:
+    def observe(*args, **kwargs):
+        def decorator(f):
+            return f
+        return decorator
+    def get_client():
+        return None
 
 # --- Reuse helpers from the main pipeline (read-only — nothing in app.py is changed) ---
 sys.path.append(os.getcwd())
@@ -66,8 +77,15 @@ POSTURES = ["standing", "walking", "sitting", "kneeling", "lying down", "crouchi
 # ---------------------------------------------------------------------------
 # Image Generation (FLUX)
 # ---------------------------------------------------------------------------
+@observe(name="generate_flux_image", as_type="span")
 def generate_flux_image(prompt: str, input_image: str = "") -> str:
     """Text-to-image, or (with input_image) Kontext's edit mode, which keeps the input picture's content."""
+    client = get_client()
+    if client:
+        try:
+            client.update_current_span(metadata={"model": "flux1-kontext", "is_edit": bool(input_image)})
+        except Exception:
+            pass
     url_create = "https://api.kie.ai/api/v1/jobs/createTask"
     headers = {"Authorization": f"Bearer {KIE_API_KEY}", "Content-Type": "application/json"}
     payload = {
@@ -85,6 +103,11 @@ def generate_flux_image(prompt: str, input_image: str = "") -> str:
         with urllib.request.urlopen(req) as response:
             resp = json.loads(response.read().decode("utf-8"))
             task_id = resp["data"]["taskId"]
+        if client:
+            try:
+                client.update_current_span(metadata={"task_id": task_id})
+            except Exception:
+                pass
 
         while True:
             time.sleep(3)
@@ -97,12 +120,29 @@ def generate_flux_image(prompt: str, input_image: str = "") -> str:
 
                 if state == "success":
                     result = json.loads(data["resultJson"])
-                    return result["resultUrls"][0]
+                    url = result["resultUrls"][0]
+                    if client:
+                        try:
+                            client.update_current_span(metadata={"state": "success", "result_url": url})
+                        except Exception:
+                            pass
+                    return url
                 elif state in ["fail", "error"]:
-                    print(f"    [Error] FLUX generation failed: {data.get('failMsg')}")
+                    msg = data.get("failMsg")
+                    print(f"    [Error] FLUX generation failed: {msg}")
+                    if client:
+                        try:
+                            client.update_current_span(level="ERROR", status_message=str(msg))
+                        except Exception:
+                            pass
                     return ""
     except Exception as e:
         print(f"    [Error] FLUX Image generation request failed: {e}")
+        if client:
+            try:
+                client.update_current_span(level="ERROR", status_message=str(e))
+            except Exception:
+                pass
         return ""
 
 def _view_prompt(view: str) -> str:
@@ -599,12 +639,21 @@ SUPERVISOR_SCHEMA = {
     "additionalProperties": False,
 }
 
+@observe(name="supervise_chapter", as_type="span")
 def supervise_chapter(topic: str, bible: dict, beats: list, prev_clips: list, new_clips: list, first: int) -> list[str]:
     """A second OpenAI read of a chapter against the story state: the logic the code checks can't see."""
     print("  Script supervisor is checking continuity...", flush=True)
     answer = _ask_openai_json(_supervisor_prompt(topic, bible, beats, prev_clips, new_clips, first), "Check the new clips.",
                               "script_supervisor", SUPERVISOR_SCHEMA)
-    return [f"script supervisor: {p}" for p in answer["problems"]]
+    problems = [f"script supervisor: {p}" for p in answer.get("problems", [])]
+    client = get_client()
+    if client and problems:
+        try:
+            client.create_event(name="supervisor_detected_issues", metadata={"problems": problems})
+        except Exception:
+            pass
+    return problems
+
 
 
 # ---------------------------------------------------------------------------
@@ -882,6 +931,7 @@ def _ask_checked(what: str, prompt: str, request: str, name: str, schema: dict, 
     Returns the answer and whatever problems are still left.
     Problems prefixed with [SOFT] are warnings only (e.g. word count) and do not trigger retries."""
     SOFT = "[SOFT] "
+    client = get_client()
     for attempt in range(SCRIPT_RETRIES + 1):
         data = _ask_openai_json(prompt, request, name, schema)
         problems = check(data)
@@ -893,6 +943,14 @@ def _ask_checked(what: str, prompt: str, request: str, name: str, schema: dict, 
                 print(f"    ⚡ {p[len(SOFT):]}")
         if not hard:
             break
+        if client:
+            try:
+                client.create_event(
+                    name=f"{what}_validation_retry",
+                    metadata={"attempt": attempt + 1, "hard_problems": hard, "soft_warnings": soft}
+                )
+            except Exception:
+                pass
         if attempt < SCRIPT_RETRIES:
             print(f"  {what} check: {len(hard)} problem(s), asking OpenAI to fix them (retry {attempt + 1}/{SCRIPT_RETRIES}):")
             for p in hard:
@@ -909,6 +967,7 @@ def _ask_checked(what: str, prompt: str, request: str, name: str, schema: dict, 
             print(f"    - {p}")
     return data, all_remaining
 
+@observe(name="write_outline")
 def write_outline(topic: str, duration: int, total_clips: int) -> tuple[dict, list[str]]:
     return _ask_checked("Outline", _outline_prompt(topic, duration, total_clips), "Generate Outline", "movie_outline",
                         _outline_schema(), lambda d: _check_outline(d, total_clips))
@@ -986,6 +1045,7 @@ def _check_continuation_outline(outline: dict, additional_clips: int) -> list[st
     return problems
 
 
+@observe(name="write_continuation_outline")
 def write_continuation_outline(
     original_topic: str,
     continuation_prompt: str,
@@ -1004,6 +1064,7 @@ def write_continuation_outline(
     )
 
 
+@observe(name="write_chapter")
 def write_chapter(topic: str, chap_idx: int, total_chapters: int, beats: list, bible: dict, prev_clips: list, supervise: bool = False) -> tuple[dict, list[str]]:
     first, mine = _chapter_beats(beats, chap_idx)
     schema = _chapter_schema([loc["id"] for loc in bible["locations"]], [c["name"] for c in bible["characters"]],
@@ -1203,9 +1264,12 @@ def build_multi_prompt(
     parts.append("No background music.")
     return " ".join(parts), ref_image_urls, ref_audio_urls
 
-def trim_windowed_voice(video_path: Path, speaker_name: str, start_est: float, end_est: float, turn_idx: int, dialogue_list: list) -> Path:
+def trim_windowed_voice(video_path: Path, speaker_name: str, start_est: float, end_est: float, turn_idx: int, dialogue_list: list, out_dir: Optional[Path] = None) -> Path:
     import numpy as np
-    voice_path = OUTPUT_DIR / "voices" / f"{speaker_name.lower()}_{uuid.uuid4().hex[:8]}.wav"
+    safe_name = speaker_name.lower().replace(" ", "_")
+    voices_dir = out_dir or ((video_path.parent.parent / "voices") if video_path.parent.name == "clips" else (OUTPUT_DIR / "voices"))
+    voices_dir.mkdir(parents=True, exist_ok=True)
+    voice_path = voices_dir / f"{safe_name}_{uuid.uuid4().hex[:8]}.wav"
     prev_end = dialogue_list[turn_idx - 1]["end_est"] if turn_idx > 0 else 0.0
     next_start = dialogue_list[turn_idx + 1]["start_est"] if turn_idx < len(dialogue_list) - 1 else float(CLIP_SECONDS)
     search_start, search_end = max(prev_end, start_est - 1.0), min(next_start, end_est + 1.0)
@@ -1279,6 +1343,12 @@ def render_clip(n: int, prompt: str, image_urls: list[str], audio_urls: list[str
         print(f"    generating on kie.ai... (request saved: {record_path})", flush=True)
         try:
             result = generate_clip(prompt=prompt, resolution=RESOLUTION, duration=CLIP_SECONDS, reference_image_urls=image_urls or None, reference_audio_urls=audio_urls or None, generate_audio=True)
+        except TimeoutError as te:
+            record["attempts"].append({"sent_to_kie": record["sent_to_kie"], "error": str(te)})
+            _write_record(record_path, record)
+            print(f"    ✗ clip {n} timed out waiting for kie.ai after 15 minutes: {te}", flush=True)
+            print("    [Halt] Stopped without re-triggering to prevent double billing. Resume job when ready.", flush=True)
+            return "quit"
         except Exception as e:
             record["attempts"].append({"sent_to_kie": record["sent_to_kie"], "error": str(e)})
             _write_record(record_path, record)
@@ -1667,4 +1737,13 @@ def main():
         print(f"  $cid = (docker-compose ps -q api).Trim(); docker cp \"${{cid}}:{script_path}\" .\\{script_path.name}")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        client = get_client()
+        if client:
+            try:
+                client.flush()
+            except Exception:
+                pass
+

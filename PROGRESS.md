@@ -1166,6 +1166,73 @@ Added genre-agnostic continuity rules to prevent video models from re-rendering 
 3. **Explicit Negative Constraint in Seedance Prompt (`build_multi_prompt`):**
    - Added explicit prompt directive: *"If already airborne in the scene, they are ALREADY hovering in mid-air at second 0.0; do NOT render another takeoff, eruption, or launch from the ground."*
 
+---
+
+## Update: Langfuse Observability & Tracing Integration (2026-10-04)
+
+Integrated **Langfuse** (free cloud tier) across the FastAPI backend, Celery workers, movie scene generation pipeline, and frontend dashboard for full observability into prompts, token usage, validation retries, Kie.ai calls, and latency:
+
+1. **Environment & Dependency:**
+   - Added `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_HOST` to `.env` and `.env.example`.
+   - Added `langfuse==4.16.0` to `requirements.txt` and baked into Docker image.
+2. **Backend Tracing (`app.py`):**
+   - Wrapped `OpenAI` client with `langfuse.openai.OpenAI` for automatic LLM call tracing, token tracking, and structured output capture.
+   - Preserved 32-character lowercase hex trace IDs (`job.id`) for 1:1 mapping with OpenTelemetry trace specs.
+   - Added `langfuse_url` to `Job` model, dynamically populated with direct link to project trace in Langfuse Cloud (`https://cloud.langfuse.com/project/{id}/traces/{job_id}`).
+   - Decorated Celery tasks (`_run_generation_job_traced`, `_execute_movie_job_traced`, `_extend_movie_plan_task_traced`, `_regenerate`) and pipeline steps (`generate_clip`, `_assemble`, `assemble_task`, `enhance_prompt_endpoint`) with `@observe`.
+   - Added automatic `get_client().flush()` on Celery task completion to ensure background worker events are immediately dispatched.
+3. **Movie Scene Observability (`movie_scene_multispeaker.py`):**
+   - Added `@observe` decorators to `generate_flux_image`, `supervise_chapter`, `write_outline`, `write_continuation_outline`, and `write_chapter`.
+   - Instrumented `_ask_checked` to log validation retries and rule violation details as Langfuse events (`{what}_validation_retry`).
+   - Instrumented `supervise_chapter` to record continuity critique problems as Langfuse events (`supervisor_detected_issues`).
+   - Wrapped CLI `main()` entrypoint with a `try/finally` block that flushes events before process exit.
+4. **Dashboard Link (`dashboard.html`):**
+   - Added a prominent `🔍 Langfuse Trace` button in the job header (`.job-head`) next to the job status badge.
+   - Automatically displays and links directly to the job's live Langfuse Cloud trace when a job is active or reviewed.
+5. **Verification:**
+   - Docker containers rebuilt (`docker-compose up -d --build`); verified `Auth check: True` against project `cmutnqefz145pad0ciyejp4q3`.
+   - Tested live `POST /enhance-prompt` and verified generation/span observations ingested into Langfuse Cloud API.
+   - Verified test job serialization and trace URL creation.
+
+---
+
+## Hybrid Narrated Drama — Audio & Visual Consistency Safeguards (2026-10-04)
+
+### Context & Diagnosis
+- Initial 15-clip (75s) run (`job: 535f163bf60746feabd9698d19ba6b19`) revealed two core categories of problems:
+  1. **Audio Issues:** Missing syllables ("remembered" -> "membered"), stuttering ("hesitated" -> "hesitated-ed"), and speech clipping caused by unwindowed voice banking and lack of explicit timeline timestamps.
+  2. **Visual Inconsistencies:** Characters teleporting to unlisted rooms (`same_office_corridor`, `loc_city_archive_hallway`), uncredited characters hallucinated into dialogue ("Whitlock"), and remote telephone callers rendered physically inside the protagonist's room.
+
+### Audio Safeguards Implemented
+1. **Explicit Timeline Timestamping `[start_est to end_est]`:**
+   - Seedance prompt directives for both Voiceover and Live Dialogue now include explicit start/end markers (e.g. `[0.5s to 4.5s]`) ensuring speech begins after video establishing frames and completes prior to clip boundaries.
+2. **Intelligent RMS-Energy Waveform Voice Banking:**
+   - Replaced fixed naive `ffmpeg` cuts with NumPy RMS-energy waveform voice trimming via `movie.trim_windowed_voice()`, eliminating noisy room hiss and silence that corrupted Seedance speaker embeddings.
+3. **Acoustic Redundancy Stripping & Music Suppression:**
+   - Stripped vocal timbre adjectives from Seedance text prompts when reference audio `@Audio1` is present via `movie._delivery_only()`.
+   - Appended `No background music.` directive to prevent Seedance from generating loud music beds that mask or distort voices.
+
+### Visual Safeguards Implemented
+1. **Dynamic Schema Enum Locking (`_narrated_chapter_schema`):**
+   - Locked `location_id`, `character`, `present_characters`, `speaker`, and `posture` (`POSTURES`) to strict JSON schema `enum` arrays dynamically generated from `scene_bible["locations"]` and `scene_bible["characters"]`.
+   - Guaranteed that OpenAI physically cannot output unlisted locations or hallucinated characters.
+2. **Context & Scene Bible Injection (`_narrated_chapter_prompt`):**
+   - Injected full Story Premise (`topic`), Scene Bible locations with spatial layouts, character descriptions, and full Master Plan beat roadmaps.
+   - Injected rich recent clip history bridge (last 3 clips) containing previous dialogue lines, speaker names, physical action steps, and character postures/orientations across cuts.
+   - Enforced `MANDATORY LOCATION: Clip N MUST be set in location '{beat['location_id']}'`.
+3. **Remote Phone Call & Telephone Receiver Directive:**
+   - Added explicit rule: when a remote caller speaks over telephone, intercom, or communicator, they MUST be set to `in_frame: "off screen"`.
+   - Updated `build_narrated_prompt` to direct Seedance that the remote voice emerges from the telephone receiver/off-screen while visible characters listen attentively with lips closed.
+4. **Strict Programmatic Continuity Validation (`_check_narrated_chapter`):**
+   - Validates `clip["location_id"] == beat["location_id"]` (rejects teleportation).
+   - Validates that all characters in `present_characters`, `blocking`, `action_steps`, and `speaker` exist in `scene_bible["characters"]`.
+   - Validates posture and screen profile continuity at `0.0s` cuts for same-location transitions.
+   - Enforces `in_frame: "off screen"` for remote phone callers.
+   - Keeps word count (6-12 words) checks as soft warnings (`[SOFT]`) without triggering OpenAI retries.
+5. **Gender & Name Neutrality:**
+   - Completely agnostic: zero hardcoded character names or gendered pronouns in code directives or prompt templates. All variables dynamically populated from `bible["pov_protagonist"]`, `bible["characters"]`, and `bible["locations"]`.
+6. **Clip Normalization (`_normalize_narrated_clip`):**
+   - Derives on-screen characters from blocking where `in_frame in ON_SCREEN` and standardizes character name casing across `hybrid_narrated_drama.py` and `app.py`.
 
 
 
@@ -1179,3 +1246,312 @@ Added genre-agnostic continuity rules to prevent video models from re-rendering 
 
 
 
+
+
+
+---
+
+## Hybrid Narrated Drama — Character Identity & Reveal Order (2026-10-05)
+
+### Diagnosis (job `488d9d903db841dc8e86d67567794769`, 15 clips x 5 s)
+
+Verified against the saved request JSONs (`/srv/media/hybrid_narrated_drama/requests/clip_NN.json`), the master plan, the job's Redis state, the FLUX reference images and frames pulled from the rendered clips. The **story logic was sound** — Clara was the protagonist in every beat, the location lock held, and the off-screen rule for the phone caller worked. Two things failed:
+
+1. **Character identity collapsed.**
+   - `look` and `image_prompt` were two independent free-text fields. Clara's `look` said *"tidy dark-blonde bob"*; her `image_prompt` named no hair at all, and FLUX drew a **brown ponytail**. Every Seedance prompt therefore shipped `Clara Vance is @Image4 (…tidy dark-blonde bob…)` — a picture and a caption describing different people. The model picked a different winner per clip: blonde bob (c2), dark bob (c3, c8), mid-tone (c6), brown ponytail (c10), blonde pulled back (c13).
+   - Clara's and Mia's `image_prompt`s were near-identical ("female hotel receptionist in navy uniform behind a dim luxury front desk"), so the two references were interchangeable. Once Clara's hair went dark the audience could not tell them apart.
+   - Clara's `look` ended with *"anxious but determined posture"* — a mood shipped as a permanent physical trait. `movie_scene_multispeaker.py` forbids this (STATIC BIBLE RULE); hybrid had no equivalent.
+   - Cast images were atmospheric in-scene shots with half the face in shadow — weak identity anchors carrying their own lighting into every clip.
+   - **Clip 10:** beat 10 named `speaker_or_actor: Mia Torres` (shock_action validated nothing but `speech_budget == 0`), and the clip writer then dropped Mia from the clip entirely and reassigned her action to Clara. Nothing checked either. The result read as Mia becoming the lead.
+
+2. **The story leaked ahead of itself.** Beat 2's planned V.O. was *"After my wrongful firing, one mistake meant homelessness."* The clip writer replaced it with *"I needed this job, even if 404 owned midnight."* — naming Room 404 one clip before Mia reveals it. Cause: the **entire 15-beat roadmap** was injected into every clip's prompt, and nothing compared the clip's `audio_text` to the beat it came from.
+
+### Identity fixes
+
+1. **One structured `appearance` per character** (`casting`, `hair_color`, `hair_style`, `build`, `distinguishing_feature`, `wardrobe`) replaces the two free-text fields. `_compile_character_visuals()` writes both `look` and `image_prompt` from it, so the picture and the caption cannot describe different people. `voice` was also added — `build_narrated_prompt` already read it, but the schema never produced it.
+2. **The picture is the description.** When a character has a reference image, the prompt now says `Clara Vance is @Image2` and nothing more; the written look is sent only when there is no image. Same principle as `movie._delivery_only()` for voices. A fidelity line was added: *"Each named character's face, hair colour, hairstyle and clothing match their reference image exactly."*
+3. **Cast portraits are clean references** — front-facing head-and-shoulders, even studio light, plain mid-grey background, no scenery, plus photoreal keywords (the REALISM RULE hybrid had dropped). The same discipline the locations already get.
+4. **Visual separation is validated.** Hair is compared by coarse family (`_HAIR_COLORS`, `_HAIR_STYLES`): two characters sharing a colour *and* a style is always rejected; in a cast of five or fewer, sharing a colour alone is rejected. Every character needs a real `distinguishing_feature`.
+5. **Moods are rejected from appearance** (`_MOOD_IN_LOOK`) — the STATIC BIBLE RULE, now enforced in code rather than only asked for.
+6. **The beat's cast is the clip's cast.** `_check_narrated_chapter` rejects any character the beat lists who is missing from the clip's blocking (off screen is allowed; dropped is not), and any beat actor who does not appear. `shock_action` beats must belong to the POV protagonist — first person means the shockwave is theirs.
+
+### Reveal-order fixes
+
+7. **The Master Plan writes the lines.** New `audio_line` on every beat: the exact words heard in that clip, decided once by the only writer that sees the whole story. The clip writer is given it verbatim and may not reword it; `_check_narrated_chapter` rejects any change, and if retries run out `write_narrated_chapter` overwrites the line so a reworded or leaking one can never reach kie.ai.
+8. **No future knowledge.** The roadmap handed to the clip writer now stops at the current beat — "the story SO FAR" — plus an explicit rule that nothing later exists yet.
+9. **A reveal ledger.** New `reveals` on every beat lists the terms that beat discloses first. `_terms_still_secret()` builds what is not yet known at clip N, and both validators reject a line that speaks one. This catches the exact failure: *404* is revealed in beat 3, so a beat-2 line naming it is refused.
+
+### Verification (offline, no credits)
+
+`verify_narrated_fixes.py` replays the real failures from job `488d9d90…` against the new validators — **84 checks, all passing**: the mood word, the empty feature, the matching hair (both the colour+style and the colour-only rule), the 404 leak, the Mia shock beat, a clean plan passing, `look`/`image_prompt` agreeing, the clip-2 prompt containing no beat-3 or beat-4 content, the mandatory line quoted, a reworded line rejected, a dropped character rejected, and the Seedance prompt no longer captioning a face it is already showing. A separate check confirms both JSON schemas still satisfy OpenAI strict mode (every property in `required`, `additionalProperties: false`).
+
+### Wordless beats: earned, not forced (same day, after review)
+
+The first pass made every `shock_action` beat require the protagonist on screen. That was too strict in one
+direction and the quota behind it was wrong in the other:
+
+- **Establishing shots are now allowed.** A wordless beat with `present_characters` empty and no actor is an
+  establishing or atmospheric shot - the building from the street, a lift door opening, rain on a window -
+  exactly the "overview of a building" case you asked for. The clip writer is told to leave
+  `blocking` and `action_steps` empty and put the whole description in `shot`; `build_narrated_prompt`
+  already handled an empty cast ("Cinematic environmental shot").
+- **The POV rule narrowed to what it was for.** When a wordless beat *does* have people in it, the
+  protagonist must be among them and be the beat's actor. Everyone else present still reacts inside the clip
+  - the rule only decides who the shot is *about*, which is what clip 10 got wrong.
+- **The cycle is no longer a quota.** Phase 3 is now "0 or 1 clip", with an explicit instruction never to
+  invent a jolt to fill the slot and to skip it when the story provides none. The forced slot is what
+  manufactured clip 10's wrist-grab in the first place: the premise supplied two jolts (the bell, the door)
+  and three cycles needed three. A plan with no wordless beat at all now validates cleanly.
+- A run of more than 3 dialogue clips is still broken up, but the message now asks for a **voiceover** beat -
+  the protagonist's inner reaction - rather than suggesting a shock beat first.
+
+### A failed check no longer becomes a paid run (2026-10-05)
+
+Both validators could be fully satisfied and still be ignored: `_generate_narrated_plan` assigned `problems`
+and never read it, and `_continue_narrated_drama_job` discarded the clip's with `ch_data, _ =`. After the
+retries were spent, a plan or clip that broke its own rules was rendered anyway. Adding rules made this
+worse, not better, so the gate was closed:
+
+- **`_hard_problems()` / `_soft_problems()`** split the lists in one place. Hard = anything not marked
+  `[SOFT]`; soft = cosmetic (a line a word or two long, tight pacing) - logged, never fatal. The audio_line
+  word-count check was downgraded to `[SOFT]`; everything about identity, cast, location and reveal order
+  stays fatal.
+- **Plan gate:** hard problems after retries raise before anything is paid for. FLUX images and clips both
+  come after plan approval, so nothing has been spent. The rejected plan is written to
+  `master_plan_rejected.json` in the job folder for inspection, and deliberately **not** stored on the job,
+  so the dashboard's Resume cannot pick a broken plan back up.
+- **Clip gate:** hard problems on a clip's script raise *before* `render_narrated_clip`, so the bad clip
+  costs nothing. Earlier clips keep their videos and the job resumes from where it stopped.
+- Both raise into the existing `try/except` that calls `_fail_job`, so the dashboard shows the rule that
+  could not be satisfied. The CLI stops the same way with the same message.
+- `write_narrated_outline` now retries on hard problems only, and both writers return the full problem list
+  with `[SOFT]` markers intact so callers can judge for themselves.
+
+### Blocking continuity, and two smaller gaps (2026-10-05)
+
+- **Blocking now has an end state**, ported from movie mode (`end_position`, `end_posture`,
+  `end_screen_profile`, `end_eyeline`). Hybrid had only one snapshot per clip, so `_check_narrated_chapter`
+  compared clip N's opening pose against clip N-1's *opening* pose and forced every clip in a location to
+  start identically - which is why clips 2 to 9 of job `488d9d90…` all carried the same CONTINUITY ANCHOR
+  and the scene looked frozen. It now compares clip N's start against clip N-1's **end**, as
+  `movie_scene_multispeaker.py:833` does, so a character who sits down during a clip is sitting when the
+  next one opens.
+- **The anchor sent to Seedance is an arc**: "starts standing, screen front, ends kneeling, screen left" when
+  a character moves, and "standing, screen front, held throughout" when they do not - instead of a single
+  frozen pose in both cases.
+- **Wordless beats name their own audio.** Seedance invents this track, so the directive now lists what may
+  be invented (room tone, footsteps, a door, rain, a caught breath) and bans voices, humming and "any musical
+  score, sting, drone or soundtrack", rather than relying on the generic "No background music." line.
+- **Request logs are per job.** `render_narrated_clip` takes `out_dir`; `app.py` passes the job folder.
+  Previously every job wrote to one shared path and concurrent jobs overwrote each other's record of what was
+  sent. The record now also stores the reference image and audio URLs, which had to be reconstructed by hand
+  when diagnosing this run.
+
+### Up to three speakers in one clip (2026-10-05)
+
+The last structural gap against `movie_scene_multispeaker.py`. Hybrid allowed exactly one speaker and one
+line per 5-second clip, so a confrontation could only ever be one line per cut and `MAX_VOICE_REFS = 3` was
+dead code. Movie mode's turn list was ported:
+
+- **Beats plan the whole exchange.** `audio_line` (one string) became `audio_lines`, a list of
+  `{speaker, line}`. A dialogue beat holds one to three lines, a voiceover beat exactly one, a shock beat
+  none. `speech_budget` is the TOTAL words across the turns, still 6-12, so three speakers means about four
+  words each - which is the format: "Where is she?" / "Gone." / "You are both lying."
+- **Clips carry `speech`**, a list of turns with their own `speaker`, `line`, `delivery`, `start_est` and
+  `end_est`, replacing the flat `audio_text`/`speaker`/`delivery`/`start_est`/`end_est` fields.
+- **The prompt builder emits one directive per turn**, each with its own window and its own `@AudioN`, up to
+  the three kie.ai accepts. A speaker heard twice in a clip reuses their single reference rather than
+  burning a second slot. On-screen speakers get lip sync, off-screen ones come "from the telephone
+  receiver". Multi-turn clips also get: the lines run back to back in one take, never at the same time,
+  only the current speaker's lips move, and hold everyone who speaks in frame together.
+- **Voice banking is per turn.** `bank_voice` takes `turn_index` and the full turn list, so
+  `movie.trim_windowed_voice`'s energy search stays inside that speaker's own window instead of wandering
+  into the line before or after it. `app.py` and the CLI both bank every new speaker in a clip.
+- **Validation covers it**: turn count per mode, at most 3 distinct speakers, speakers in the bible, total
+  word budget (soft), and windows that are ordered, non-overlapping and inside the clip. Clip turns must
+  match the plan's turns one for one - same count, same order, same speaker, same words.
+- `_beat_lines()` / `_clip_turns()` read the older single-line shape too, so a job planned before this can
+  still be resumed, and the dashboard's `clipTurns`/`clipSpeech` helpers render either shape.
+
+Two robustness fixes found while testing: `build_narrated_prompt` raised `KeyError: 'look'` for a character
+whose visuals had never been compiled (an older bible, or a cast member added by a continuation) - it now
+derives the look on the spot - and `_generate_flux_images` compiles the bible's visuals before use.
+
+### The physical world: location plates and the prop diary (2026-10-05)
+
+The last area where hybrid was behind movie mode. The evidence was in job `488d9d90…`'s own plan: the
+Room 404 location reference prompt read *"...heavy dark wood door cracked open, **handsome dangerous man in
+threshold**, laundry cart outside, **dark crimson stained sheets and silver case barely visible**"*. A
+character was painted into the place plate used for every clip filmed there, and the story's final reveal
+(beat 15) sat in the reference from clip 11 onward. Movie mode forbids exactly this
+(`movie_scene_multispeaker.py:383`: "NO PEOPLE, and none of the story's props"); hybrid had no such rule.
+
+**Locations**
+- Ported movie mode's LOCATIONS / LAYOUT / VIEWS / REALISM rules into the showrunner prompt, including that
+  a viewpoint is *a place to stand in the empty room*, never a shot from the story (the run's views were
+  "Clara POV through cracked door" and "insert of crimson sheets and silver case").
+- `_compile_location_visuals()` appends the empty-room and photorealism wording to every plate in code, so
+  it cannot be forgotten; it is idempotent, so recompiling a bible does not stack the text.
+- Validated: a plate may not describe a person (`_PERSON_IN_PLATE`) or name a cast member, viewpoints may
+  not either, and there must be 2 or 3 of them.
+
+**Props**
+- `props` added to the scene bible (snake_case `id` + fixed `description`), and `prop_state` to every clip:
+  the diary movie mode keeps - one entry per prop from its first appearance onward, with `holder`,
+  `in_frame` and `state`, carried in the clip prompt's history so state continues across cuts.
+- The Seedance prompt now names the props the camera can see, with the bible's fixed description, and
+  `_plain()` expands snake_case ids that leak into action text.
+- Validated: props exist in the bible, holders are a real character or `scene`, and a prop that appeared in
+  the previous clip's diary cannot be dropped from this one.
+
+**A voice-sample guard, needed because of the multi-speaker change**
+Three speakers sharing 6-12 words means a turn can be two words long, and hybrid banks a character's voice
+from their first line and reuses it for the whole video - so "Gone." would have become that character's
+voice forever. `should_bank_voice()` now banks a short line only when the plan has nothing longer coming
+for that speaker, and the showrunner prompt asks for a character's first line to carry at least
+`VOICE_SAMPLE_MIN_WORDS` words. Movie mode has the same rule as prompt text only.
+
+### Awareness and environment (2026-10-05)
+
+Two of movie mode's four remaining fields were taken; two were deliberately left.
+
+**Taken — `awareness`** (per character, in blocking): what they have noticed so far and what they have not.
+It carries forward in the clip history and reaches Seedance as "What each one has noticed: ... Nobody reacts
+to anything they have not noticed." Two reasons it earns its place here rather than being parity-chasing:
+the reveal ledger guards what the *audience* knows, not what a *character* knows; and the multi-speaker port
+made it newly relevant, because characters move through visible/partly visible/off screen/has left and up to
+three speak per clip, so "answers a question asked while they had left" is now possible.
+It also brought one mechanical POV check: a `voiceover` clip whose blocking has people in it must include the
+protagonist. The voiceover is their first-person thought, so narrating a scene they are not in makes their
+inner voice an all-seeing narrator. A clip with nobody on screen is exempt - narration over an establishing
+shot is normal.
+
+**Taken — `environment`** (per clip): one sentence of what the PLACE does, with no people in it. This filled
+a real hole rather than copying movie mode's `others`: `action_steps` requires a `character` from the cast
+enum, so non-human motion - the bell ringing by itself, a lift door opening, the storm at the windows - had
+nowhere to live and was being smuggled into the `shot` string. For a wordless establishing beat it now
+carries the whole motion of the clip. Validated to name no character and describe no person, so it cannot
+become a backdoor for the uncredited extras the cast rules exist to prevent. (Movie mode's `others` includes
+background people; that framing was not taken.)
+
+**Left — `head_tilt`**: it exists in movie mode for the 2026-10-03 airborne-entity work (chin raised at
+something hovering, vertical pitch continuity). This is grounded human drama in rooms, `eyeline` already
+carries where someone looks, and every required field costs a retry risk per clip.
+
+**Left — `facing`**: room-relative orientation, largely covered by `screen_profile` (camera-relative),
+`eyeline` and `position`, now that blocking also carries the `end_*` arc.
+
+**Not yet run:** a live job. Nothing here has been confirmed on rendered video — the next 15-clip run is the real test, and it is yours to start.
+
+### Hardening & Production Fixes for 5-Minute Run (Steps 1–5, 2026-10-06)
+
+Following `HYBRID_PRE_RUN_FIXES.md`, hardened the Narrated Drama pipeline offline before the 60-clip production run:
+- **Step 1 (Kie.ai Retry & Voice Banking Ladder):** Automatic retry on audio copyright filter rejection with `AUDIO_RETRY_NOTE`; polling `TimeoutError` (15 min) halts immediately to prevent double billing; transient failures retry up to `CLIP_RETRIES = 2` (3 total attempts) with backoff; speaker voice filenames space-sanitized into per-job `voices/` folders.
+- **Step 2 (Pose Continuity Soft/Hard Split):** `posture` equality check remains hard; tightened `_profiles_conflict` to eliminate false positives on phrasing variations ("three-quarter left" vs "left three-quarter"); downgraded screen profile mismatches to `[SOFT]` warnings.
+- **Step 3 (Retry Ladder: Repair First, Retry Second, Fail Last):** Added deterministic `_repair_narrated_clip` that re-spaces speech windows evenly, carries forward unmentioned props with `in_frame: False`, force-replaces drifted lines with Master Plan words after 1 retry, and adds missing beat characters as `in_frame: "off screen"` on the final attempt. Raised `CHAPTER_RETRIES = 3`.
+- **Step 4 (Camera Directives, 180-Degree Rule & Audio Lead-In Trimming, §8):**
+  - Added `frame_position` to blocking schema constrained to `FRAME_POSITIONS` enum (`frame left`, `left of centre`, `centre frame`, `right of centre`, `frame right`, `foreground`, `background`, `off screen`).
+  - Added mechanical 180-degree rule continuity check (`_frame_positions_flip`) flagging screen direction flips across consecutive clips in the same scene as `[SOFT]` notes.
+  - Expanded Rule 5 in `_narrated_chapter_prompt` into the full Cinematic Camera Policy (Establishing Phase locked master shots, Coverage Phase motivated angle cuts, 180-degree rule, one main moment per clip, 5 shot elements with lighting delegated exclusively to `environment`, story-critical movement on camera, exits leaving others alone, and good/bad examples).
+  - Added fluid cinematic physical motion directive in `build_narrated_prompt` ensuring active character bodily reactions, natural momentum, and responsive dynamic lighting to prevent frozen mannequin posture during multi-second dialogue.
+  - Added camera continuity tag check (`[SAME SETUP]` / `[ANGLE CUT]`) as a `[SOFT]` note in `_check_narrated_chapter` and auto-prefix repair in `_repair_narrated_clip`.
+  - Included `frame_position` in the Seedance prompt `Frame positions: [...]` block.
+  - Enabled audio lead-in trimming in `assemble_narrated_video()` and `app.py:868` (`job.mode in ("talking_head", "narrated_drama") and i > 0`), stripping dead air hesitation on speech cuts.
+- **Step 5 (Long Videos Planned in Acts & Location Scaling, §§5 & 9):**
+  - **Act-based Planning for 30+ Clips:** Kept single-shot outline generation for `< 30` clips. For `>= 30` clips, decomposed planning into Call 1 (Scene Bible + Act Roadmap via `ACT_BREAKDOWN_SCHEMA`) followed by Calls 2..N (`ACT_BEATS_SCHEMA`) generating beats act-by-act.
+  - **Act Count Detection & Normalization:** `_detect_premise_act_count(topic)` detects explicit user act counts (e.g., "7 acts", "four-act drama") with a 4-act default for 60 clips (~15 clips per act). `_normalize_act_spans` guarantees contiguous `1..total_clips` coverage without gaps.
+  - **Decoupled Batching Guard:** `_plan_act_batches` splits acts `> 20` clips into sub-batches and merges short acts `< 6` clips.
+  - **Strict Information Barrier & Cross-Act Reveal Ledger:** Beat prompts see the Scene Bible, full Act Roadmap, prior filmed beats, and revealed terms, but crucially **never see future beats**. End-to-end secret ledger validation runs over the completed sequence, rejecting cross-act leaks as hard errors.
+  - **Location Scaling (§9):** Showrunner prompts demand confinement within an act and progression between acts (aiming for 4–8 locations across 60 clips). Added `[SOFT]` warnings in both `_check_narrated_outline` and `_check_act_breakdown` if `< 3` distinct locations are used or if a single location dominates `> 70%` of clips.
+  - **Continuation Planning:** Implemented `write_narrated_continuation_outline` and unlocked `extend_movie_plan_task` in `app.py` for `narrated_drama` jobs.
+- **Step 6 (Dashboard Display of New Fields, §6):**
+  - Added responsive styling for props state tables (`.prop-table`, `.prop-tag-in`, `.prop-tag-out`) and reusable `renderPropTableHtml(propState)`.
+  - **Master Plan Review (`renderPlanReview`):** Displays complete character appearances (`appearance` or `look`), `POV Lead` tags, full story props catalog with descriptions, and beat-level audio lines and secret reveal tags.
+  - **Timeline Clip Detail Panel (`renderDetail`):** Displays ambient `Environment`, blocking with `start → end` pose arcs and frame position, `🧠 Knows: ...` character awareness, and formatted props table.
+  - **Prompt Inspection Card (`getScenePromptData`):** Dedicated breakdown cards for `Environment (Ambient Atmosphere)`, `Characters & Blocking (Start → End Arc & Awareness)`, and `Props in This Clip`.
+  - **Edit Modal (`populateModalFields`, `updateCompiledPreview`, `getModalOverrides`):** Added editable `modal-environment`, live compiled prompt preview reflecting environment atmosphere, and full override persistence for `narrated_drama` mode. Wired `Resume Generation` button for paused jobs.
+  - 178 offline unit tests in `verify_narrated_fixes.py` all passing with 0 failures. Containers restarted.
+- **Step 7 (Residual Risks Hardened, §7):**
+  - **Pre-Run Cost & Duration Estimates (§7.4):** Added dynamic live cost estimation badge on the dashboard generation form computing credit cost and wall time based on selected mode, clip duration, and clip count (e.g., displaying `~1,140 credits • ~3.5 hrs` for 60 clips).
+  - **Execution Confirmation Dialogs:** Added prompt in `#approve-plan` detailing total clip count, estimated Kie credits, runtime in hours, and a warning to keep the machine awake before initiating paid generation. Added direct-mode confirmation for long runs.
+  - **Banked Voice Isolation & Space Sanitization (§§7.1 & 7.6):** Updated `trim_windowed_voice` in both `movie_scene_multispeaker.py` and `app.py` to write to per-job `voices/` directories and sanitize spaces (`replace(" ", "_")`), ensuring clean Kie.ai upload URLs without encoded spaces.
+  - **Timeout Double-Billing Guard (§7.2):** Unified `TimeoutError` handling across all pipelines so that polling exceeding 15 minutes halts immediately with a clear resume message rather than consuming a second paid generation.
+  - 184 offline unit tests in `verify_narrated_fixes.py` all passing with 0 failures. Containers restarted.
+- **Step 8 (Script Supervisor for Hybrid Narrated Drama, §4):**
+  - **Scoped Prompt & Context:** Implemented `_narrated_supervisor_prompt` and `supervise_narrated_chapter` covering 7 scoped continuity areas: (1) Beat fidelity, (2) Blocking and position continuity (including 180-degree rule and camera placement), (3) Knowledge & awareness, (4) First-person POV (narration strictly limited to protagonist's witnessed experience), (5) Props honesty & continuity, (6) Space & layout adherence, (7) Packing & pacing (5s dialogue and action limits). Scoped context sends only the current clip, up to 2 previous clips (`prev_clips[-2:]`), the scene bible, and the current beat.
+  - **Mechanical Gating:** Supervisor runs strictly only after mechanical code checks pass (`if not hard and supervise`). Zero OpenAI supervisor calls are wasted on drafts failing mechanical checks.
+  - **One Rewrite, Then Soft:** Supervisor notes trigger exactly one rewrite attempt with continuity critique injected into the prompt. If notes persist after the rewrite (or on subsequent attempts), they are downgraded to `[SOFT]`, logged as warnings, and the clip renders without stopping the paid run.
+  - **Per-Job Switch & UI:** Added `supervise: bool = False` to `ClipRequest` in `app.py`, passed `supervise=is_supervise` in `_generate_narrated_clips()` and `_generate_movie_clips()`, and added a dashboard checkbox `Script Supervisor` (off by default).
+  - 210 offline unit tests in `verify_narrated_fixes.py` passing with 0 failures. Containers restarted.
+
+### Known, not changed
+
+
+- `movie_scene_multispeaker.py` has the **same** `look`/`image_prompt` split ([:196](movie_scene_multispeaker.py:196)) and the same caption-beside-the-picture call ([:1138](movie_scene_multispeaker.py:1138)). The failure is latent there too; left alone for now so this mode can be judged on its own.
+
+---
+
+## Hybrid Narrated Drama — audit of steps 4-9, and three fixes (2026-10-06)
+
+Reviewed the camera, location, act-planning, supervisor and dashboard work against
+`HYBRID_PRE_RUN_FIXES.md`. The implementations match the agreed design and the offline suite passes. Three
+loopholes were found and fixed; the suite is now **224 checks**.
+
+**1. `frame_position` had no end state.** Every other blocking dimension gained an `end_*` counterpart, so
+the 180-degree check was comparing clip N's opening frame side against clip N-1's *opening* side - the
+start-vs-start bug already diagnosed and fixed for posture. It both flagged a character who legitimately
+crossed the frame during a clip, and stayed silent on the genuine flip (walked to frame right in clip N,
+opens clip N+1 at frame left). Added `end_frame_position` to the blocking schema with the same enum, the
+check now reads `end_frame_position or frame_position`, and the continuity anchor sends the move
+("crossing to frame right") while the existing `Frame positions:` line keeps carrying the opening state.
+
+**2. The lead-in trim was cutting wordless beats.** `assemble_final_video` had been extended to
+`job.mode in ("talking_head", "narrated_drama")`, which trims every clip after the first - including shock
+beats and establishing shots. `_lead_in()` keys on sound that is loud AND tonal, and a brass bell, a lift
+chime or a slammed door is both, so it would read the jolt as the first word and cut up to 1.5 s of the
+build-up before it. New `_wants_lead_in_trim()` skips any Narrated Drama clip whose `speech` is empty, reads
+the pre-turns `audio_text` shape for older jobs, and leaves Talking Head and Story Videos exactly as they
+were.
+
+**3. The act breakdown was being thrown away.** `_write_act_based_outline` returns
+`{scene_bible, acts, beats}`, but `_generate_narrated_plan` stored only the bible and beats, `Job` had no
+`acts` field, and `_save_master_plan_file` rebuilds from the job - so `master_plan.json` carried no acts and
+the dashboard had none to show. Since the review gate before a paid run is reading the plan, and act spans
+are the first thing to check, this removed the point of planning in acts. `Job.acts` added, stored on
+approval, and included in both the saved plan file and the `/jobs/{id}/plan` fallback.
+
+**Still open from the audit:** a cross-act reveal leak has no retry path. `_check_act_beats` sees only prior
+beats, so only the final whole-plan `_check_narrated_outline` can catch an early beat naming a later reveal -
+and that result is returned without a retry, so one leak discards every planning call and fails the job. The
+act-beats prompt deliberately passes `all_acts`, which is what makes the leak possible. Worth either
+repairing the offending line or retrying just the batch that owns it.
+
+---
+
+## Hybrid Narrated Drama — cross-act reveal leaks (2026-10-06)
+
+The last item from the audit. Long plans are written act by act, and `_check_act_beats` sees only the beats
+already written, so a line in Act 1 naming something Act 3 discloses was invisible to it. Only the final
+whole-plan `_check_narrated_outline` could catch it - and that ran with no retry, so a single leak discarded
+every planning call and failed the job. Fixed in two layers.
+
+**Prevention: the acts declare what they disclose.** `ACT_BREAKDOWN_SCHEMA` gained `reveals` per act - the
+terms that act is the first to disclose - and the breakdown prompt now explains that each term belongs to
+exactly one act, because the later beat-writing passes cannot see the acts after them and these lists are how
+they know what they may not say. `_terms_reserved_for_later_acts()` turns that into the set a given batch
+must keep back, which is used twice: `_narrated_act_beats_prompt` prints it as a RESERVED FOR LATER ACTS
+block naming the exact terms, and `_check_act_beats` rejects any line that speaks one. The leak is now caught
+inside the batch loop, where a retry costs one call and nothing else is thrown away.
+
+**Backstop: one leak no longer costs the plan.** `_leaking_beats()` reports every beat whose line speaks a
+term the story reveals later, judged against the finished beat list rather than the declared acts - which is
+the part only visible once every act exists. When it finds one, `_write_act_based_outline` rewrites just the
+batch that owns the offending beat, quoting the leak and instructing it to keep the same beats, locations and
+rhythm, then re-assembles and runs the whole-plan check. One call instead of the entire plan.
+
+A deliberate limit worth knowing: only the owning batch is rewritten, not the batches generated after it,
+which were conditioned on its earlier text. A leak fix is normally a small change to one line, and the
+whole-plan check still runs afterwards, so the trade is one cheap call against regenerating the tail of the
+plan.
+
+Suite: **237 checks**, all passing; both JSON schemas still satisfy OpenAI strict mode.

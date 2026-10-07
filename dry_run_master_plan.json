@@ -1,0 +1,1720 @@
+{
+  "scene_bible": {
+    "pov_protagonist": "Elena Vance",
+    "characters": [
+      {
+        "name": "Elena Vance",
+        "is_protagonist": true,
+        "role": "POV protagonist; former chief strategist of the Moretti syndicate logistics operation and heir to her family maritime power",
+        "appearance": {
+          "casting": "woman of about thirty, Western European",
+          "hair_color": "jet black",
+          "hair_style": "long, pulled into a severe low chignon",
+          "build": "tall and spare",
+          "distinguishing_feature": "thin pale scar running along the left side of her jaw",
+          "wardrobe": "charcoal tailored coat over a high-necked black dress"
+        },
+        "voice": "low, controlled alto with a precise clipped cadence",
+        "look": "woman of about thirty, Western European, jet black hair, long, pulled into a severe low chignon, tall and spare, thin pale scar running along the left side of her jaw, charcoal tailored coat over a high-necked black dress",
+        "image_prompt": "Photorealistic head-and-shoulders portrait photograph of a woman of about thirty, Western European. Hair: jet black, long, pulled into a severe low chignon. Build: tall and spare. Thin pale scar running along the left side of her jaw. Wearing charcoal tailored coat over a high-necked black dress. Front-facing, looking straight into the lens, neutral relaxed expression, mouth closed. Even soft studio key light across the whole face, plain mid-grey seamless background, no props, no scenery, no text, nobody else in frame. Shot on an 85mm lens at f/2.8, 8k, natural detailed skin texture and pores, sharp focus on the eyes, live-action movie still, NO CGI, NO 3D render, NO illustration, NO plastic skin."
+      },
+      {
+        "name": "Lorenzo Moretti",
+        "is_protagonist": false,
+        "role": "the Don of the Moretti syndicate",
+        "appearance": {
+          "casting": "man in his late thirties, Italian-European",
+          "hair_color": "silver-grey",
+          "hair_style": "short, neat, swept back from the temples",
+          "build": "hard, lean, broad through the shoulders",
+          "distinguishing_feature": "sharp cleft chin and straight Roman nose",
+          "wardrobe": "black three-piece suit with a white shirt, black tie, and gold signet ring"
+        },
+        "voice": "gravelled baritone with an Italian-inflected cadence",
+        "look": "man in his late thirties, Italian-European, silver-grey hair, short, neat, swept back from the temples, hard, lean, broad through the shoulders, sharp cleft chin and straight Roman nose, black three-piece suit with a white shirt, black tie, and gold signet ring",
+        "image_prompt": "Photorealistic head-and-shoulders portrait photograph of a man in his late thirties, Italian-European. Hair: silver-grey, short, neat, swept back from the temples. Build: hard, lean, broad through the shoulders. Sharp cleft chin and straight Roman nose. Wearing black three-piece suit with a white shirt, black tie, and gold signet ring. Front-facing, looking straight into the lens, neutral relaxed expression, mouth closed. Even soft studio key light across the whole face, plain mid-grey seamless background, no props, no scenery, no text, nobody else in frame. Shot on an 85mm lens at f/2.8, 8k, natural detailed skin texture and pores, sharp focus on the eyes, live-action movie still, NO CGI, NO 3D render, NO illustration, NO plastic skin."
+      },
+      {
+        "name": "Camilla Rossi",
+        "is_protagonist": false,
+        "role": "rival cartel heiress seeking the Moretti alliance",
+        "appearance": {
+          "casting": "woman in her late twenties, Italian-European",
+          "hair_color": "auburn",
+          "hair_style": "long waves worn loose over one shoulder",
+          "build": "slight and quick",
+          "distinguishing_feature": "small beauty mark beneath her right eye",
+          "wardrobe": "wine-red silk dress and heavy gold drop earrings"
+        },
+        "voice": "bright, lacquered soprano",
+        "look": "woman in her late twenties, Italian-European, auburn hair, long waves worn loose over one shoulder, slight and quick, small beauty mark beneath her right eye, wine-red silk dress and heavy gold drop earrings",
+        "image_prompt": "Photorealistic head-and-shoulders portrait photograph of a woman in her late twenties, Italian-European. Hair: auburn, long waves worn loose over one shoulder. Build: slight and quick. Small beauty mark beneath her right eye. Wearing wine-red silk dress and heavy gold drop earrings. Front-facing, looking straight into the lens, neutral relaxed expression, mouth closed. Even soft studio key light across the whole face, plain mid-grey seamless background, no props, no scenery, no text, nobody else in frame. Shot on an 85mm lens at f/2.8, 8k, natural detailed skin texture and pores, sharp focus on the eyes, live-action movie still, NO CGI, NO 3D render, NO illustration, NO plastic skin."
+      },
+      {
+        "name": "Marco",
+        "is_protagonist": false,
+        "role": "Lorenzo's capo and secretly Elena's loyal man inside the Moretti circle",
+        "appearance": {
+          "casting": "man in his early thirties, Southern European",
+          "hair_color": "dark brown",
+          "hair_style": "cropped close to the skull",
+          "build": "square and still, medium-tall",
+          "distinguishing_feature": "badly set broken nose",
+          "wardrobe": "grey overcoat over a black shirt and dark trousers"
+        },
+        "voice": "quiet, flat bass",
+        "look": "man in his early thirties, Southern European, dark brown hair, cropped close to the skull, square and still, medium-tall, badly set broken nose, grey overcoat over a black shirt and dark trousers",
+        "image_prompt": "Photorealistic head-and-shoulders portrait photograph of a man in his early thirties, Southern European. Hair: dark brown, cropped close to the skull. Build: square and still, medium-tall. Badly set broken nose. Wearing grey overcoat over a black shirt and dark trousers. Front-facing, looking straight into the lens, neutral relaxed expression, mouth closed. Even soft studio key light across the whole face, plain mid-grey seamless background, no props, no scenery, no text, nobody else in frame. Shot on an 85mm lens at f/2.8, 8k, natural detailed skin texture and pores, sharp focus on the eyes, live-action movie still, NO CGI, NO 3D render, NO illustration, NO plastic skin."
+      }
+    ],
+    "props": [
+      {
+        "id": "termination_contract",
+        "description": "a thick cream legal contract with black typed clauses, a red wax seal, and a blank signature line on the final page"
+      },
+      {
+        "id": "black_fountain_pen",
+        "description": "a glossy black fountain pen with a narrow gold clip and a sharp gold nib"
+      },
+      {
+        "id": "platinum_ring",
+        "description": "a heavy platinum ring with a flat inner band and a cold mirror-polished surface"
+      },
+      {
+        "id": "private_line_receiver",
+        "description": "a matte black corded telephone receiver attached to a secure desk phone with one small red indicator light"
+      },
+      {
+        "id": "shipping_clearance_tablet",
+        "description": "a slim black encrypted tablet showing green clearance bars and white maritime routing text on a dark screen"
+      },
+      {
+        "id": "handheld_radio",
+        "description": "a compact black harbor radio with a rubber antenna, side push button, and scuffed metal belt clip"
+      },
+      {
+        "id": "secure_earpiece_phone",
+        "description": "a black encrypted smartphone connected to a clear coiled acoustic earpiece and tiny in-ear bud"
+      },
+      {
+        "id": "marco_handgun",
+        "description": "a compact matte-black semi-automatic handgun with a squared slide and dark grip"
+      },
+      {
+        "id": "silver_ledger_case",
+        "description": "a brushed silver hard-shell case with black corner guards, combination locks, and a padded black interior"
+      },
+      {
+        "id": "encrypted_ledgers",
+        "description": "three thin black encrypted ledger drives with silver labels and red tamper seals"
+      },
+      {
+        "id": "black_convoy_suvs",
+        "description": "three rain-slick black armored SUVs with tinted windows, low grille lights, and dark wheels"
+      }
+    ],
+    "locations": [
+      {
+        "id": "moretti_penthouse_office",
+        "description": "A high-rise penthouse office in dark mahogany and smoked glass, with floor-to-ceiling storm windows looking over a rain-blurred city. A crystal decanter sits on a side credenza beneath cold architectural lighting.",
+        "layout": "The private elevator opens at the rear of the room; the mahogany desk faces the entrance with storm windows behind it. A low seating area sits to the left, a credenza and decanter to the right, and a narrow exit corridor runs beside the elevator wall.",
+        "image_prompt": "wide cinematic shot of an empty luxury penthouse office, dark mahogany desk, smoked glass walls, floor-to-ceiling storm windows over a rainy night city, cold architectural lighting, no people, no movable props. The place is EMPTY: nobody in frame, no people at all, and none of the story's props. Photorealistic, live-action movie still, shot on Arri Alexa, 8k, detailed textures and materials, natural light falloff, NO CGI, NO 3D render, NO illustration.",
+        "views": [
+          "Empty wide view from the private elevator toward the mahogany desk and storm windows.",
+          "Empty side view from the credenza wall across the desk toward the left seating area.",
+          "Empty low view from behind the desk toward the elevator doors and exit corridor."
+        ]
+      },
+      {
+        "id": "vance_harbor_terminal",
+        "description": "A glass control room raised above a vast container yard, lit by blue-white monitors and amber harbor floodlights. Outside the windows, cranes and stacked containers disappear into rain and sea mist.",
+        "layout": "The stairwell entrance is at the back right; the central radio console faces the glass wall overlooking the yard. A wall of shipping screens covers the left side, a secure phone station sits near the console, and a narrow catwalk door opens on the far right.",
+        "image_prompt": "wide cinematic shot of an empty elevated glass harbor control room at night, container yard visible through rain-streaked windows, wall of glowing shipping screens, industrial console fixtures, amber floodlights outside, no people, no movable props. The place is EMPTY: nobody in frame, no people at all, and none of the story's props. Photorealistic, live-action movie still, shot on Arri Alexa, 8k, detailed textures and materials, natural light falloff, NO CGI, NO 3D render, NO illustration.",
+        "views": [
+          "Empty wide view from the stairwell entrance across the control room toward the glass wall and container yard.",
+          "Empty profile view along the shipping-screen wall toward the central console.",
+          "Empty exterior-facing view from behind the console toward rain-streaked glass and floodlit containers."
+        ]
+      },
+      {
+        "id": "moretti_private_vault",
+        "description": "A reinforced steel vault room with deposit-box walls, polished concrete floor, and a bank of blinking surveillance monitors. The room is sterile, soundproofed, and lit by hard white strips that flatten every shadow.",
+        "layout": "A circular steel vault door opens inward from the front wall; deposit boxes line the left and right walls. The surveillance monitor bank fills the rear wall, and a central bare table stands between the door and the monitors.",
+        "image_prompt": "wide cinematic shot of an empty reinforced steel private vault, circular vault door, walls of deposit boxes, blinking surveillance monitor bank, polished concrete floor, hard white strip lighting, no people, no movable props. The place is EMPTY: nobody in frame, no people at all, and none of the story's props. Photorealistic, live-action movie still, shot on Arri Alexa, 8k, detailed textures and materials, natural light falloff, NO CGI, NO 3D render, NO illustration.",
+        "views": [
+          "Empty symmetrical view from the vault doorway toward the monitor wall.",
+          "Empty side view down the right deposit-box wall toward the central table and left boxes.",
+          "Empty close wide view of the rear monitor bank reflected faintly on the polished floor."
+        ]
+      },
+      {
+        "id": "harbor_pier_storm",
+        "description": "A rain-lashed industrial pier lined with black puddles, amber floodlights, chain-link security gates, and sodium-lit loading lanes. Beyond the pier, moored ships loom as dark shapes in the storm.",
+        "layout": "The vehicle gate stands at the landward entrance; the main pier road runs straight ahead toward the water. Chain-link fencing borders both sides, floodlight poles run along the left edge, and a clearance kiosk sits near the gate on the right.",
+        "image_prompt": "wide cinematic shot of an empty industrial harbor pier at night in heavy rain, chain-link security gates, amber floodlights, black puddles, wet asphalt loading lanes, dark ships in the distance, no people, no movable props. The place is EMPTY: nobody in frame, no people at all, and none of the story's props. Photorealistic, live-action movie still, shot on Arri Alexa, 8k, detailed textures and materials, natural light falloff, NO CGI, NO 3D render, NO illustration.",
+        "views": [
+          "Empty wide view from outside the security gate looking down the rain-swept pier.",
+          "Empty low angle along black puddles reflecting amber floodlights and fencing.",
+          "Empty long view from mid-pier back toward the gate and clearance kiosk."
+        ]
+      },
+      {
+        "id": "freighter_gangway_stairs",
+        "description": "A steep set of lit steel boarding stairs rises beside a vast black freighter hull above churning dark sea. Industrial lamps, fog, and spray turn the gangway into a narrow white-lit bridge out of the storm.",
+        "layout": "The bottom of the gangway begins at the wet pier edge beside a locked security barrier; the stairs climb diagonally upward to a lit cabin entrance in the hull. The sea churns to the right, the pier rail runs to the left, and the freighter wall dominates the background.",
+        "image_prompt": "wide cinematic shot of an empty steel freighter boarding gangway at night, vast black ship hull, lit stairs, fog, sea spray, churning dark water, wet pier edge, industrial lamps, no people, no movable props. The place is EMPTY: nobody in frame, no people at all, and none of the story's props. Photorealistic, live-action movie still, shot on Arri Alexa, 8k, detailed textures and materials, natural light falloff, NO CGI, NO 3D render, NO illustration.",
+        "views": [
+          "Empty wide view from the pier base up the lit gangway toward the cabin entrance.",
+          "Empty side view of the steel stairs against the towering black hull and storm sea.",
+          "Empty high view from near the cabin entrance looking down the stairs to the wet pier and security barrier."
+        ]
+      }
+    ]
+  },
+  "acts": [
+    {
+      "act_number": 1,
+      "title": "Act 1: The Cold Betrayal",
+      "primary_locations": [
+        "moretti_penthouse_office"
+      ],
+      "dramatic_question": "Will Elena plead for the life she built beside Lorenzo, or reveal that he has mistaken silence for weakness?",
+      "start_clip": 1,
+      "end_clip": 12,
+      "summary": "In the Moretti penthouse office, Elena stands before the man she kept alive and out of a cell for three years. Lorenzo, watched by Camilla, slides a termination contract across the desk and orders Elena to sign herself out of his empire with nothing. Elena does not argue; she removes her platinum ring, drops it onto the signature line, warns him that he has discarded the only thing between him and the dark, and walks into the rain.",
+      "reveals": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Camilla Rossi",
+        "Moretti syndicate",
+        "Moretti penthouse office",
+        "termination contract",
+        "black fountain pen",
+        "platinum ring",
+        "Rossi alliance"
+      ]
+    },
+    {
+      "act_number": 2,
+      "title": "Act 2: His Empire Crumbles",
+      "primary_locations": [
+        "vance_harbor_terminal"
+      ],
+      "dramatic_question": "Can Lorenzo force Elena to reopen the arteries of his empire once she controls the harbor?",
+      "start_clip": 13,
+      "end_clip": 24,
+      "summary": "Elena returns to her own glass command room above the container yard and takes hold of her family's maritime network. Within forty-eight hours, the Moretti machine chokes: lanes close, accounts freeze, trucks are taken, and Camilla cannot repair what she never understood. Lorenzo calls Elena's private line demanding she open the ports; Elena lets him spend his rage, tells him the loyalty he thought he owned was always hers, then ends the call.",
+      "reveals": [
+        "Vance Maritime",
+        "Vance harbor terminal",
+        "ports",
+        "container yard",
+        "shipping screens",
+        "private line receiver",
+        "shipping clearance tablet",
+        "handheld radio",
+        "terminal floodlights",
+        "Moretti trucks",
+        "frozen accounts"
+      ]
+    },
+    {
+      "act_number": 3,
+      "title": "Act 3: The Vault",
+      "primary_locations": [
+        "moretti_private_vault"
+      ],
+      "dramatic_question": "What truth has Lorenzo been blind to, and who has truly been betraying whom?",
+      "start_clip": 25,
+      "end_clip": 36,
+      "summary": "Inside the Moretti private vault, Marco keeps an open line to Elena while Lorenzo discovers Camilla stripping the room and taking the encrypted ledgers. Marco's weapon rises, the silver case tips and spills, and Camilla, cornered, laughs at Lorenzo's ignorance. She reveals that Elena signed the false customs manifests herself and took the criminal blame to keep Lorenzo out of prison, while Camilla fed his movements to the men who ambushed him. Lorenzo banishes Camilla under threat of death and sends every car to the harbor.",
+      "reveals": [
+        "Marco",
+        "Moretti private vault",
+        "vault door",
+        "surveillance monitors",
+        "secure earpiece phone",
+        "Marco's handgun",
+        "silver ledger case",
+        "encrypted ledgers",
+        "false customs manifests",
+        "criminal blame",
+        "Camilla's treachery",
+        "ambush tip-offs"
+      ]
+    },
+    {
+      "act_number": 4,
+      "title": "Act 4: The Chase in the Rain",
+      "primary_locations": [
+        "harbor_pier_storm"
+      ],
+      "dramatic_question": "Can Lorenzo reach Elena before she crosses the final line out of his world?",
+      "start_clip": 37,
+      "end_clip": 48,
+      "summary": "Lorenzo's convoy tears into the storm and slews to a halt in standing water at the harbor gates. Past caring who sees the Don exposed, he steps into the downpour and shouts down the pier while Elena finishes her clearance without turning around. He asks her price, expecting every debt to have a number; Elena tells him that some debts cannot be paid with dirty money.",
+      "reveals": [
+        "harbor pier",
+        "security gates",
+        "black convoy SUVs",
+        "clearance kiosk",
+        "standing water",
+        "dirty money"
+      ]
+    },
+    {
+      "act_number": 5,
+      "title": "Act 5: Too Late to Beg",
+      "primary_locations": [
+        "freighter_gangway_stairs"
+      ],
+      "dramatic_question": "When Lorenzo finally kneels, will Elena choose the empire she built or the freedom it cost her?",
+      "start_clip": 49,
+      "end_clip": 60,
+      "summary": "On the freighter gangway, Elena turns on the lit steel stairs and looks down at Lorenzo in the storm. The Don who knelt to no one sinks into the mud with his hands out, begging her not to go because he cannot rule without her. Elena answers that he ruled by fear, and fear cannot buy back the woman who gave him everything. The foghorn sounds, the barrier slams shut, Elena steps into the lit cabin, and the freighter pulls into the storm while Lorenzo remains on his knees.",
+      "reveals": [
+        "freighter gangway stairs",
+        "freighter",
+        "lit cabin",
+        "foghorn",
+        "security barrier",
+        "churning sea",
+        "fear cannot buy back the woman who gave him everything"
+      ]
+    }
+  ],
+  "beats": [
+    {
+      "clip_number": 1,
+      "cycle_number": 1,
+      "delivery_mode": "voiceover",
+      "location_id": "moretti_penthouse_office",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena stands utterly still before the mahogany desk as Lorenzo slides the cream termination contract and black fountain pen toward her.",
+      "speech_budget": 10,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "Three years I kept him breathing; tonight, he offered ink."
+        }
+      ],
+      "reveals": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "moretti_penthouse_office",
+        "termination_contract",
+        "black_fountain_pen"
+      ]
+    },
+    {
+      "clip_number": 2,
+      "cycle_number": 1,
+      "delivery_mode": "voiceover",
+      "location_id": "moretti_penthouse_office",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Camilla remains half-hidden near the storm windows, watching Elena like a verdict already purchased.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "Loyalty had cost me sleep, blood, and softer names."
+        }
+      ],
+      "reveals": [
+        "Camilla Rossi",
+        "storm windows"
+      ]
+    },
+    {
+      "clip_number": 3,
+      "cycle_number": 1,
+      "delivery_mode": "dialogue",
+      "location_id": "moretti_penthouse_office",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo taps the signature line with the pen; Elena does not reach for it.",
+      "speech_budget": 10,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Sign, Elena. Your service ends before sunrise."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "And the terms?"
+        }
+      ],
+      "reveals": [
+        "signature line"
+      ]
+    },
+    {
+      "clip_number": 4,
+      "cycle_number": 1,
+      "delivery_mode": "dialogue",
+      "location_id": "moretti_penthouse_office",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Camilla Rossi",
+      "summary": "Camilla steps from the shadows with a lacquered smile; Elena keeps her eyes on Lorenzo.",
+      "speech_budget": 12,
+      "audio_lines": [
+        {
+          "speaker": "Camilla Rossi",
+          "line": "He means nothing leaves with you, darling."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "Then he should say it."
+        }
+      ],
+      "reveals": [
+        "Elena leaves with nothing"
+      ]
+    },
+    {
+      "clip_number": 5,
+      "cycle_number": 2,
+      "delivery_mode": "voiceover",
+      "location_id": "moretti_penthouse_office",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "The crystal decanter glints coldly behind Lorenzo while Camilla circles nearer to the desk.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "I saw Camilla watching mercy she thought she'd purchased."
+        }
+      ],
+      "reveals": [
+        "crystal decanter"
+      ]
+    },
+    {
+      "clip_number": 6,
+      "cycle_number": 2,
+      "delivery_mode": "voiceover",
+      "location_id": "moretti_penthouse_office",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena studies Lorenzo’s face, finding command there but not understanding.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "He thought silence meant surrender; I called it accounting."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 7,
+      "cycle_number": 2,
+      "delivery_mode": "dialogue",
+      "location_id": "moretti_penthouse_office",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo gestures toward Camilla as if replacing Elena were a business correction, not a betrayal.",
+      "speech_budget": 11,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Camilla brings peace. You bring expensive complications."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "Peace hates weak men."
+        }
+      ],
+      "reveals": [
+        "Camilla brings peace"
+      ]
+    },
+    {
+      "clip_number": 8,
+      "cycle_number": 2,
+      "delivery_mode": "dialogue",
+      "location_id": "moretti_penthouse_office",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo leans forward, voice low; Elena’s expression remains untouched.",
+      "speech_budget": 10,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Your name comes off every door."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "Then open them yourself."
+        }
+      ],
+      "reveals": [
+        "Elena removed from Moretti operations"
+      ]
+    },
+    {
+      "clip_number": 9,
+      "cycle_number": 3,
+      "delivery_mode": "voiceover",
+      "location_id": "moretti_penthouse_office",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena lowers her gaze to the heavy platinum ring on her finger and begins working it loose.",
+      "speech_budget": 8,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "My ring felt heavier than his whole empire."
+        }
+      ],
+      "reveals": [
+        "platinum_ring"
+      ]
+    },
+    {
+      "clip_number": 10,
+      "cycle_number": 3,
+      "delivery_mode": "dialogue",
+      "location_id": "moretti_penthouse_office",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Camilla Rossi",
+      "summary": "Camilla’s smile sharpens as Elena twists the ring free without looking up.",
+      "speech_budget": 12,
+      "audio_lines": [
+        {
+          "speaker": "Camilla Rossi",
+          "line": "Be graceful. Men remember women who leave quietly."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "Men misremember everything useful."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 11,
+      "cycle_number": 3,
+      "delivery_mode": "dialogue",
+      "location_id": "moretti_penthouse_office",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo’s patience hardens into command; Elena holds the ring above the contract.",
+      "speech_budget": 11,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Sign the line."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "You threw away your last wall before darkness."
+        }
+      ],
+      "reveals": [
+        "last wall before darkness"
+      ]
+    },
+    {
+      "clip_number": 12,
+      "cycle_number": 3,
+      "delivery_mode": "shock_action",
+      "location_id": "moretti_penthouse_office",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "The platinum ring drops onto the signature line, spins once, and lies flat as Elena turns toward the exit corridor without another word.",
+      "speech_budget": 0,
+      "audio_lines": [],
+      "reveals": [
+        "ring dropped on signature line"
+      ]
+    },
+    {
+      "clip_number": 13,
+      "cycle_number": 4,
+      "delivery_mode": "voiceover",
+      "location_id": "vance_harbor_terminal",
+      "present_characters": [
+        "Elena Vance"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena enters the glass control room above the container yard, rain streaking the windows, and sets a black routing tablet onto the central console.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "By dawn, I stood where my blood still mattered."
+        }
+      ],
+      "reveals": [
+        "vance_harbor_terminal",
+        "shipping_clearance_tablet"
+      ]
+    },
+    {
+      "clip_number": 14,
+      "cycle_number": 4,
+      "delivery_mode": "dialogue",
+      "location_id": "vance_harbor_terminal",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo's voice comes through Elena's private line as she studies the shipping screens without sitting down.",
+      "speech_budget": 11,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Where did you run, Elena?"
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "Home. Vance Maritime has longer knives."
+        }
+      ],
+      "reveals": [
+        "Vance Maritime"
+      ]
+    },
+    {
+      "clip_number": 15,
+      "cycle_number": 4,
+      "delivery_mode": "dialogue",
+      "location_id": "vance_harbor_terminal",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Elena drags one finger across the tablet, cutting routes on the screen while Lorenzo tries to command her like nothing changed.",
+      "speech_budget": 10,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Open my lanes before sunrise."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "They stopped being yours tonight."
+        }
+      ],
+      "reveals": [
+        "Moretti lanes closed"
+      ]
+    },
+    {
+      "clip_number": 16,
+      "cycle_number": 4,
+      "delivery_mode": "shock_action",
+      "location_id": "vance_harbor_terminal",
+      "present_characters": [],
+      "speaker_or_actor": "",
+      "summary": "Outside the glass, no one is on screen as terminal floodlights bang on across stacked containers, turning the rain-white yard into a battlefield.",
+      "speech_budget": 0,
+      "audio_lines": [],
+      "reveals": [
+        "terminal floodlights"
+      ]
+    },
+    {
+      "clip_number": 17,
+      "cycle_number": 5,
+      "delivery_mode": "voiceover",
+      "location_id": "vance_harbor_terminal",
+      "present_characters": [
+        "Elena Vance"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Forty-eight hours later, Elena stands before a wall of stalled shipping screens, calm as red warnings multiply.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "By the second night, silence did what bullets couldn't."
+        }
+      ],
+      "reveals": [
+        "second night seizure"
+      ]
+    },
+    {
+      "clip_number": 18,
+      "cycle_number": 5,
+      "delivery_mode": "dialogue",
+      "location_id": "vance_harbor_terminal",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Camilla Rossi",
+      "summary": "On speaker, Camilla tries to sound useful while Lorenzo watches shipment bars stall; Elena listens without blinking.",
+      "speech_budget": 11,
+      "audio_lines": [
+        {
+          "speaker": "Camilla Rossi",
+          "line": "I can route around her. Give me hours."
+        },
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "You have minutes."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 19,
+      "cycle_number": 5,
+      "delivery_mode": "dialogue",
+      "location_id": "vance_harbor_terminal",
+      "present_characters": [
+        "Elena Vance",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena finally answers Camilla, her eyes still on the screens as Camilla's smile can be heard thinning over the line.",
+      "speech_budget": 12,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "Your alliance never learned my maps."
+        },
+        {
+          "speaker": "Camilla Rossi",
+          "line": "Maps burn."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "So do borrowed crowns."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 20,
+      "cycle_number": 5,
+      "delivery_mode": "dialogue",
+      "location_id": "vance_harbor_terminal",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo's control cracks as account screens lock red; Elena lets the pause hurt before answering.",
+      "speech_budget": 11,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "My accounts froze, Elena. Undo it."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "Ask the woman you chose."
+        }
+      ],
+      "reveals": [
+        "accounts froze"
+      ]
+    },
+    {
+      "clip_number": 21,
+      "cycle_number": 6,
+      "delivery_mode": "voiceover",
+      "location_id": "vance_harbor_terminal",
+      "present_characters": [
+        "Elena Vance"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena reviews road reports on the tablet while dockside cameras show empty loading lanes and abandoned schedules.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "Then his trucks vanished from roads he thought obedient."
+        }
+      ],
+      "reveals": [
+        "trucks vanished"
+      ]
+    },
+    {
+      "clip_number": 22,
+      "cycle_number": 6,
+      "delivery_mode": "dialogue",
+      "location_id": "vance_harbor_terminal",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "The private line rings again; Lorenzo forces his demand through the receiver while Elena holds it away from her ear.",
+      "speech_budget": 10,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Open the ports, Elena. Now."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "Ports don't open for ghosts."
+        }
+      ],
+      "reveals": [
+        "private_line_receiver",
+        "ports"
+      ]
+    },
+    {
+      "clip_number": 23,
+      "cycle_number": 6,
+      "delivery_mode": "dialogue",
+      "location_id": "vance_harbor_terminal",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo reaches for ownership; Elena gives him the answer he should have feared from the beginning.",
+      "speech_budget": 10,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "I owned their loyalty."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "No. They lent it through me."
+        }
+      ],
+      "reveals": [
+        "loyalty was Elena's"
+      ]
+    },
+    {
+      "clip_number": 24,
+      "cycle_number": 6,
+      "delivery_mode": "shock_action",
+      "location_id": "vance_harbor_terminal",
+      "present_characters": [
+        "Elena Vance"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena places the private line receiver back into its cradle, and the small red indicator dies under the rain-blue terminal light.",
+      "speech_budget": 0,
+      "audio_lines": [],
+      "reveals": [
+        "receiver going down"
+      ]
+    },
+    {
+      "clip_number": 25,
+      "cycle_number": 7,
+      "delivery_mode": "voiceover",
+      "location_id": "moretti_private_vault",
+      "present_characters": [],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "The matte receiver click from the terminal gives way to the vault: an empty circular steel door easing inward under hard white light as Elena hears Marco's open line connect.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "After I ended Lorenzo's call, Marco opened another line."
+        }
+      ],
+      "reveals": [
+        "moretti_private_vault",
+        "Marco",
+        "Marco's open line"
+      ]
+    },
+    {
+      "clip_number": 26,
+      "cycle_number": 7,
+      "delivery_mode": "dialogue",
+      "location_id": "moretti_private_vault",
+      "present_characters": [
+        "Marco",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Marco",
+      "summary": "Marco stands square in the vault entrance as Camilla freezes beside the central table, one hand on a brushed silver case.",
+      "speech_budget": 11,
+      "audio_lines": [
+        {
+          "speaker": "Marco",
+          "line": "Step away from the case, Camilla."
+        },
+        {
+          "speaker": "Camilla Rossi",
+          "line": "Still obedient, Marco? How sweet."
+        }
+      ],
+      "reveals": [
+        "silver_ledger_case"
+      ]
+    },
+    {
+      "clip_number": 27,
+      "cycle_number": 7,
+      "delivery_mode": "dialogue",
+      "location_id": "moretti_private_vault",
+      "present_characters": [
+        "Lorenzo Moretti",
+        "Camilla Rossi",
+        "Marco"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo sees the black drives nested inside the open case and finally understands Camilla is stripping the vault.",
+      "speech_budget": 7,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Those are my ledgers."
+        },
+        {
+          "speaker": "Camilla Rossi",
+          "line": "Encrypted, Lorenzo. Irreplaceable."
+        }
+      ],
+      "reveals": [
+        "encrypted_ledgers"
+      ]
+    },
+    {
+      "clip_number": 28,
+      "cycle_number": 7,
+      "delivery_mode": "shock_action",
+      "location_id": "moretti_private_vault",
+      "present_characters": [],
+      "speaker_or_actor": "",
+      "summary": "No one in frame: the rear wall of surveillance monitors blinks in cold rows, reflecting the open case as a silent red line indicator pulses.",
+      "speech_budget": 0,
+      "audio_lines": [],
+      "reveals": [
+        "surveillance monitor wall"
+      ]
+    },
+    {
+      "clip_number": 29,
+      "cycle_number": 8,
+      "delivery_mode": "voiceover",
+      "location_id": "moretti_private_vault",
+      "present_characters": [
+        "Elena Vance",
+        "Marco",
+        "Lorenzo Moretti",
+        "Camilla Rossi"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Marco's hand rises with the compact handgun, steady and unhurried, while Lorenzo keeps his eyes locked on Camilla.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "When the room went silent, Marco's weapon answered first."
+        }
+      ],
+      "reveals": [
+        "marco_handgun"
+      ]
+    },
+    {
+      "clip_number": 30,
+      "cycle_number": 8,
+      "delivery_mode": "dialogue",
+      "location_id": "moretti_private_vault",
+      "present_characters": [
+        "Marco",
+        "Camilla Rossi",
+        "Lorenzo Moretti"
+      ],
+      "speaker_or_actor": "Marco",
+      "summary": "The weapon holds on Camilla as she smiles too brightly, fingers tightening around the ledger case handle.",
+      "speech_budget": 8,
+      "audio_lines": [
+        {
+          "speaker": "Marco",
+          "line": "Put the ledgers down, Camilla. Slowly."
+        },
+        {
+          "speaker": "Camilla Rossi",
+          "line": "Or what?"
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 31,
+      "cycle_number": 8,
+      "delivery_mode": "dialogue",
+      "location_id": "moretti_private_vault",
+      "present_characters": [
+        "Camilla Rossi",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Camilla Rossi",
+      "summary": "Cornered, Camilla turns the blade inward, aiming the first forbidden truth straight at Lorenzo.",
+      "speech_budget": 11,
+      "audio_lines": [
+        {
+          "speaker": "Camilla Rossi",
+          "line": "Ask your saint who signed the false customs manifests."
+        },
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "What manifests?"
+        }
+      ],
+      "reveals": [
+        "false customs manifests"
+      ]
+    },
+    {
+      "clip_number": 32,
+      "cycle_number": 8,
+      "delivery_mode": "shock_action",
+      "location_id": "moretti_private_vault",
+      "present_characters": [],
+      "speaker_or_actor": "",
+      "summary": "No one in frame: the silver ledger case tips off the table edge, striking concrete and spilling three black encrypted drives across the polished floor.",
+      "speech_budget": 0,
+      "audio_lines": [],
+      "reveals": [
+        "ledger case spilling",
+        "encrypted ledger drives"
+      ]
+    },
+    {
+      "clip_number": 33,
+      "cycle_number": 9,
+      "delivery_mode": "voiceover",
+      "location_id": "moretti_private_vault",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Camilla Rossi",
+        "Marco"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "The camera returns to the three of them beneath the hard light, with Lorenzo suddenly still and Camilla enjoying the damage.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "On that line, my old silence finally found witnesses."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 34,
+      "cycle_number": 9,
+      "delivery_mode": "dialogue",
+      "location_id": "moretti_private_vault",
+      "present_characters": [
+        "Camilla Rossi",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Camilla Rossi",
+      "summary": "Camilla names Elena's sacrifice aloud, and Lorenzo's certainty fractures in a single breath.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Camilla Rossi",
+          "line": "Elena signed them, then took the criminal blame."
+        },
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "No."
+        }
+      ],
+      "reveals": [
+        "Elena signed false customs manifests",
+        "criminal blame Elena took"
+      ]
+    },
+    {
+      "clip_number": 35,
+      "cycle_number": 9,
+      "delivery_mode": "dialogue",
+      "location_id": "moretti_private_vault",
+      "present_characters": [
+        "Camilla Rossi",
+        "Marco",
+        "Lorenzo Moretti"
+      ],
+      "speaker_or_actor": "Camilla Rossi",
+      "summary": "Camilla twists the last knife, admitting she directed Lorenzo's enemies while Marco's aim never wavers.",
+      "speech_budget": 10,
+      "audio_lines": [
+        {
+          "speaker": "Camilla Rossi",
+          "line": "I fed your routes to your ambushers."
+        },
+        {
+          "speaker": "Marco",
+          "line": "Say that again."
+        }
+      ],
+      "reveals": [
+        "Camilla fed Lorenzo's routes",
+        "ambush betrayal"
+      ]
+    },
+    {
+      "clip_number": 36,
+      "cycle_number": 9,
+      "delivery_mode": "dialogue",
+      "location_id": "moretti_private_vault",
+      "present_characters": [
+        "Lorenzo Moretti",
+        "Camilla Rossi",
+        "Marco"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo cuts Camilla out of his world under threat of death, then snaps into motion toward Elena's terminal.",
+      "speech_budget": 12,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Leave now, Camilla, or die tonight."
+        },
+        {
+          "speaker": "Marco",
+          "line": "Cars?"
+        },
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Every car to the terminal."
+        }
+      ],
+      "reveals": [
+        "Camilla banished",
+        "every car to terminal"
+      ]
+    },
+    {
+      "clip_number": 37,
+      "cycle_number": 10,
+      "delivery_mode": "shock_action",
+      "location_id": "harbor_pier_storm",
+      "present_characters": [],
+      "speaker_or_actor": "",
+      "summary": "In a wordless burst, three black armored SUVs slew sideways through standing water at the rain-lashed vehicle gate, headlights cutting the downpour.",
+      "speech_budget": 0,
+      "audio_lines": [],
+      "reveals": [
+        "harbor_pier_storm",
+        "black_convoy_suvs",
+        "vehicle gate"
+      ]
+    },
+    {
+      "clip_number": 38,
+      "cycle_number": 10,
+      "delivery_mode": "voiceover",
+      "location_id": "harbor_pier_storm",
+      "present_characters": [
+        "Elena Vance"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena stands near the clearance kiosk under amber floodlights, tablet in hand, finishing the final harbor clearance without looking back.",
+      "speech_budget": 10,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "I had one clearance left, and no heart left exposed."
+        }
+      ],
+      "reveals": [
+        "clearance kiosk"
+      ]
+    },
+    {
+      "clip_number": 39,
+      "cycle_number": 10,
+      "delivery_mode": "dialogue",
+      "location_id": "harbor_pier_storm",
+      "present_characters": [
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Marco",
+      "summary": "Lorenzo steps out into the rain with Marco beside him, both soaked instantly as the locked gate blocks the convoy.",
+      "speech_budget": 10,
+      "audio_lines": [
+        {
+          "speaker": "Marco",
+          "line": "Gate is locked to outsiders."
+        },
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Then open it like family."
+        }
+      ],
+      "reveals": [
+        "gate locked to outsiders"
+      ]
+    },
+    {
+      "clip_number": 40,
+      "cycle_number": 10,
+      "delivery_mode": "dialogue",
+      "location_id": "harbor_pier_storm",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo shouts down the pier toward Elena, who keeps walking through the rain without turning her head.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Elena! Stop walking."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "You taught me never to stop."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 41,
+      "cycle_number": 11,
+      "delivery_mode": "voiceover",
+      "location_id": "harbor_pier_storm",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena crosses a black puddle beneath the floodlights as Lorenzo advances from the gate, his authority stripped raw by the storm.",
+      "speech_budget": 10,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "I heard panic in his voice before I heard remorse."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 42,
+      "cycle_number": 11,
+      "delivery_mode": "voiceover",
+      "location_id": "harbor_pier_storm",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "A close shot catches Elena's tablet bars turning green while rain beads on the black glass and Lorenzo closes the distance behind her.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "My clearance turned green while his power learned rain."
+        }
+      ],
+      "reveals": [
+        "final clearance approved"
+      ]
+    },
+    {
+      "clip_number": 43,
+      "cycle_number": 11,
+      "delivery_mode": "dialogue",
+      "location_id": "harbor_pier_storm",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo tries the language he understands, calling out an offer as if damage can still be priced.",
+      "speech_budget": 10,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Name your price, Elena."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "You still think grief has invoices."
+        }
+      ],
+      "reveals": [
+        "Lorenzo asks Elena's price"
+      ]
+    },
+    {
+      "clip_number": 44,
+      "cycle_number": 11,
+      "delivery_mode": "dialogue",
+      "location_id": "harbor_pier_storm",
+      "present_characters": [
+        "Lorenzo Moretti",
+        "Marco",
+        "Elena Vance"
+      ],
+      "speaker_or_actor": "Marco",
+      "summary": "Marco warns Lorenzo that crews along the pier are watching the Don unravel in the open rain.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Marco",
+          "line": "Don, every crew is staring."
+        },
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Good. Let them learn."
+        }
+      ],
+      "reveals": [
+        "crews watching Lorenzo"
+      ]
+    },
+    {
+      "clip_number": 45,
+      "cycle_number": 12,
+      "delivery_mode": "voiceover",
+      "location_id": "harbor_pier_storm",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Lorenzo strides through the puddles toward Elena, shoes sinking into oily water as the floodlights expose every desperate step.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "He crossed the puddles like humiliation could be outrun."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 46,
+      "cycle_number": 12,
+      "delivery_mode": "voiceover",
+      "location_id": "harbor_pier_storm",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena pauses only long enough to tap the tablet dark, her back still to Lorenzo as he comes within speaking distance.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "I kept my back turned; mercy recognizes old footsteps."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 47,
+      "cycle_number": 12,
+      "delivery_mode": "dialogue",
+      "location_id": "harbor_pier_storm",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo reaches Elena at last, rain running down his face, and admits the truth arrived too late to save him.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "I know her treachery now."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "Truth found you late."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 48,
+      "cycle_number": 12,
+      "delivery_mode": "dialogue",
+      "location_id": "harbor_pier_storm",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo makes one final bargain in the rain; Elena answers without turning, ending the only language he trusted.",
+      "speech_budget": 11,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Name your price."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "Some debts cannot be paid with dirty money."
+        }
+      ],
+      "reveals": [
+        "dirty money cannot repay some debts"
+      ]
+    },
+    {
+      "clip_number": 49,
+      "cycle_number": 13,
+      "delivery_mode": "voiceover",
+      "location_id": "freighter_gangway_stairs",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena steps from the storm-lashed pier onto the lit steel boarding stairs, rising above Lorenzo as he reaches the locked barrier below.",
+      "speech_budget": 10,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "I stepped onto steel, and his kingdom ended below me."
+        }
+      ],
+      "reveals": [
+        "freighter_gangway_stairs",
+        "boarding stairs"
+      ]
+    },
+    {
+      "clip_number": 50,
+      "cycle_number": 13,
+      "delivery_mode": "voiceover",
+      "location_id": "freighter_gangway_stairs",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena climbs a few steps, the vast black freighter hull swallowing the frame while the sea churns beside the stairs.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "Behind me, the sea sounded kinder than his remorse."
+        }
+      ],
+      "reveals": [
+        "freighter hull",
+        "churning sea"
+      ]
+    },
+    {
+      "clip_number": 51,
+      "cycle_number": 13,
+      "delivery_mode": "dialogue",
+      "location_id": "freighter_gangway_stairs",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo grips the lower rail, rain pouring from his silver hair, and tries to command Elena one last time.",
+      "speech_budget": 7,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Elena, stop walking."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "You lost that command."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 52,
+      "cycle_number": 13,
+      "delivery_mode": "dialogue",
+      "location_id": "freighter_gangway_stairs",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Elena turns halfway up the stairs and looks down at Lorenzo without anger, letting his apology die in the rain.",
+      "speech_budget": 7,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "I was blind."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "No, you were comfortable."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 53,
+      "cycle_number": 14,
+      "delivery_mode": "voiceover",
+      "location_id": "freighter_gangway_stairs",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena’s bare hand tightens on the cold rail where the platinum ring once sat, her face unreadable in the gangway lights.",
+      "speech_budget": 8,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "For years, my silence had worn his ring."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 54,
+      "cycle_number": 14,
+      "delivery_mode": "voiceover",
+      "location_id": "freighter_gangway_stairs",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Lorenzo steps into the mud at the base of the gangway, losing height while Elena keeps her place above him.",
+      "speech_budget": 7,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "Now my hand felt lighter than forgiveness."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 55,
+      "cycle_number": 14,
+      "delivery_mode": "dialogue",
+      "location_id": "freighter_gangway_stairs",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo finally says the need underneath every order, his voice stripped of its old authority.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "I cannot rule without you."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "That is not love."
+        }
+      ],
+      "reveals": [
+        "Lorenzo cannot rule without Elena"
+      ]
+    },
+    {
+      "clip_number": 56,
+      "cycle_number": 14,
+      "delivery_mode": "dialogue",
+      "location_id": "freighter_gangway_stairs",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "The Don who knelt to no one sinks into the mud with both hands out, looking up at Elena like judgment.",
+      "speech_budget": 8,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "It is truth."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "Truth arrived on its knees."
+        }
+      ],
+      "reveals": [
+        "Lorenzo kneels"
+      ]
+    },
+    {
+      "clip_number": 57,
+      "cycle_number": 15,
+      "delivery_mode": "voiceover",
+      "location_id": "freighter_gangway_stairs",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena holds still above him, watching rain wash over his outstretched hands while Marco remains silent behind the barrier.",
+      "speech_budget": 8,
+      "audio_lines": [
+        {
+          "speaker": "Elena Vance",
+          "line": "I had mistaken endurance for devotion too long."
+        }
+      ],
+      "reveals": []
+    },
+    {
+      "clip_number": 58,
+      "cycle_number": 15,
+      "delivery_mode": "dialogue",
+      "location_id": "freighter_gangway_stairs",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Lorenzo spreads his hands in the mud, offering the one humiliation he never believed he would pay.",
+      "speech_budget": 9,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "I am on my knees."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "You ruled by fear."
+        }
+      ],
+      "reveals": [
+        "Lorenzo ruled by fear"
+      ]
+    },
+    {
+      "clip_number": 59,
+      "cycle_number": 15,
+      "delivery_mode": "dialogue",
+      "location_id": "freighter_gangway_stairs",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Lorenzo Moretti",
+      "summary": "Elena gives Lorenzo her final answer from the white light of the gangway, then turns toward the cabin door.",
+      "speech_budget": 11,
+      "audio_lines": [
+        {
+          "speaker": "Lorenzo Moretti",
+          "line": "Come back."
+        },
+        {
+          "speaker": "Elena Vance",
+          "line": "Fear cannot buy back the woman who gave everything."
+        }
+      ],
+      "reveals": [
+        "fear cannot buy back Elena"
+      ]
+    },
+    {
+      "clip_number": 60,
+      "cycle_number": 15,
+      "delivery_mode": "shock_action",
+      "location_id": "freighter_gangway_stairs",
+      "present_characters": [
+        "Elena Vance",
+        "Lorenzo Moretti",
+        "Marco"
+      ],
+      "speaker_or_actor": "Elena Vance",
+      "summary": "Elena steps into the lit cabin without looking back as the freighter foghorn blasts; the security barrier slams shut, and the ship pulls into the storm while Lorenzo remains kneeling in the mud.",
+      "speech_budget": 0,
+      "audio_lines": [],
+      "reveals": [
+        "gangway foghorn",
+        "security barrier slams",
+        "lit cabin",
+        "freighter departs"
+      ]
+    }
+  ]
+}

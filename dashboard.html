@@ -131,6 +131,11 @@
   .pop-footer a { color: var(--accent); text-decoration: none; font-weight: 600; cursor: pointer; }
   .pop-footer a:hover { text-decoration: underline; }
   .ref-tag { display: inline-block; background: var(--accent); color: var(--accent-text); font-weight: 600; font-size: 11px; padding: 1px 6px; border-radius: 4px; margin: 1px 2px; }
+  .prop-table { width: 100%; border-collapse: collapse; font-size: 11.5px; margin: 4px 0; }
+  .prop-table th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .prop-table td { padding: 4px 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+  .prop-tag-in { display: inline-block; background: #28a745; color: #fff; font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 3px; }
+  .prop-tag-out { display: inline-block; background: var(--muted); color: #fff; font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 3px; }
 
   /* Modal styles */
   .modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(5px); z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 16px; }
@@ -239,6 +244,7 @@
           <label class="choice"><input type="radio" name="mode" value="talking_head" checked><span>Talking Head<small>one person speaking to camera</small></span></label>
           <label class="choice"><input type="radio" name="mode" value="story_time"><span>Story Time<small>changing scenes with a voiceover narrator</small></span></label>
           <label class="choice"><input type="radio" name="mode" value="story_videos"><span>Story Videos<small>multi-character dramatic scenes</small></span></label>
+          <label class="choice"><input type="radio" name="mode" value="narrated_drama"><span>Narrated Drama<small>1st-person VO + live dialogue clashes</small></span></label>
         </div>
       </fieldset>
 
@@ -266,8 +272,16 @@
         </fieldset>
       </div>
 
-      <div class="actions">
+      <div style="margin-top: 10px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px;">
+        <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
+          <input type="checkbox" id="supervise" name="supervise">
+          <span><strong>Script Supervisor</strong> <small style="color: var(--muted);">(AI continuity critique; runs 1 extra check per clip, off by default)</small></span>
+        </label>
+      </div>
+
+      <div class="actions" style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
         <button type="submit" id="generate">Generate</button>
+        <span id="cost-estimate" style="font-size: 12.5px; color: var(--muted); padding: 5px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-weight: 500;"></span>
         <span id="form-msg" role="status" aria-live="polite"></span>
       </div>
     </form>
@@ -276,7 +290,11 @@
   <section id="job" class="panel" hidden>
     <div class="job-head">
       <h2 id="job-title">Your video</h2>
-      <span id="job-status" class="badge" role="status">pending</span>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <a id="job-langfuse-link" href="#" target="_blank" rel="noopener noreferrer" class="badge" style="display: none; text-decoration: none; background: #ff6b00; color: #fff; font-weight: 600; cursor: pointer; align-items: center; gap: 4px;" title="Open live trace in Langfuse Cloud">🔍 Langfuse Trace</a>
+        <button type="button" id="resume-job-btn" style="display: none; padding: 4px 12px; font-size: 13px; font-weight: 600; background: #28a745; color: #fff; border: none; border-radius: 4px; cursor: pointer;">▶ Resume Generation</button>
+        <span id="job-status" class="badge" role="status">pending</span>
+      </div>
     </div>
     <p class="job-meta" id="job-meta"></p>
     <p class="error" id="job-error" hidden></p>
@@ -438,10 +456,37 @@
       return opt;
     }));
     durationSel.dataset.clipSeconds = String(clipSeconds);
+    updateCostEstimate();
+  }
+
+  function updateCostEstimate() {
+    const el = $("cost-estimate");
+    if (!el) return;
+    const mode = radio("mode") || "story_videos";
+    const duration = Number(durationSel.value) || 30;
+    const clipDur = Number(radio("clip_duration")) || 5;
+    const clipCount = Math.round(duration / clipDur);
+
+    if (mode === "talking_head") {
+      const credits = 41 + Math.max(0, clipCount - 1) * 24;
+      const mins = Math.round(clipCount * 2.5);
+      el.innerHTML = `💳 Est: ~<strong>${credits}</strong> credits (${clipCount} clips &bull; ~${mins} min render)`;
+    } else if (mode === "story_time") {
+      const credits = clipCount * 19;
+      const mins = Math.round(clipCount * 2.5);
+      el.innerHTML = `💳 Est: ~<strong>${credits}</strong> credits (${clipCount} clips &bull; ~${mins} min render)`;
+    } else {
+      const videoCredits = clipCount * 19;
+      const estHours = (clipCount * 3.5 / 60).toFixed(1);
+      const isLong = clipCount >= 30;
+      const actNote = isLong ? " &bull; 4-act plan" : "";
+      el.innerHTML = `💳 Plan: <em>Free</em> &bull; Video: ~<strong>${videoCredits}</strong> credits (${clipCount} clips &bull; ~${estHours} hrs${actNote})`;
+    }
   }
 
   function updateHint() {
     $("res-hint").hidden = radio("mode") !== "talking_head";
+    updateCostEstimate();
   }
 
   function remember(jobId) {
@@ -477,7 +522,27 @@
     head.append(right);
     seg.append(head);
 
-    if (job.mode === "story_videos") {
+    if (job.mode === "narrated_drama") {
+      if (clip.movie_script) {
+        const ms = clip.movie_script;
+        const dMode = (ms.delivery_mode || "dialogue").toUpperCase();
+        const tag = dMode === "VOICEOVER" ? "[V.O.]" : dMode === "SHOCK_ACTION" ? "[SHOCK]" : "[SYNC]";
+        const spk = ms.speaker ? `${ms.speaker}: ` : "";
+        const txt = clipSpeech(ms) || "— non-verbal beat —";
+        seg.append(el("p", "line", `${tag} ${spk}${txt}`));
+        const loc = (ms.location_id || "").replace(/_/g, " ");
+        seg.append(el("p", "visual", `📍 ${loc}`));
+      } else if (job.beats && job.beats[clip.index]) {
+        const b = job.beats[clip.index];
+        const dMode = (b.delivery_mode || "dialogue").toUpperCase();
+        const tag = dMode === "VOICEOVER" ? "[V.O.]" : dMode === "SHOCK_ACTION" ? "[SHOCK]" : "[SYNC]";
+        seg.append(el("p", "line", `${tag} Beat ${clip.index + 1}: ${b.summary || b.action}`));
+        const loc = (b.location_id || "").replace(/_/g, " ");
+        seg.append(el("p", "visual", `📍 ${loc}`));
+      } else {
+        seg.append(el("p", "waiting", "Waiting for the script…"));
+      }
+    } else if (job.mode === "story_videos") {
       if (clip.movie_script) {
         const dl = clip.movie_script.dialogue || [];
         if (dl.length > 0) {
@@ -523,6 +588,19 @@
     return seg;
   }
 
+  // A narrated-drama clip holds a list of spoken turns (up to three speakers can share one clip). Jobs
+  // planned before that stored a single audio_text/speaker pair, so read either shape.
+  function clipTurns(ms) {
+    if (!ms) return [];
+    if (Array.isArray(ms.speech)) return ms.speech.filter((t) => (t.line || "").trim());
+    return (ms.audio_text || "").trim() ? [{ speaker: ms.speaker || "", line: ms.audio_text }] : [];
+  }
+  function clipSpeech(ms, withSpeaker) {
+    return clipTurns(ms)
+      .map((t) => (withSpeaker && t.speaker ? `${t.speaker}: "${t.line}"` : `"${t.line}"`))
+      .join("   ");
+  }
+
   function renderJob(job) {
     const json = JSON.stringify(job);
     if (json === shownJson) return; // nothing new since the last poll: leave the page alone
@@ -533,11 +611,27 @@
     shownJson = json;
     shownJob = job;
     $("job").hidden = false;
-    const modeName = {talking_head: "Talking Head", story_time: "Story Time", story_videos: "Story Videos"}[job.mode] || job.mode;
+    const modeName = {talking_head: "Talking Head", story_time: "Story Time", story_videos: "Story Videos", narrated_drama: "Narrated Drama"}[job.mode] || job.mode;
     $("job-title").textContent = job.request.topic;
     const badge = $("job-status");
     badge.className = `badge ${job.status}`;
     badge.textContent = job.status === "plan_ready" ? "Plan Ready for Review" : job.status;
+    const lfLink = $("job-langfuse-link");
+    if (lfLink) {
+      if (job.langfuse_url) {
+        lfLink.href = job.langfuse_url;
+        lfLink.style.display = "inline-flex";
+      } else {
+        lfLink.style.display = "none";
+      }
+    }
+    const resumeBtn = $("resume-job-btn");
+    if (resumeBtn) {
+      const canResume = (job.mode === "story_videos" || job.mode === "narrated_drama") && job.status === "failed" && (job.clips || []).some((c) => c.status !== "done") && (job.beats && job.beats.length > 0);
+      resumeBtn.style.display = canResume ? "inline-flex" : "none";
+      resumeBtn.disabled = actionBusy;
+      if (!actionBusy) resumeBtn.textContent = "▶ Resume Generation";
+    }
     const done = job.clips.filter((c) => c.status === "done").length;
     $("job-meta").replaceChildren(
       `${modeName} · ${job.clips.length} × ${job.request.clip_duration} s clips · ${job.resolution} · ${done} of ${job.clips.length} done · job `,
@@ -633,7 +727,7 @@
   function renderPlanReview(job) {
     const box = $("plan-review");
     if (!box) return;
-    const isPlanReady = job.mode === "story_videos" && (job.status === "plan_ready" || (job.beats && job.beats.length > 0));
+    const isPlanReady = (job.mode === "story_videos" || job.mode === "narrated_drama") && (job.status === "plan_ready" || (job.beats && job.beats.length > 0));
     box.hidden = !isPlanReady;
     if (!isPlanReady) return;
 
@@ -666,12 +760,15 @@
 
         const head = el("div", "beat-card-head");
         const titleSpan = el("span");
+        const dMode = (b.delivery_mode || (b.speech === false ? "silent" : "dialogue")).toUpperCase();
+        const tag = dMode === "VOICEOVER" ? "V.O." : dMode === "SHOCK_ACTION" ? "SHOCK" : dMode === "SILENT" ? "SILENT" : "SYNC";
+        const tagColor = dMode === "VOICEOVER" ? "#6f42c1" : dMode === "SHOCK_ACTION" ? "#d73a49" : "var(--accent)";
         if (isClipDone) {
           titleSpan.innerHTML = `<span class="beat-badge" style="background: var(--done);">Clip ${idx + 1} · Generated</span> <strong>Clip ${idx + 1}</strong> (${job.request.clip_duration || 5}s)`;
         } else if (isContinuation) {
-          titleSpan.innerHTML = `<span class="beat-badge" style="background: #8b5cf6;">Beat ${idx + 1} · Continuation</span> <strong>Clip ${idx + 1}</strong> (${job.request.clip_duration || 5}s)`;
+          titleSpan.innerHTML = `<span class="beat-badge" style="background: #8b5cf6;">[${tag}] Beat ${idx + 1} · Continuation</span> <strong>Clip ${idx + 1}</strong> (${job.request.clip_duration || 5}s)`;
         } else {
-          titleSpan.innerHTML = `<span class="beat-badge">Beat ${idx + 1}</span> <strong>Clip ${idx + 1}</strong> (${job.request.clip_duration || 5}s)`;
+          titleSpan.innerHTML = `<span class="beat-badge" style="background: ${tagColor};">[${tag}] Beat ${idx + 1}</span> <strong>Clip ${idx + 1}</strong> (${job.request.clip_duration || 5}s)`;
         }
         head.appendChild(titleSpan);
 
@@ -687,11 +784,24 @@
 
         const actionText = el("textarea", "beat-action-input");
         actionText.rows = 2;
-        actionText.value = b.action || "";
+        actionText.value = b.summary || b.action || "";
         actionText.dataset.field = "action";
         actionText.disabled = !canEditCard;
         actionText.placeholder = "Describe the visual action and event that happens in this beat...";
         card.appendChild(actionText);
+
+        if (b.audio_lines?.length) {
+          const linesDiv = el("div", "");
+          const spoken = b.audio_lines.map(l => `“${escapeHtml(l.line)}” (${escapeHtml(l.speaker)})`).join(" · ");
+          linesDiv.innerHTML = `<small style="color: var(--muted); display: block; margin-top: 4px;">Spoken: ${spoken}</small>`;
+          card.appendChild(linesDiv);
+        }
+        if (b.reveals?.length) {
+          const revDiv = el("div", "");
+          const revs = b.reveals.map(r => `<span class="ref-tag" style="background:#d73a49;font-size:10px;">${escapeHtml(r)}</span>`).join(" ");
+          revDiv.innerHTML = `<small style="color: var(--muted); display: block; margin-top: 2px;">Reveals: ${revs}</small>`;
+          card.appendChild(revDiv);
+        }
 
         const footer = el("div", "beat-card-footer");
         const speechLabel = el("label", "beat-speech-label");
@@ -722,7 +832,11 @@
         sec.innerHTML = `<h4>Characters (${chars.length})</h4>`;
         chars.forEach((c) => {
           const item = el("div", "bible-item");
-          item.innerHTML = `<strong>${escapeHtml(c.name)}</strong>: ${escapeHtml(c.look)} <br><small style="color: var(--muted);">Voice: ${escapeHtml(c.voice)}</small>`;
+          const lookStr = c.appearance
+            ? Object.entries(c.appearance).map(([k, v]) => `<strong>${escapeHtml(k.replace('_', ' '))}:</strong> ${escapeHtml(v)}`).join(' · ')
+            : escapeHtml(c.look || '');
+          const leadBadge = c.is_protagonist ? ' <span class="badge" style="background:#6f42c1;font-size:10px;">POV Lead</span>' : '';
+          item.innerHTML = `<strong>${escapeHtml(c.name)}</strong>${leadBadge}: ${lookStr} <br><small style="color: var(--muted);">Voice: ${escapeHtml(c.voice || '')}</small>`;
           sec.appendChild(item);
         });
         bibleDiv.appendChild(sec);
@@ -738,12 +852,39 @@
         });
         bibleDiv.appendChild(sec);
       }
+      const props = job.movie_bible.props || [];
+      if (props.length) {
+        const sec = el("div", "bible-sec");
+        sec.innerHTML = `<h4>Story Props (${props.length})</h4>`;
+        props.forEach((p) => {
+          const item = el("div", "bible-item");
+          item.innerHTML = `<strong>${escapeHtml(p.id)}</strong>: ${escapeHtml(p.description)}`;
+          sec.appendChild(item);
+        });
+        bibleDiv.appendChild(sec);
+      }
     }
   }
 
   $("approve-plan")?.addEventListener("click", async () => {
     const job = shownJob;
     if (!job || planBusy) return;
+
+    const clipCount = (job.clips && job.clips.length) ? job.clips.length : Math.round((job.request?.duration || 30) / (job.request?.clip_duration || 5));
+    const estCredits = clipCount * 19;
+    const estHours = (clipCount * 3.5 / 60).toFixed(1);
+    const modeLabel = job.mode === "narrated_drama" ? "Narrated Drama" : "Story Videos";
+
+    const proceed = confirm(
+      `Approve Master Plan and start live video generation on Kie.ai?\n\n` +
+      `• Job: ${clipCount} clips (${modeLabel})\n` +
+      `• Estimated cost: ~${estCredits} credits (plus reference plates)\n` +
+      `• Estimated runtime: ~${estHours} hours (~3.5 min/clip)\n` +
+      `• Reminder: Keep this machine awake throughout the run.\n\n` +
+      `Proceed with live video generation?`
+    );
+    if (!proceed) return;
+
     planBusy = true;
     const msg = $("plan-msg");
     msg.className = "plan-msg";
@@ -876,7 +1017,7 @@
   function renderExtendStory(job) {
     const box = $("extend-story");
     if (!box) return;
-    const canExtend = job.mode === "story_videos" && job.status === "done";
+    const canExtend = (job.mode === "story_videos" || job.mode === "narrated_drama") && job.status === "done";
     box.hidden = !canExtend;
     if (!canExtend) return;
     $("extend-submit-btn").disabled = extendBusy;
@@ -922,6 +1063,31 @@
     }
   });
 
+  function renderPropTableHtml(propState) {
+    if (!propState || !propState.length) return "<p class='meta' style='margin: 2px 0;'>— None in this clip —</p>";
+    const rows = propState.map((p) => {
+      const inFrame = p.in_frame === true || p.in_frame === "visible";
+      const inTag = inFrame ? '<span class="prop-tag-in">In Frame</span>' : '<span class="prop-tag-out">Off Screen</span>';
+      return `<tr>
+        <td style="font-weight: 600;">${escapeHtml(p.prop)}</td>
+        <td>${escapeHtml(p.holder || '—')}</td>
+        <td>${inTag}</td>
+        <td>${escapeHtml(p.state || '—')}</td>
+      </tr>`;
+    }).join("");
+    return `<table class="prop-table">
+      <thead>
+        <tr>
+          <th>Prop</th>
+          <th>Holder</th>
+          <th>In Frame</th>
+          <th>State</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+
   // The selected clip's script text and its two actions, under the timeline.
   function renderDetail() {
     for (const { node } of shownClips.values()) node.classList.toggle("selected", Number(node.dataset.index) === selected);
@@ -932,15 +1098,55 @@
     if (!clip) return;
     $("detail-title").innerHTML = `Clip ${clip.index + 1} of ${job.clips.length}` + (clip.custom_edited ? ` <span class="badge" style="background: var(--accent); margin-left: 6px; font-size: 11px;">✏️ Custom Edited</span>` : "");
     const text = [];
-    const hasScript = job.mode === "story_videos" ? Boolean(clip.movie_script) : job.mode === "story_time" ? Boolean(clip.narration) : Boolean(clip.dialogue);
+    const hasScript = (job.mode === "story_videos" || job.mode === "narrated_drama") ? Boolean(clip.movie_script) : job.mode === "story_time" ? Boolean(clip.narration) : Boolean(clip.dialogue);
     if (!hasScript) {
       text.push(el("p", "waiting", "Waiting for the script…"));
+    } else if (job.mode === "narrated_drama" && clip.movie_script) {
+      const ms = clip.movie_script;
+      const dMode = (ms.delivery_mode || "dialogue").toUpperCase();
+      const spk = ms.speaker ? `${ms.speaker}: ` : "";
+      const txt = clipSpeech(ms) || "— non-verbal beat —";
+      text.push(el("p", "quote", `${spk}${txt}`));
+      text.push(el("p", "meta", `Delivery Mode: ${dMode}`));
+      if (ms.delivery) text.push(el("p", "meta", `Delivery Tone: ${ms.delivery}`));
+      if (ms.start_est != null && ms.end_est != null && (ms.start_est > 0 || ms.end_est > 0)) text.push(el("p", "meta", `Speech Window: ${ms.start_est}s – ${ms.end_est}s`));
+      if (ms.shot) text.push(el("p", "meta", `Shot: ${ms.shot}`));
+      text.push(el("p", "meta", `Location: ${(ms.location_id || "").replace(/_/g, " ")}`));
+      if (ms.environment) {
+        text.push(el("p", "meta", `Environment: ${ms.environment}`));
+      }
+      if (ms.blocking?.length) {
+        const blockingItems = ms.blocking.map((b) => {
+          const pose = (b.end_posture && b.end_posture !== b.posture) ? `${b.posture} → ${b.end_posture}` : b.posture;
+          const pos = (b.end_position && b.end_position !== b.position) ? `${b.position} → ${b.end_position}` : b.position;
+          const fp = b.frame_position ? ` [${b.frame_position}]` : "";
+          const aware = b.awareness ? ` · Knows: ${b.awareness}` : "";
+          return `${b.character}: ${pos} (${pose})${fp}${aware}`;
+        });
+        text.push(el("p", "meta", `Blocking: ${blockingItems.join("; ")}`));
+      }
+      if (ms.prop_state?.length) {
+        const pDiv = el("div", "");
+        pDiv.innerHTML = `<span class="meta" style="font-weight: 600; display: block; margin-top: 4px;">Props in this clip:</span>` + renderPropTableHtml(ms.prop_state);
+        text.push(pDiv);
+      }
     } else if (job.mode === "story_videos" && clip.movie_script) {
       const ms = clip.movie_script;
       const lines = (ms.dialogue || []).map((d) => `${d.speaker}: "${d.line}"`).join("\n");
       text.push(el("p", "quote", lines || "— silent beat —"));
       if (ms.shot) text.push(el("p", "meta", `Shot: ${ms.shot}`));
       text.push(el("p", "meta", `Location: ${(ms.location_id || "").replace(/_/g, " ")}`));
+      if (ms.environment) {
+        text.push(el("p", "meta", `Environment: ${ms.environment}`));
+      }
+      if (ms.blocking?.length) {
+        const blockingItems = ms.blocking.map((b) => {
+          const pose = (b.end_posture && b.end_posture !== b.posture) ? `${b.posture} → ${b.end_posture}` : b.posture;
+          const pos = (b.end_position && b.end_position !== b.position) ? `${b.position} → ${b.end_position}` : b.position;
+          return `${b.character}: ${pos} (${pose})`;
+        });
+        text.push(el("p", "meta", `Blocking: ${blockingItems.join("; ")}`));
+      }
     } else if (job.mode === "story_time") {
       text.push(el("p", "quote", `“${clip.narration}”`));
       text.push(el("p", "meta", `On screen: ${clip.visual}`));
@@ -954,7 +1160,8 @@
     const running = job.status === "pending" || job.status === "generating";
     if (running) text.push(el("p", "meta", "Regenerating is available once the job has finished."));
     $("detail-text").replaceChildren(...text);
-    for (const id of ["regen-script", "regen-scene", "edit-prompt"]) $(id).disabled = !hasScript || running || actionBusy;
+    const noRegen = job.mode === "story_videos" || job.mode === "narrated_drama";
+    for (const id of ["regen-script", "regen-scene", "edit-prompt"]) $(id).disabled = noRegen || !hasScript || running || actionBusy;
   }
 
   function select(index) {
@@ -999,17 +1206,22 @@
     } else if (job.mode === "story_videos") {
       modeLabel = "Story Videos Multi-Speaker Scene";
       targetWords = "8 – 16 words";
+    } else if (job.mode === "narrated_drama") {
+      modeLabel = "Narrated Drama (Micro-Cycle)";
+      targetWords = "7 – 10 words";
     }
 
     const sections = [
       { title: "Mode & Directive", content: `<strong>${modeLabel}</strong> (${dur}s clip duration)` },
-      { title: "Story Topic / Beat", content: job.mode === "story_videos" && job.beats && job.beats[index] ? `<strong>Beat ${index + 1}:</strong> ${escapeHtml(job.beats[index].action)}` : escapeHtml(job.request.topic) },
+      { title: "Story Topic / Beat", content: (job.mode === "story_videos" || job.mode === "narrated_drama") && job.beats && job.beats[index] ? `<strong>Beat ${index + 1}:</strong> ${escapeHtml(job.beats[index].summary || job.beats[index].action)}` : escapeHtml(job.request.topic) },
     ];
 
     if (prevClip) {
       let prevText = prevClip.narration || prevClip.dialogue;
       if (!prevText && prevClip.movie_script?.dialogue?.[0]) {
         prevText = `${prevClip.movie_script.dialogue[0].speaker}: "${prevClip.movie_script.dialogue[0].line}"`;
+      } else if (!prevText && clipTurns(prevClip.movie_script).length) {
+        prevText = clipSpeech(prevClip.movie_script, true);
       }
       sections.push({ title: "Preceding Clip Context", content: `Continuity from clip ${index}: <em>"${escapeHtml(prevText || 'Action completed')}"</em>` });
     } else {
@@ -1023,6 +1235,15 @@
       const lines = (clip.movie_script?.dialogue || []).map((d) => `${d.speaker}: "${d.line}"`).join("\n");
       sections.push({ title: "Current Spoken Lines", content: escapeHtml(lines || "— silent beat —") });
       sections.push({ title: "Location Layout", content: escapeHtml((clip.movie_script?.location_id || "").replace(/_/g, " ")) });
+    } else if (job.mode === "narrated_drama") {
+      const ms = clip.movie_script;
+      let lineText = "— non-verbal shock beat —";
+      if (ms && clipTurns(ms).length) {
+        const dMode = (ms.delivery_mode || "dialogue").toUpperCase();
+        lineText = `[${dMode}] ${clipSpeech(ms, true)}`;
+      }
+      sections.push({ title: "Current Audio & Delivery", content: escapeHtml(lineText) });
+      sections.push({ title: "Location Layout", content: escapeHtml((ms?.location_id || "").replace(/_/g, " ")) });
     } else {
       sections.push({ title: "Current Line (To Replace)", content: clip.dialogue ? `“${escapeHtml(clip.dialogue)}”` : "(None yet)" });
     }
@@ -1073,8 +1294,16 @@
       const ms = clip.movie_script || {};
       sections.push({ title: "Camera Setup & Lighting", content: escapeHtml(ms.shot || "(5-second cinematic shot)") });
       sections.push({ title: "Location / Set", content: escapeHtml((ms.location_id || "").replace(/_/g, " ")) });
+      if (ms.environment) {
+        sections.push({ title: "Environment (Ambient Atmosphere)", content: escapeHtml(ms.environment) });
+      }
       if (ms.blocking?.length) {
-        sections.push({ title: "Characters & Blocking", content: escapeHtml(ms.blocking.map((b) => `${b.character}: ${b.position} (${b.posture})`).join("; ")) });
+        const blockingHtml = ms.blocking.map((b) => {
+          const pose = (b.end_posture && b.end_posture !== b.posture) ? `${b.posture} → ${b.end_posture}` : b.posture;
+          const pos = (b.end_position && b.end_position !== b.position) ? `${b.position} → ${b.end_position}` : b.position;
+          return `<div><strong>${escapeHtml(b.character)}</strong>: ${escapeHtml(pos)} (<em>${escapeHtml(pose)}</em>)</div>`;
+        }).join("");
+        sections.push({ title: "Characters & Blocking", content: blockingHtml });
       }
       if (ms.action_steps?.length) {
         sections.push({ title: "Physical Action Steps", content: escapeHtml(ms.action_steps.map((a) => `[${a.start_est}s-${a.end_est}s] ${a.action}`).join("; ")) });
@@ -1088,6 +1317,38 @@
       const shot = (ms.shot || "").trim().replace(/\.+$/, "");
       const dLines = (ms.dialogue || []).map((d) => `[${d.start_est}s to ${d.end_est}s] ${d.speaker} speaks: "${d.line}"`).join(" ");
       compiledPrompt = `Five-second ${shot}. Location: ${ms.location_id || ''}. Blocking: ${ms.blocking ? ms.blocking.map((b) => b.character).join(', ') : ''}. Dialogue: ${dLines || 'Nobody speaks.'} Natural lip movement matching spoken line; everyone else keeps their mouth closed. No background music.`;
+    } else if (job.mode === "narrated_drama") {
+      const ms = clip.movie_script || {};
+      const dMode = (ms.delivery_mode || "dialogue").toUpperCase();
+      sections.push({ title: "Delivery Mode", content: `<span class="badge" style="background: ${dMode === 'VOICEOVER' ? '#6f42c1' : dMode === 'SHOCK_ACTION' ? '#d73a49' : 'var(--accent)'}; font-size: 11px;">${dMode}</span>` });
+      sections.push({ title: "Camera Setup & Framing", content: escapeHtml(ms.shot || "(5-second cinematic shot)") });
+      sections.push({ title: "Location / Set", content: escapeHtml((ms.location_id || "").replace(/_/g, " ")) });
+      if (ms.environment) {
+        sections.push({ title: "Environment (Ambient Atmosphere)", content: escapeHtml(ms.environment) });
+      }
+      if (ms.blocking?.length) {
+        const blockingHtml = ms.blocking.map((b) => {
+          const pose = (b.end_posture && b.end_posture !== b.posture) ? `${b.posture} → ${b.end_posture}` : b.posture;
+          const pos = (b.end_position && b.end_position !== b.position) ? `${b.position} → ${b.end_position}` : b.position;
+          const fp = b.frame_position ? ` <span class="ref-tag" style="background: var(--line); color: var(--text);">${escapeHtml(b.frame_position)}</span>` : "";
+          const aware = b.awareness ? `<div style="font-size: 11.5px; color: var(--muted); margin-top: 1px;">🧠 Knows: ${escapeHtml(b.awareness)}</div>` : "";
+          return `<div style="margin-bottom: 5px;"><strong>${escapeHtml(b.character)}</strong>: ${escapeHtml(pos)} (<em>${escapeHtml(pose)}</em>)${fp}${aware}</div>`;
+        }).join("");
+        sections.push({ title: "Characters & Blocking (Start → End Arc & Awareness)", content: blockingHtml });
+      }
+      if (ms.prop_state?.length) {
+        sections.push({ title: "Props in This Clip", content: renderPropTableHtml(ms.prop_state) });
+      }
+      if (ms.action_steps?.length) {
+        sections.push({ title: "Physical Action Steps", content: escapeHtml(ms.action_steps.map((a) => `[${a.start_est}s-${a.end_est}s] ${a.action}`).join("; ")) });
+      }
+      if (clipTurns(ms).length) {
+        sections.push({ title: dMode === "VOICEOVER" ? "Protagonist Voiceover (Closed Lips)" : "Spoken Dialogue (Lip Sync)", content: escapeHtml(clipSpeech(ms, true)) });
+      } else {
+        sections.push({ title: "Audio & Delivery", content: "— Non-verbal shock beat / pure foley and action —" });
+      }
+      refs.push("@Image1..N (Location Angles + Cast Portraits)", "@Audio1 (Protagonist Voice Bank)");
+      compiledPrompt = ms.compiled_prompt || (ms.shot ? `Five-second ${ms.shot}. Location: ${ms.location_id || ''}. Action: ${(ms.action_steps || []).map(a => a.action).join('. ')}. Audio: ${clipSpeech(ms, true) || 'None'}.` : 'Clip script pending generation...');
     }
 
     sections.push({ title: "Reference Inputs Sent", content: refs.map((r) => `<span class="ref-tag">${r}</span>`).join(" ") });
@@ -1221,6 +1482,40 @@
 
       scFields.appendChild(makeGroup("modal-script-shot", "Camera Setup Direction", ms.shot, true));
       scFields.appendChild(makeGroup("modal-script-dialogue", "Dialogue Context", dText, true));
+    } else if (job.mode === "narrated_drama") {
+      const ms = clip.movie_script || {};
+      const dMode = (ms.delivery_mode || "dialogue").toUpperCase();
+      sFields.appendChild(makeGroup("modal-delivery-mode", "Delivery Mode", dMode));
+      sFields.appendChild(makeGroup("modal-shot", "Camera Shot & Framing", ms.shot, true));
+      sFields.appendChild(makeGroup("modal-loc", "Location ID", ms.location_id));
+      sFields.appendChild(makeGroup("modal-environment", "Environment (Ambient Atmosphere)", ms.environment || ""));
+      sFields.appendChild(makeGroup("modal-dialogue", dMode === "VOICEOVER" ? "Protagonist Voiceover (Closed Lips)" : "Spoken Lines", clipSpeech(ms, true), true));
+      const aText = (ms.action_steps || []).map((a) => a.action).join("\n");
+      sFields.appendChild(makeGroup("modal-actions", "Action Steps", aText, true));
+
+      if (ms.blocking?.length) {
+        const blkDiv = el("div", "form-group");
+        const blkRows = ms.blocking.map(b => {
+          const pose = (b.end_posture && b.end_posture !== b.posture) ? `${b.posture} → ${b.end_posture}` : b.posture;
+          const pos = (b.end_position && b.end_position !== b.position) ? `${b.position} → ${b.end_position}` : b.position;
+          const fp = b.frame_position ? ` [${b.frame_position}]` : "";
+          const aware = b.awareness ? ` · Knows: ${b.awareness}` : "";
+          return `<div style="margin-bottom:3px;"><strong>${escapeHtml(b.character)}</strong>: ${escapeHtml(pos)} (<em>${escapeHtml(pose)}</em>)${escapeHtml(fp)}<small style="color:var(--muted);">${escapeHtml(aware)}</small></div>`;
+        }).join("");
+        blkDiv.innerHTML = `<label>Characters & Awareness (Blocking Arc)</label><div style="font-size:12px; padding:6px 8px; background:var(--bg); border:1px solid var(--line); border-radius:6px;">${blkRows}</div>`;
+        sFields.appendChild(blkDiv);
+      }
+
+      if (ms.prop_state?.length) {
+        const propDiv = el("div", "form-group");
+        propDiv.innerHTML = `<label>Props in this Clip</label>` + renderPropTableHtml(ms.prop_state);
+        sFields.appendChild(propDiv);
+      }
+
+      sFields.appendChild(makeGroup("modal-others", "Ambient Acting & Sound Cues", ms.others, true));
+
+      scFields.appendChild(makeGroup("modal-script-shot", "Camera Setup Direction", ms.shot, true));
+      scFields.appendChild(makeGroup("modal-script-dialogue", "Spoken Lines", clipSpeech(ms, true), true));
     }
 
     updateCompiledPreview();
@@ -1254,6 +1549,15 @@
       const actions = ($("modal-actions") && $("modal-actions").value) || "";
       const dialogue = ($("modal-dialogue") && $("modal-dialogue").value) || "";
       preview = `Five-second ${shot}. Location: ${loc}. Action: ${actions}. Dialogue: ${dialogue}. Natural lip movement matching spoken line; everyone else keeps their mouth closed. No background music.`;
+    } else if (job.mode === "narrated_drama") {
+      const ms = clip.movie_script || {};
+      const shot = ($("modal-shot") && $("modal-shot").value) || ms.shot || "";
+      const loc = ($("modal-loc") && $("modal-loc").value) || ms.location_id || "";
+      const env = ($("modal-environment") && $("modal-environment").value) || ms.environment || "";
+      const actions = ($("modal-actions") && $("modal-actions").value) || "";
+      const audio = ($("modal-dialogue") && $("modal-dialogue").value) || clipSpeech(ms, true) || "";
+      const envPart = env ? ` Environment: ${env}.` : "";
+      preview = `Five-second ${shot}. Location: ${loc}.${envPart} Action: ${actions}. Audio: ${audio}. No background music.`;
     }
     const promptEl = $("preview-prompt-text");
     if (promptEl && promptEl.dataset.userModified !== "true") {
@@ -1278,10 +1582,11 @@
       if ($("modal-visual")) overrides.visual = $("modal-visual").value.trim();
       if ($("modal-narration")) overrides.narration = $("modal-narration").value.trim();
       if ($("modal-delivery")) overrides.delivery = $("modal-delivery").value.trim();
-    } else if (job.mode === "story_videos") {
+    } else if (job.mode === "story_videos" || job.mode === "narrated_drama") {
       const ms = JSON.parse(JSON.stringify(clip.movie_script || {}));
       if ($("modal-shot")) ms.shot = $("modal-shot").value.trim();
       if ($("modal-loc")) ms.location_id = $("modal-loc").value.trim();
+      if ($("modal-environment")) ms.environment = $("modal-environment").value.trim();
       if ($("modal-others")) ms.others = $("modal-others").value.trim();
       overrides.movie_script = ms;
     }
@@ -1409,6 +1714,25 @@
   $("regen-script").addEventListener("click", () => runAction("regenerate-script"));
   $("regen-scene").addEventListener("click", () => runAction("regenerate-scene"));
 
+  $("resume-job-btn")?.addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job) return;
+    const btn = $("resume-job-btn");
+    btn.disabled = true;
+    btn.textContent = "Resuming…";
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/resume`, { method: "POST" });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(describeError(body));
+      formMsg.textContent = "Resuming video generation…";
+      poll(job.id);
+    } catch (e) {
+      alert("Failed to resume: " + e.message);
+      btn.disabled = false;
+      btn.textContent = "▶ Resume Generation";
+    }
+  });
+
   async function poll(jobId) {
     clearTimeout(pollTimer);
     try {
@@ -1470,14 +1794,36 @@
       $("topic").focus();
       return;
     }
+    const mode = radio("mode");
+    const durVal = Number(durationSel.value) || 30;
+    const clipDurVal = Number(radio("clip_duration")) || 5;
+    const totalClips = Math.round(durVal / clipDurVal);
+
+    if (mode === "talking_head" || mode === "story_time") {
+      if (totalClips >= 10) {
+        const estCredits = mode === "talking_head" ? (41 + (totalClips - 1) * 24) : (totalClips * 19);
+        const estMins = Math.round(totalClips * 2.5);
+        if (!confirm(
+          `Start ${totalClips}-clip direct video generation on Kie.ai?\n\n` +
+          `• Mode: ${mode === "talking_head" ? "Talking Head" : "Story Time"}\n` +
+          `• Estimated cost: ~${estCredits} credits\n` +
+          `• Estimated runtime: ~${estMins} minutes\n\n` +
+          `Click OK to begin generation.`
+        )) {
+          return;
+        }
+      }
+    }
+
     setBusy(true);
     formMsg.textContent = "Sending…";
     const payload = {
       topic,
-      mode: radio("mode"),
-      clip_duration: Number(radio("clip_duration")),
-      duration: Number(durationSel.value),
+      mode,
+      clip_duration: clipDurVal,
+      duration: durVal,
       resolution: radio("resolution"),
+      supervise: $("supervise") ? $("supervise").checked : false,
     };
     try {
       const res = await fetch("/jobs", {
@@ -1499,12 +1845,14 @@
     if (event.target.name === "clip_duration") fillDurations();
     if (event.target.name === "mode") {
       updateHint();
-      if (radio("mode") === "story_videos") {
+      if (radio("mode") === "story_videos" || radio("mode") === "narrated_drama") {
         const r5 = form.querySelector('input[name="clip_duration"][value="5"]');
         if (r5 && !r5.checked) { r5.checked = true; fillDurations(); }
       }
     }
+    updateCostEstimate();
   });
+  durationSel.addEventListener("change", updateCostEstimate);
 
   // --- Enhance Prompt Button ---
   const enhanceBtn = $("btn-enhance-prompt");
@@ -1526,7 +1874,7 @@
     const duration = Number(durationSel.value) || 30;
     const clipDuration = Number(radio("clip_duration")) || 5;
     const mode = radio("mode") || "story_videos";
-    const modeName = {talking_head: "Talking Head", story_time: "Story Time", story_videos: "Story Videos"}[mode] || mode;
+    const modeName = {talking_head: "Talking Head", story_time: "Story Time", story_videos: "Story Videos", narrated_drama: "Narrated Drama"}[mode] || mode;
 
     enhanceBusy = true;
     enhanceBtn.disabled = true;

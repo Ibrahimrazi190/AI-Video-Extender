@@ -10,6 +10,7 @@ x-app: &app
     - ./app.py:/srv/app.py
     - ./dashboard.html:/srv/dashboard.html
     - ./movie_scene_multispeaker.py:/srv/movie_scene_multispeaker.py
+    - ./hybrid_narrated_drama.py:/srv/hybrid_narrated_drama.py
   depends_on:
     redis:
       condition: service_healthy
