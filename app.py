@@ -44,6 +44,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 KIE_API_KEY = os.getenv("KIE_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6")
+# The pipeline asks OpenAI for two very different things, and they do not want the same model. The
+# SHOWRUNNER invents the story and writes every spoken line in the film - creative writing, which is the
+# cheap tiers' known weakness. The CLIP WRITER invents nothing: the lines are already written and must be
+# copied verbatim, so its job is filling a strict JSON schema with camera placement, blocking and prop
+# bookkeeping - structured work, which the cheap tiers are good at. On the first 5-minute run the clip
+# writer was 43 of 49 calls and $6.48 of the $7.56. Unset, it follows OPENAI_MODEL and nothing changes.
+OPENAI_CLIP_MODEL = os.getenv("OPENAI_CLIP_MODEL", "") or OPENAI_MODEL
 LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
 LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
 LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"))
@@ -384,14 +391,87 @@ def generate_script(topic: str, num_clips: int, mode: Mode = "talking_head", cli
     return _check_script(script, num_clips, mode)
 
 
-def _ask_openai_json(system_prompt: str, user_content: str, name: str, schema: dict) -> dict:
+# $ per million tokens: (input, cached input, output). Used only to print a running estimate next to the
+# token counts - the authoritative figure is OpenAI's own usage page. A model that is not listed still gets
+# its tokens reported; only the dollar estimate is skipped.
+OPENAI_PRICES = {
+    "gpt-5.5":     (5.00, None, 30.00),
+    "gpt-6-luna":  (0.10, 0.01, 0.50),
+}
+USAGE_LOG: list[dict] = []   # one entry per OpenAI call made by this process
+
+
+def _price_for(model: str):
+    for prefix, prices in OPENAI_PRICES.items():
+        if (model or "").startswith(prefix):
+            return prices
+    return None
+
+
+def _record_usage(name: str, model: str, usage) -> dict:
+    """Keep what every OpenAI reply already tells us and we were throwing away.
+
+    `cached_tokens` is the only way to know whether the prompt-caching prefix is actually being hit -
+    Langfuse prices from its own table and will not show it. `reasoning_tokens` is the invisible thinking
+    that is billed at the output rate; on the first 5-minute run it was ~85,700 tokens, about a third of
+    the bill, and nothing recorded it."""
+    if usage is None:
+        return {}
+    pt = getattr(usage, "prompt_tokens_details", None)
+    ct = getattr(usage, "completion_tokens_details", None)
+    entry = {
+        "name": name,
+        "model": model,
+        "input": getattr(usage, "prompt_tokens", 0) or 0,
+        "cached": getattr(pt, "cached_tokens", 0) or 0,
+        "output": getattr(usage, "completion_tokens", 0) or 0,
+        "reasoning": getattr(ct, "reasoning_tokens", 0) or 0,
+    }
+    prices = _price_for(model)
+    if prices:
+        p_in, p_cached, p_out = prices
+        fresh = max(0, entry["input"] - entry["cached"])
+        # An unknown cached rate is charged at the full input rate: over-estimating is the safe direction.
+        entry["cost"] = round(
+            (fresh * p_in + entry["cached"] * (p_cached if p_cached is not None else p_in) + entry["output"] * p_out)
+            / 1_000_000, 6)
+    USAGE_LOG.append(entry)
+    hit = f" ({entry['cached']:,} cached)" if entry["cached"] else ""
+    think = f", {entry['reasoning']:,} reasoning" if entry["reasoning"] else ""
+    money = f"  ~${entry['cost']:.4f}" if "cost" in entry else ""
+    print(f"    [openai] {name} on {model}: in {entry['input']:,}{hit}, out {entry['output']:,}{think}{money}",
+          flush=True)
+    return entry
+
+
+def usage_summary(reset: bool = False) -> dict:
+    """Totals for everything this process has asked OpenAI for, by call name."""
+    by_name: dict[str, dict] = {}
+    for e in USAGE_LOG:
+        row = by_name.setdefault(e["name"], {"calls": 0, "input": 0, "cached": 0, "output": 0, "reasoning": 0, "cost": 0.0})
+        row["calls"] += 1
+        for k in ("input", "cached", "output", "reasoning"):
+            row[k] += e.get(k, 0)
+        row["cost"] += e.get("cost", 0.0)
+    total = {"calls": len(USAGE_LOG), "cost": round(sum(e.get("cost", 0.0) for e in USAGE_LOG), 4)}
+    for k in ("input", "cached", "output", "reasoning"):
+        total[k] = sum(e.get(k, 0) for e in USAGE_LOG)
+    if reset:
+        USAGE_LOG.clear()
+    return {"total": total, "by_name": by_name}
+
+
+def _ask_openai_json(system_prompt: str, user_content: str, name: str, schema: dict,
+                     model: str | None = None) -> dict:
     """One Structured Outputs call (strict JSON schema); returns the parsed JSON or raises ValueError."""
+    model = model or OPENAI_MODEL
     response = OpenAI(api_key=OPENAI_API_KEY, timeout=300).chat.completions.create(
         name=name,
-        model=OPENAI_MODEL,
+        model=model,
         messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
         response_format={"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
     )
+    _record_usage(name, model, getattr(response, "usage", None))
     message = response.choices[0].message
     if message.refusal:
         raise ValueError(f"OpenAI refused to write the script: {message.refusal}")

@@ -94,3 +94,75 @@ Nothing here is decided just because it's listed. The same rules apply as in the
 - **Nothing starts on its own after a reboot:** Docker Desktop doesn't start with Windows, and the containers have no restart policy. `restart: unless-stopped` in `docker-compose.yml`, plus Docker Desktop's "Start when you sign in", would make the dashboard come back by itself.
 - **The media volume only grows:** every downloaded clip, prepared clip and final video is kept, with no clean-up of old jobs or replaced clips.
 - **`test_results/` isn't git-ignored** (test videos and measurements).
+
+---
+
+## 7. Hybrid Narrated Drama — open after the 2026-10-07 cost & delivery work
+
+Kept together rather than split across the sections above, because they came out of one investigation
+(`PROGRESS.md`, "the OpenAI bill, and why the film sounded dead").
+
+### Owed tests
+
+- **Does a banked voice reference CAP expressiveness?** Settled so far: a reference does not *prevent* heat
+  (Lorenzo was matched to `@Audio1` in clips 39 and 40, both of which carry real anger). Not settled: whether
+  it tones the ceiling down — your read of clip 40 was "anger, maybe a bit toned down". **The next full run
+  tests this for free**, because its deliveries will now genuinely ask for heat. Only if it is still unclear
+  after that, `voice_expression_test.py` is ready: V1 with the reference against V2 without it, same
+  everything else, ~48 credits. Do not delete that file until this is closed.
+- **Mixed voiceover-and-dialogue in one clip.** Narration for the first ~2 s with mouths closed, then a
+  character speaks on camera — reclaims the half-clip a handover currently wastes. Continuity is *not* the
+  obstacle (blocking already carries start/end state); the risk is Seedance lip-syncing the narration, which
+  is what the mouth-closed directive exists to prevent. One render settles it (~24 credits) before any schema
+  work: a fourth `delivery_mode` would touch the schema, the prompt branch, the voiceover rules, the
+  mouth-closed check and the POV check.
+- **Clipped line endings at the new word budget.** `MAX_WORDS` went 12 → 15. If endings start getting cut
+  off, lower the words-per-second factor (the earlier note in `PROGRESS.md` says try 1.8–2.0).
+
+### Cost levers not yet pulled
+
+Measured on job `d54e40da…`: output costs 6× input, so these are ordered by what they actually save.
+
+- **`reasoning_effort` on the clip writer.** 85,726 reasoning tokens, ~$2.57 — **a third of the run's bill** —
+  and the parameter is simply never set, so it runs at the model's default. `_ask_openai_json` passes only
+  `model`, `messages` and `response_format`. The clip writer fills a strict schema against mechanical rules;
+  the showrunner is the call that deserves deep reasoning.
+- **Clip history 3 → 1.** ~86,000 input tokens across a run, and `_check_narrated_chapter` only ever compares
+  against `prev_clip` — a single clip. The prompt sends three.
+- **`max_completion_tokens`.** Still unset. Needs truncation handling first: a cut-off reply fails
+  `json.loads` and `_ask_openai_json` raises, which would fail the job rather than retry. Measured reply
+  sizes for sizing it: median 1,598, largest legitimate 2,032.
+- **The act-beats planner and the supervisor have the clip writer's old prompt-layout problem** — per-call
+  text in front of the fixed rules, so nothing caches. ~70k tokens of planning per run.
+- **Different models for the two jobs.** 43 of ~49 calls are mechanical schema-filling on a $5/$30 frontier
+  reasoning model; the 6 showrunner calls are the ones that need writing talent. Splitting the model by job
+  cuts the rate, not just the token count. A candidate can be judged offline: replay stored beats and count
+  how many clips pass the suite first time.
+
+### Known gaps
+
+- **Voiceover is stretched.** Single-turn clips run at a measured 2.46 words/sec against 3.89 for two-turn,
+  because the prompt tells a single-turn clip to end between 4.0 and 4.6 s. Deliberate — shortening it leaves
+  dead air in a 5-second clip — but it is part of why narration sounds measured. `MAX_WORDS` 15 helps.
+  Revisit if narration still drags.
+- **A finished job's voice samples expire after 24 hours.** kie.ai keeps uploads for a day, so regenerating a
+  clip from an old job sends a dead `@AudioN` URL. `voice_expression_test.py` shows the fix: re-cut the
+  sample from the stored `clips/clip_01.mp4` with `bank_voice`. FLUX cast and location pictures were checked
+  and are **not** affected (generated assets outlive uploads), but they are never downloaded either — only
+  their URLs are stored on the job.
+- **There is no mechanical check for whether audio sounds emotional.** The validators can confirm a delivery
+  *asks* for heat, never that the render delivers it. Verification is ears on a finished run.
+- **Abandoned plans cost real money and nothing makes that visible.** Four 60-clip plans were generated on the
+  night of 2026-10-06 and three were never rendered. The CLI also writes to one shared `OUTPUT_DIR`, so a
+  second CLI run silently overwrites the first plan.
+- **`verify_narrated_fixes.py` is not bind-mounted into the container.** `docker-compose.yml` mounts only
+  `app.py`, `dashboard.html`, `hybrid_narrated_drama.py` and `movie_scene_multispeaker.py`, so running the
+  suite *inside* the container executes a stale baked-in copy. Pipe the host file in, or add it to the mounts.
+- **`available_locations` in `_narrated_chapter_prompt` is computed and never used** (pre-existing).
+
+### Plan change A2 - moved to `FIRST_PRIORITY_IMPLEMENT.md`
+
+A1 (the caps, the word budget, scenes-play-bridges-skip, dramatise-don't-report, uneven acts) is done.
+A2 - an explicit `sequences` field in the act schema, and planning a runtime's worth of story instead of a
+whole compressed arc - is specified in full in `FIRST_PRIORITY_IMPLEMENT.md`. Deferred 2026-10-07 so that
+the token-saving work above can go first.

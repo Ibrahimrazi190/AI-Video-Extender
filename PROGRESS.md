@@ -16,7 +16,7 @@ Running log of the build, following `EXECUTION_GUIDE.md`. One section per comple
 | Test G | Only the last 2 s of the previous clip as the video reference (standalone script, 5 clips) | Done (2026-09-26): much better than the whole-clip chain, but degradation still visible from clip 2 and building; motion "glides" more with each clip. 16.8 credits per later clip |
 | Test H | 720p first clip as a fixed second video reference + the 2 s tail | Done (2026-09-26): clips 2 to 5 nearly level; the gliding remained. Clip 1 at 720p cost 41 credits, later clips 28.8 |
 | Test I | The 720p master + its audio only (reused Test H's clip 1 and lines) | Done (2026-09-27): you liked the result; **adopted as the Talking Head formula**. 24 credits per clip |
-| 5 | Talking Head pipeline (Celery task) | Done (2026-09-26), revised three times: Formula B, the muted video reference, and (2026-09-27) **the 720p master**: clip 0 always at 720p, every later clip generated from clip 0 (muted) + its audio only. **Not run through the worker yet** |
+| 5 | Talking Head pipeline (Celery task) | Done (2026-09-26), revised three times: Formula B, the muted video reference, and (2026-09-27) **the 720p master**: clip 0 always at 720p, every later clip generated from clip 0 (muted) + its audio only. **Run through the worker on 2026-09-27** — see the next row |
 | Live run | 720p-master pipeline through the real worker (yours) | Ran 2026-09-27 (job `0d31615a…`, 5 clips x 5 s): finished with no errors; clip 1 at 720p, clips 2 to 5 at 480p, anchors = the muted master + its audio only. Your quality verdict not logged yet |
 | 5.5 | Story-time reference test (manual, **Test S**) | Done (2026-09-26): Variant 3 won |
 | 5.6 | Story-time forward chain | **Built (2026-09-27); live 5-clip x 5 s run passed.** Formula resolved (`PLAN.md` question 14): each clip after the first gets a **muted** copy of the previous clip's video (chained), plus clip 1's audio and last frame (fixed). **Still owed by the testing note:** a run at 10 s, and one Talking Head job on the current code |
@@ -29,6 +29,7 @@ Running log of the build, following `EXECUTION_GUIDE.md`. One section per comple
 | 12 | Final video assembly | **Built (2026-09-27)**, verified offline (real ffmpeg on Seedance-shaped clips) and on the dashboard with a throwaway API. Your testing note next (no credits): press "Build final video" on one of your existing jobs per mode, then download and watch it |
 | Watch | Story Time quality over a long chain (5+ clips) | **Watch item, not a blocker.** First data point (2026-09-27, 5 clips x 5 s): quality fell a bit down the chain; you're accepting it for now |
 | Movie Mode | Multi-Speaker Dramatic Scene Pipeline (`movie_scene_multispeaker.py`) | **Built & Completed (2026-10-01)**: 60-clip (5-minute) thriller fully generated, verified, and seamlessly assembled via `app.py` lead-in audio trimming and Lanczos normalization. Permanent pipeline integration completed. |
+| Narrated Drama | Hybrid Narrated Drama (`hybrid_narrated_drama.py`) | **Built and run.** First 5-minute run 2026-10-06 (job `d54e40da…`, 43 of 60 clips). Reworked 2026-10-07/08: prompt-caching layout, emotional range, scenes allowed to play (A1), per-call model and usage capture. The planner work **A2 is specified but NOT built** — see `FIRST_PRIORITY_IMPLEMENT.md` |
 
 ---
 
@@ -778,7 +779,7 @@ Rather than a vague sentence, action within the 5-second window is broken down i
 ```
 
 #### E. Dialogue, Word Budget & Voice Matching
-- **Word Budget:** Enforces `MIN_WORDS = 8` to `MAX_WORDS = 16` per speech clip (calculated at ~2.5 words/second). Prevents rushed or clipped dialogue.
+- **Word Budget:** Enforces `MIN_WORDS = 8` to `MAX_WORDS = 16` per speech clip (calculated at ~2.5 words/second). Prevents rushed or clipped dialogue. *(Superseded: movie mode became 6 to 12 on 2026-10-04; Hybrid Narrated Drama is 6 to 15 since 2026-10-07.)*
 - **Voice Mapping:** References the actor's verified audio sample (e.g., `Julian Vale speaks in the voice of @Audio1, Cold, quiet, and ruthless with chilling finality: "You chose this ending. Those who betray must die."`).
 - **Lip Sync Rules:** Directs Seedance to animate natural lip movements matching the line only for the visible speaker, while ensuring non-speaking characters keep their mouths closed.
 
@@ -1107,7 +1108,7 @@ Conducted a full audit across `movie_scene_multispeaker.py` and `app.py` to elim
 1. **Pacing & Beat Harmonization:**
    - Replaced old legacy 3-clip arrival examples with active two-speaker arrival/revelation beats, aligning with the Anti-Dilution and Anti-Stagnation rules.
 2. **Word Count & Mathematical Calibration:**
-   - Adjusted `MIN_WORDS, MAX_WORDS = 6, 12` (previously 8, 16) to ensure spoken lines mathematically fit a 5-second window at 2.5 words/second while allowing natural gaps between speakers.
+   - Adjusted `MIN_WORDS, MAX_WORDS = 6, 12` (previously 8, 16) to ensure spoken lines mathematically fit a 5-second window at 2.5 words/second while allowing natural gaps between speakers. *(Still current for `movie_scene_multispeaker.py`. Hybrid Narrated Drama moved to 6, 15 on 2026-10-07.)*
 3. **Voice Banking & Ping-Pong Dialogue Calibration:**
    - Updated dialogue example timings to `0.2s to 2.3s` (2.1s span) and `2.6s to 4.8s` (2.2s span), guaranteeing that any character's first line meets the mandatory 2.0s voice-banking threshold.
 4. **Unified Camera Hierarchy:**
@@ -1304,6 +1305,9 @@ direction and the quota behind it was wrong in the other:
   and three cycles needed three. A plan with no wordless beat at all now validates cleanly.
 - A run of more than 3 dialogue clips is still broken up, but the message now asks for a **voiceover** beat -
   the protagonist's inner reaction - rather than suggesting a shock beat first.
+  *(Superseded 2026-10-07: the hard cap on consecutive dialogue was removed outright. It was the thing forcing
+  voiceover in as spacer, which is how beats 17, 18 and 21 ended up narrating a phone call that was still
+  happening. A scene now runs as long as it needs.)*
 
 ### A failed check no longer becomes a paid run (2026-10-05)
 
@@ -1441,7 +1445,7 @@ carries where someone looks, and every required field costs a retry risk per cli
 **Left — `facing`**: room-relative orientation, largely covered by `screen_profile` (camera-relative),
 `eyeline` and `position`, now that blocking also carries the `end_*` arc.
 
-**Not yet run:** a live job. Nothing here has been confirmed on rendered video — the next 15-clip run is the real test, and it is yours to start.
+**Not yet run:** a live job. Nothing here has been confirmed on rendered video — the next 15-clip run is the real test, and it is yours to start. *(Superseded: a 43-clip run followed on 2026-10-06, job `d54e40da…`. What it showed is in the 2026-10-07 entry.)*
 
 ### Hardening & Production Fixes for 5-Minute Run (Steps 1–5, 2026-10-06)
 
@@ -1555,3 +1559,303 @@ whole-plan check still runs afterwards, so the trade is one cheap call against r
 plan.
 
 Suite: **237 checks**, all passing; both JSON schemas still satisfy OpenAI strict mode.
+
+---
+
+## Hybrid Narrated Drama — the prop diary stops being re-written every clip (2026-10-07)
+
+### Why
+The first 5-minute run cost far more in OpenAI than in kie.ai credits. Langfuse on job
+`d54e40da…` gave the real split: **465,198 input / 177,351 output tokens, $7.56**, of which **85,726 were
+reasoning tokens** - a cost line that had never been estimated. Measuring the stored clip scripts showed
+where the visible output went:
+
+| field | tokens/clip | share |
+|---|---|---|
+| **prop_state** | **923** | **45%** |
+| blocking | 592 | 29% |
+| action_steps | 305 | 15% |
+| everything else | 244 | 11% |
+
+The diary was asking for **one entry per prop per clip, for every prop that had ever appeared** - 18.4
+entries a clip, of which **1.7 were actually in shot**. The other ~17 were off-camera props being restated
+verbatim, 43 times over.
+
+### The change
+A clip now writes only **(a) every prop the camera sees, and (b) every prop whose holder or state changed**.
+Anything off camera and unchanged is left out; `_repair_narrated_clip` carries it forward with
+`in_frame: false`, which it already did. The **stored** diary therefore stays complete - only the generation
+shrinks.
+
+- Schema description and the chapter prompt's rule 8 rewritten to ask for that.
+- The validator's "a prop was dropped from the previous clip's diary" rejection **removed**: omitting a prop
+  is now how a clip says "off camera, unchanged".
+- The carry-forward in `_repair_narrated_clip` is now the normal path rather than a rescue.
+
+**"In shot OR changed", not "changed only"** - the distinction matters. `in_frame` is per-clip camera state,
+not a persistent property: a prop can sit untouched and be in shot in one clip and not the next because the
+camera moved. Carrying `in_frame` forward would start drawing props into shots they are not in, which is the
+exact failure the field exists to prevent.
+
+### The risk it introduced, and the guard
+Because omission now means "unchanged", a prop that **does** move but goes unlisted would be frozen at its
+old holder and state by the carry-forward - and that wrong state would then follow it for the rest of the
+story and into every later video prompt. A miss used to be one bad clip; it would now be sticky.
+
+So: **any prop named in an `action_step` must appear in that clip's `prop_state`**, as a hard problem.
+
+Matching is deliberately conservative. The first version flagged **7 of 43 real clips**, all on
+`car_radio_mic` matching the bare word "radio" - because the harbour terminal has a **radio console in its
+layout**, so "at the radio console" is furniture, not the prop. A single word now only stands for a prop if
+it names no scenery (location descriptions and layouts) and belongs to no other prop; otherwise only the
+prop's whole name matches. Re-run against the same 43 clips: **0 flagged**, while the genuine frozen-prop
+case is still caught.
+
+### What replaying the run turned up
+Chaining all 43 clips through the new rule - each clip trimmed, repaired from the *previous repaired* clip,
+that result feeding the next - exposed something the optimisation was not looking for:
+
+**Clip 43 had written 563 prop entries. 554 of them were `encrypted_ledger_case`, byte-identical.** One
+OpenAI call, one reply, the model stuck repeating an array element: **28,683 visible output tokens**, and the
+call Langfuse shows at **36,408 tokens / $0.82** - about 11% of that trace's entire cost, on one clip.
+Nothing caught it: the validator checked that props exist and holders are real, never that a prop appears
+once. The schema has no `maxItems`, so 554 entries was valid output.
+
+`_repair_narrated_clip` now keeps **one entry per prop**, deterministically, before validation - no retry, no
+call. The trim also removes most of what caused it: the output now carries ~2 prop objects instead of ~10, so
+the long repetitive stretch the model jammed in largely is not there.
+
+### Verification (no OpenAI, no kie.ai)
+Replayed all 43 real clips, chained:
+
+- every clip's stored diary matches the real run
+- **Seedance is sent byte-identical prop text in all 43** - the compiled "Props in the shot:" segment was
+  compared before and after
+- no new prop problems anywhere
+- no drift across the 43-link chain
+
+| | before | after |
+|---|---|---|
+| entries written per clip | 5.5 typical (18.4 counting the runaway) | **2.4** |
+| prop tokens per clip | 923 | **103** |
+| entries across the run | 793 | **104** |
+
+Suite: **261 checks, all passing**, including six new ones covering the action-touches-a-prop rule and the
+scenery-word false positive.
+
+### Still open
+`blocking` (max 4 seen) and `action_steps` (max 10 seen) are arrays with no duplicate guard and no limit, so
+the same repetition loop remains possible there. `blocking` takes the same dedupe cleanly - one entry per
+character is its definition. A `max_completion_tokens` ceiling would bound any runaway at the API level, but
+it needs truncation handling alongside it: a cut-off reply fails `json.loads` and `_ask_openai_json` raises,
+which would fail the job rather than retry. Measured reply sizes for sizing it: median **1,598**, largest
+legitimate **2,032**, plus ~1,993 reasoning.
+
+---
+
+## Hybrid Narrated Drama — the OpenAI bill, and why the film sounded dead (2026-10-07)
+
+The first 5-minute run (job `d54e40da…`, 43 of 60 clips rendered) raised two complaints: it cost more in
+OpenAI than in kie.ai credits, and the result felt flat and hard to follow. Both were measured before
+anything was changed.
+
+### What the run actually cost
+
+Langfuse's figure is correct. Pulled from its API (`/api/public/v2/metrics` — the legacy endpoints are gone
+for organisations created after 2026-09-16) and checked by hand against published gpt-5.5 pricing of
+$5/1M input and $30/1M output:
+
+| call | calls | input | output | cost |
+|---|---|---|---|---|
+| `narrated_chapter` | 46 (43 clips + **3 retries**) | 424,725 | 146,715 | $6.48 |
+| the 5 act-beats calls | 5 | 29,181 | 26,797 | $0.96 |
+| `narrated_act_breakdown` | 1 | 3,292 | 3,839 | $0.12 |
+| | | **465,198** | **177,351** | **$7.56** |
+
+By hand: 465,198 × $5/1M + 177,351 × $30/1M = **$7.65**, a 1.2% rounding gap. Per day, Oct 4 $2.25 /
+Oct 5 $1.67 / Oct 6 $8.82 = **$12.73** total. Langfuse has nothing before 2026-10-04, the day it was
+integrated, and `/enhance-prompt` is attributed to no model, so neither appears in that figure.
+
+**Output is 6× the price of input**, which reorders everything: the run's $7.56 is $5.24 output against
+$2.32 input, and the **85,726 reasoning tokens alone are ~$2.57 — a third of the bill.** Four plans were
+generated that night (three abandoned), but a whole 60-clip plan is only ~31k in / 14k out, so the surplus
+ones cost ~$1–2, not the gap that was being looked for.
+
+### Prompt caching: the clip writer's system message is now one fixed prefix
+
+OpenAI discounts the longest common **prefix** of a request automatically above 1,024 tokens. The clip
+prompt opened with `"You are directing Clip N of M"` followed by that clip's own quoted lines, so measured
+across the 43 clips the common prefix was **6 tokens** and all ~3,400 tokens of rules were billed at full
+rate 43 times over.
+
+`_narrated_chapter_prompt` now splits by what varies, not by role: the system message holds the rulebook,
+cast, locations, props and premise and is **byte-identical on every clip of a job**; the user message holds
+the clip number, delivery mode, mode instructions, location anchor, beat, roadmap and history. Rule 1 keeps
+its number via a pointer so the other rules' numbers still match this file.
+
+| | before | after |
+|---|---|---|
+| common prefix across 43 system messages | 6 tok | **4,721 tok** |
+| input that can cache | ~0 | **203,003 tok (51%)** |
+| effective input at a 50% / 90% discount | 395,287 | **296,333 / 215,132** |
+
+Total input rose 0.6% (rule 1 appears as a summary line in the cached block and in full per clip), which
+buys the 51%. The first clip of a job writes the cache rather than reading it, and a slow kie.ai render can
+let it go cold. **Langfuse prices tokens from its own table and may not reflect the discount — judge this
+from the OpenAI dashboard or `usage.prompt_tokens_details.cached_tokens`, not from Langfuse's cost column.**
+
+A retry used to **replace** the user message with just the premise and the rule list, discarding the beat,
+the roadmap and the clip history, and never showing the model its own rejected answer. It now appends to the
+original message and includes the rejected clip (the repaired state the validator judged), which also keeps
+the cached prefix intact across retries.
+
+### The flat, robotic audio was written into the prompts
+
+Clips 39 and 40 were listened to before anything was built: both carry real anger. **`seedance-2-mini` was
+never the limit.** Of the run's 56 spoken turns, **39 asked for restraint and 2 asked for heat** — and three
+of the five the scan flagged as hot were negations (*"without raised volume"*, *"without a raised note"*).
+
+Clip 4 is the whole diagnosis in one request. Same clip, same prompt, 4.14 vs 4.29 words/sec:
+
+- Camilla — no voice reference, *"bright, lacquered soprano"*, *"needling amusement under a polished smile"* → alive
+- Elena — `matching @Audio1`, *"controlled counterstrike without heat"* → robotic
+
+Four causes, four fixes:
+
+1. **Our examples taught it.** Seven of the nine `delivery` examples in the prompts were whisper-register;
+   the voiceover instruction's three were *all* hushed. They now span shouted to whispered.
+2. **`voice` held performance notes.** Elena was *"low, **controlled** alto"*, Marco *"**quiet**, flat bass"*
+   — the same class of bug `_MOOD_IN_LOOK` blocks for `appearance`, with no equivalent guard. That field
+   never reaches the clip writer; it shapes **clip 1's invented voice, which is then banked and cloned into
+   every later clip**. New `_PERFORMANCE_IN_VOICE`, and `_clean_voices()` strikes the word in
+   `_compile_bible_visuals` **before validation**, so it costs no planning retry (replayed on the real bible:
+   both voices repaired, 0 hard problems). The validator stays as a backstop for what cannot be tidied safely
+   (`"quiet and controlled"` would reduce to the bare word "and", so the original is kept and asked for again).
+3. **Self-cancelling deliveries are cut**, deterministically, in `_repair_narrated_clip` before validation —
+   5 of the run's 56 turns, all Elena's.
+4. **A reply must react** to the line before it in the same clip, and two restrained clips in a row raise a
+   `[SOFT]` note (the run managed five, 25 seconds).
+
+Pacing was ruled out as a cause: clip 4 ran at 4.14 words/sec against 39/40's 4.29. A **banked reference does
+not prevent heat** either — Lorenzo was matched to `@Audio1` in both of the clips that sound good.
+
+### Scenes can now play, and narration is rationed (plan change "A1")
+
+The old rules capped voiceover at 2 consecutive clips and **dialogue at 3**, both hard. That is why Act 2
+(clips 13–24) was unwatchable: a confrontation could never run, so the planner wedged voiceover in as spacer,
+and beats 17, 18 and 21 ended up narrating a phone call that was still happening. Re-checked, the old plan's
+longest dialogue run is **exactly 3** and its longest voiceover run exactly 2 — the shape was the rule's, not
+the story's.
+
+- `MAX_CONSECUTIVE_VO = 3` (was 2) with a `[SOFT]` note at 3; **two is the working length**.
+- **No hard cap on dialogue.** A `[SOFT]` note past 10 unbroken clips, only to ask whether the scene has
+  started repeating itself.
+- `MAX_WORDS` 12 → 15, which also lifts narration pacing from a measured 2.46 words/sec toward ~3.5.
+  Watch for clipped endings; the earlier note in this file says to lower the words-per-second factor if they appear.
+- The "20-to-25 second micro-cycle" is replaced in all three planning prompts by two kinds: a **SCENE** plays
+  out in real time and takes as many clips as it needs; a **BRIDGE** is 1–2 voiceover clips (3 at most) that
+  skip time and **never narrate a scene still playing**.
+- **DRAMATISE, DO NOT REPORT**: an act's turns happen physically between people in a room. Accounts freezing
+  and orders carried out elsewhere are a bridge, not a stretch of beats — *"a character alone holding a
+  receiver is not a scene, however good the lines are"*.
+- Acts are sized by content, not by dividing the runtime (the run came out 12/12/12/12/12), and **locations
+  move within an act**, not only between acts.
+
+### Verification
+
+`verify_narrated_fixes.py`: **308 checks, all passing** (was 261). New sections cover the cached prefix and
+the retry shape (`[24]`), the emotional range work (`[25]`), and the scene/bridge rules (`[26]`). Two older
+fixtures carried voices the pipeline no longer accepts (`"low, unhurried baritone"`, `"a low, controlled alto
+with banked fury"`) and were updated. No OpenAI or kie.ai calls were made for any of this; every measurement
+replays the stored run.
+
+### Still open
+
+Carried into `BACKLOG.md`: whether a banked reference *caps* expressiveness (the next run tests it for free),
+voiceover's stretched windows, `reasoning_effort` and the 3-clip history, the planner and supervisor prompt
+layouts, mixed voiceover-and-dialogue clips, and A2 (specified in full in `FIRST_PRIORITY_IMPLEMENT.md`).
+
+---
+
+## Hybrid Narrated Drama — a model per job, and the usage numbers we were discarding (2026-10-08)
+
+Groundwork for the token-saving phase. Neither change alters behaviour on its own: `OPENAI_CLIP_MODEL` is
+unset by default, so everything still runs on `OPENAI_MODEL`.
+
+### A model per job
+
+The pipeline asks OpenAI for two different things and they do not want the same model:
+
+| job | calls per run | what it does | model |
+|---|---|---|---|
+| showrunner (`narrated_act_breakdown`, `narrated_act_beats`, `narrated_outline`) | 6 | invents the story, the acts and **every spoken line in the film** | `OPENAI_MODEL` |
+| clip writer (`narrated_chapter`, `narrated_supervisor`) | 43 | invents nothing — the lines are already written and copied verbatim; it fills a strict JSON schema with camera placement, blocking and prop bookkeeping | `OPENAI_CLIP_MODEL` |
+
+On the 2026-10-06 run the clip writer was **$6.48 of the $7.56**. The split exists because the cheap model
+tiers are strong at structured work and weak at creative writing — GPT-6 Luna benchmarks *above* gpt-5.5 on
+coding (98.1 vs 95.2) and slightly ahead overall (Vals 58.45% vs 57.41%), but the Luna tier sits near the
+bottom of creative-writing comparisons. Clip writing is the structured half; the story must stay on the
+better model. A check in the suite asserts the showrunner never picks up `OPENAI_CLIP_MODEL`, so a later
+edit cannot quietly move the dialogue onto the cheap tier.
+
+- `_ask_openai_json(system, user, name, schema, model=None)` — defaults to `OPENAI_MODEL`.
+- `OPENAI_CLIP_MODEL` env var, documented in `.env.example`, empty means "same as `OPENAI_MODEL`".
+- To try it: `OPENAI_CLIP_MODEL=gpt-6-luna` in `.env`, then restart. Luna is $0.10/M input and $0.50/M
+  output against gpt-5.5's $5/$30, supports strict Structured Outputs through Chat Completions (the exact
+  call this code makes), has a 1.05M context window and cached reads at $0.01/M.
+- **Not yet measured on real beats.** The replay test — stored beats through the clip writer on Luna,
+  offline, counting first-time validator passes — has not been run. At Luna's prices it costs about a cent.
+
+### Every reply already told us what we needed; nothing kept it
+
+`_ask_openai_json` read `response.choices[0].message` and discarded `response.usage`. Two numbers were going
+in the bin:
+
+- **`prompt_tokens_details.cached_tokens`** — the only way to know whether the prompt-caching prefix
+  introduced on 2026-10-07 is actually being hit. Langfuse prices from its own table and will not show it.
+- **`completion_tokens_details.reasoning_tokens`** — the invisible thinking billed at the output rate. It was
+  ~85,700 tokens on the first 5-minute run, about a third of the bill, and nothing recorded it.
+
+`_record_usage()` now keeps both, appends to `USAGE_LOG`, and prints one line per call:
+
+```
+[openai] narrated_chapter on gpt-6-luna: in 9,000 (4,700 cached), out 3,000, 1,500 reasoning  ~$0.0020
+```
+
+`usage_summary()` totals it by call name. The dollar figure is an estimate from `OPENAI_PRICES` and is
+deliberately conservative: gpt-5.5's cached-read rate is not published anywhere that could be verified, so
+its cached tokens are charged at the **full** input rate. The estimate reads high rather than low, and
+OpenAI's own usage page stays authoritative. A model that is not in the table still gets its tokens
+reported; only the dollar estimate is skipped.
+
+**Not needed for this:** `store: true`. OpenAI's Logs page only keeps Chat Completions sent with that flag
+(it defaults to false, which is why nothing has ever appeared there), but Langfuse already captures prompts
+and replies, so the page would duplicate it. Left off deliberately; it also carries data-retention
+implications. The Usage page needs no flag and works today.
+
+### Inconsistencies found in this file, and what was done
+
+Asked for an audit of this log. Seven things were wrong or missing; history was annotated rather than
+rewritten, except where a statement was simply an error.
+
+| what | fix |
+|---|---|
+| Prompt 5's row said "**Not run through the worker yet**" while the row directly beneath it recorded the run | corrected — it ran 2026-09-27 |
+| the status table had **no row at all** for Hybrid Narrated Drama, now the main mode | row added, including that A2 is specified but not built |
+| Movie Mode's "`MIN_WORDS = 8` to `MAX_WORDS = 16`" | annotated: movie mode became 6–12 on 2026-10-04, hybrid is 6–15 since 2026-10-07 |
+| the 2026-10-04 "6, 12" entry read as if it covered both files | annotated: still current for `movie_scene_multispeaker.py` only |
+| 2026-10-05: "a run of more than 3 dialogue clips is still broken up" | annotated as superseded — that cap was removed outright on 2026-10-07, and it was the cause of the spacer-voiceover problem |
+| 2026-10-05: "**Not yet run:** a live job... the next 15-clip run is the real test" | annotated — a 43-clip run followed on 2026-10-06 |
+| the 2026-10-07 entry pointed at `BACKLOG.md` for A2 | corrected to `FIRST_PRIORITY_IMPLEMENT.md` |
+
+Still accurate and left alone: the "Known, not changed" note that `movie_scene_multispeaker.py` carries the
+same `look`/`image_prompt` split that broke character identity in hybrid — that is still true, and still not
+fixed there. Note also that the `_PERFORMANCE_IN_VOICE` guard added on 2026-10-07 exists **only in
+`hybrid_narrated_drama.py`**; movie mode's voices are unguarded.
+
+### Verification
+
+`verify_narrated_fixes.py`: **321 checks, all passing** (was 308). Section `[27]` covers the per-call model,
+the showrunner staying put, cached and reasoning token capture, the conservative unknown-cache-rate costing,
+unpriced models, and a missing usage object. Seven mocks in the suite took exactly four positional arguments
+and were widened to accept the new `model` keyword. No OpenAI or kie.ai calls were made.

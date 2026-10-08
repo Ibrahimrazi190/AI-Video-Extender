@@ -53,7 +53,16 @@ OUTPUT_DIR = Path("/srv/media/hybrid_narrated_drama")
 SCRIPTS_DIR = Path("/srv/media/hybrid_narrated_scripts")
 CLIPS_PER_CHAPTER = 1
 WORDS_PER_SECOND = 2.5
-MIN_WORDS, MAX_WORDS = 6, 12
+MIN_WORDS, MAX_WORDS = 6, 15
+# Narration and dialogue are not symmetrical, and treating them as if they were is what flattened the first
+# 5-minute run. Narration COMPRESSES - it skips time and covers what cannot be filmed - so it is rationed:
+# two clips in a row is the working length, three is the ceiling and should feel exceptional. Dialogue PLAYS
+# - it is the scene actually happening - so it is not chopped. The old rule capped dialogue at 3 clips in a
+# row, which meant no confrontation could ever play out; the planner had to wedge voiceover in as spacer,
+# and those spacer beats are the ones that narrated a phone call while it was still happening.
+MAX_CONSECUTIVE_VO = 3
+VO_RUN_WORTH_NOTING = 3          # allowed, but said out loud, because 15 seconds of narration is a lot
+DIALOGUE_RUN_WORTH_NOTING = 10   # no hard cap: a scene takes the clips it takes
 MAX_VOICE_REFS = 3
 MAX_REF_IMAGES = 9
 MAX_ON_SCREEN = 7
@@ -119,6 +128,26 @@ _INNER_STATE = re.compile(
 _MOOD_IN_LOOK = re.compile(
     r"\b(anxious|nervous|worried|tense|determined|confident|frightened|scared|terrified|angry|furious|"
     r"sad|happy|desperate|guarded|suspicious|weary|tired|exhausted|hopeful|bitter|uneasy|haunted)\b",
+    re.I,
+)
+
+# The same rule as _MOOD_IN_LOOK, for the ear instead of the eye. "voice" is the instrument - its pitch,
+# grain and accent - not how it is being played in a given scene. A bible that says "low, CONTROLLED alto"
+# has written a performance note into a permanent field, and the clip writer then dutifully repeats it in
+# every delivery: in the first 5-minute run, 39 of 56 spoken turns asked for restraint and only 2 asked for
+# heat, which is why the whole film sounded flat. The model was never the problem - clips 39 and 40, the two
+# that did ask for shouting, carry real anger.
+# "low, controlled counterstrike without heat" - the clause that takes the emotion back out of a delivery.
+# It is always a tail, so cutting it leaves a usable instruction behind.
+_CANCELS_EMOTION = re.compile(
+    r"[,;]?\s*\b(?:without|with no|never|lacking)\b[^,;]{0,30}?"
+    r"\b(?:raised|volume|heat|shout\w*|anger|emotion|inflection|edge)\b[^,;]*",
+    re.I,
+)
+
+_PERFORMANCE_IN_VOICE = re.compile(
+    r"\b(controlled|restrained|measured|calm|quiet|hushed|flat|even|steady|unhurried|contained|"
+    r"soft-spoken|monotone|emotionless|deadpan|detached)\b",
     re.I,
 )
 
@@ -190,10 +219,40 @@ def _compile_location_visuals(bible: dict) -> None:
         loc["image_prompt"] = _compile_location_image_prompt(loc)
 
 
+def _clean_voices(bible: dict) -> list[str]:
+    """Cut performance words out of each character's permanent `voice`, in place.
+
+    "low, controlled alto" is a permanent field holding a note about how one line is played, and the clip
+    writer then repeats it in every delivery for the rest of the film. Striking the word needs no judgement,
+    so it is struck rather than re-asked: a retry is an OpenAI call, and a bad voice that survived the
+    retries would fail the plan at the final whole-plan check, after all six planning calls were paid for.
+    The validator in `_check_scene_bible` stays as a backstop for anything this cannot tidy."""
+    notes = []
+    for c in bible.get("characters", []):
+        voice = (c.get("voice") or "").strip()
+        if not voice or not _PERFORMANCE_IN_VOICE.search(voice):
+            continue
+        cleaned = _PERFORMANCE_IN_VOICE.sub("", voice)
+        cleaned = re.sub(r"\s*,\s*,+", ", ", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ,;")
+        cleaned = re.sub(r"^(and|but|with)\s+", "", cleaned, flags=re.I)
+        cleaned = re.sub(r"\s+(and|but|with)$", "", cleaned, flags=re.I).strip(" ,;")
+        # If striking the word left nothing usable ("quiet and controlled" -> "and"), leave the original
+        # alone and let the validator ask for a real one; a garbled voice is worse than a retry.
+        _FILLER = {"and", "but", "with", "the", "that", "very", "quite", "rather"}
+        if not any(len(w) >= 3 and w not in _FILLER for w in re.findall(r"[A-Za-z]+", cleaned.lower())):
+            continue
+        c["voice"] = cleaned
+        notes.append(f"{c.get('name', '?')}: voice {voice!r} -> {cleaned!r}")
+    return notes
+
+
 def _compile_bible_visuals(bible: dict) -> None:
     """Everything the picture models are sent, derived from the bible in one place."""
     _compile_character_visuals(bible)
     _compile_location_visuals(bible)
+    for note in _clean_voices(bible):
+        print(f"  repaired {note}")
 
 
 def _compile_look(appearance: dict) -> str:
@@ -263,7 +322,7 @@ OUTLINE_SCHEMA = {
                             "is_protagonist": {"type": "boolean"},
                             "role": {"type": "string"},
                             "appearance": APPEARANCE_SCHEMA,
-                            "voice": {"type": "string", "description": "Permanent vocal identity: 'low, smoky alto with a faint Irish lilt'. No emotion - that belongs to a clip's delivery."}
+                            "voice": {"type": "string", "description": "The INSTRUMENT only - pitch, grain, accent: 'smoky alto with a faint Irish lilt', 'gravelled baritone', 'bright soprano with a Boston edge'. Never how it is played: no 'controlled', 'quiet', 'measured', 'calm', 'flat'. How a line is delivered changes every clip and belongs to that clip's delivery."}
                         },
                         "required": ["name", "is_protagonist", "role", "appearance", "voice"],
                         "additionalProperties": False
@@ -445,7 +504,7 @@ def _narrated_chapter_schema(location_ids: list[str], character_names: list[str]
                                 "properties": {
                                     "speaker": char_prop,
                                     "line": {"type": "string", "description": "The Master Plan's words for this turn, copied exactly."},
-                                    "delivery": {"type": "string", "description": "How this turn is delivered: 'sharp accusation', 'panicked whisper', 'cold, resolute warning'."},
+                                    "delivery": {"type": "string", "description": "How this turn is delivered, matching the heat of THIS moment. The full range is available and the film needs all of it: 'roared, furious, voice breaking', 'shouted over the rain', 'spat out through clenched teeth', 'laughing, delighted and cruel', 'pleading, close to tears', 'sharp accusation', 'cold, resolute warning', 'barely a whisper'. Never write a delivery that cancels its own emotion ('fury without raised volume')."},
                                     "start_est": {"type": "number", "description": "When this turn starts, in seconds inside the clip (0.0 to 5.0). The first turn starts at 0.4s or later so the picture settles first."},
                                     "end_est": {"type": "number", "description": "When this turn ends, in seconds inside the clip (at most 4.8). Turns must not overlap: each one starts after the previous one ends."}
                                 },
@@ -459,7 +518,7 @@ def _narrated_chapter_schema(location_ids: list[str], character_names: list[str]
                         },
                         "prop_state": {
                             "type": "array",
-                            "description": "The prop diary: one entry for EVERY prop that has appeared in the story so far, in every clip from its first appearance onward, whether the camera sees it or not.",
+                            "description": "Only the props this clip actually needs: every prop IN SHOT, plus any prop whose holder or state CHANGED here. Leave out anything off camera and unchanged - the system carries those forward for you, so listing them again is wasted.",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -561,19 +620,16 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (FIRST-PERSON POV + LIVE DIALOGUE):
    - In scene_bible, set is_protagonist: true for this character, and set pov_protagonist to their name.
    - All voiceover (V.O.) in the entire series is strictly narrated in FIRST-PERSON ("I", "my", "we") in their voice!
 
-2. RAPID 20-TO-25 SECOND MICRO-CYCLE RHYTHM (CRITICAL):
-   Do NOT clump all voiceovers at the start or all dialogues at the end!
-   Every 4 to 5 clips (approx. 20-25 seconds) forms an addictive, self-contained dramatic cycle:
-     * Phase 1: NARRATIVE DRIVE (1–2 clips, delivery_mode='voiceover'):
-       The protagonist's internal monologue reflects on the situation, moves time forward, or sets the emotional stakes while acting physically.
-     * Phase 2: LIVE SPOKEN CLASH (2–3 clips, delivery_mode='dialogue'):
-       Sharp, intense on-camera dialogue confrontation with lip-sync between characters.
+2. SCENES PLAY, BRIDGES SKIP (CRITICAL):
+   Do NOT clump all voiceovers at the start or all dialogues at the end, and do NOT chop the story into equal pieces. There are two kinds of stretch, and the difference is what makes a drama watchable:
+     * A SCENE (delivery_mode='dialogue'): a moment PLAYED OUT in real time, people in a room doing things to each other. This is where the drama is, and it needs room - a real confrontation runs many clips in a row and must NOT be broken up. Let it build: proposition, objection, leverage, counter, ultimatum, decision.
+     * A BRIDGE (delivery_mode='voiceover'): time SKIPPED, or consequences landing. 1 to 2 clips of the protagonist's narration over strong visuals, 3 at the absolute most, and then we are somewhere new with everything changed. "I closed every port he owned" is a bridge - two clips. A bridge NEVER narrates a scene that is still playing in front of the camera; it moves us past what we do not need to watch.
      * Phase 3: THE WORDLESS BEAT (0 or 1 clip, delivery_mode='shock_action'):
        Used ONLY when the story genuinely gives you one. Two kinds:
          (a) THE SHOCKWAVE - the protagonist's own visceral reaction to something that just physically happened (a frozen stare, a gasped recoil, a dropped glass). Other characters in the shot may react too, but the camera stays with the protagonist.
          (b) THE ESTABLISHING SHOT - nobody on screen at all: the building from the street, a lift door sliding open, rain running down a window, an empty corridor. It tells the viewer where the next scene happens, exactly as a normal film or drama does. For these, present_characters MUST be empty and speaker_or_actor MUST be empty.
        NEVER invent a jolt to fill this slot. If nothing physically happens at this point in the story, SKIP Phase 3 and carry straight on with dialogue or voiceover. A manufactured shock is worse than no shock: it stops the scene dead and steals the moment from whoever it is really about.
-   This cycle is the rhythm to AIM for across the runtime, not a quota to satisfy. Follow the story first; the rhythm serves it, never the other way round.
+   Alternate between the two as the STORY demands, never on a timer. Follow the story first; the rhythm serves it, never the other way round.
 
 3. LOCATION CONTINUITY & CONFINEMENT (CRITICAL):
    - Confinement within an act, progression between acts.
@@ -588,7 +644,8 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (FIRST-PERSON POV + LIVE DIALOGUE):
 
 4. CASTING THE SCREEN (CRITICAL):
    - CASTING RULE: unless the premise asks for a specific ethnicity, default the cast to Western, European or British demographics.
-   - STATIC BIBLE RULE: "appearance" and "voice" hold ONLY permanent, unchanging physical facts ('tall and lean', 'jet black hair', 'low smoky alto'). NEVER put a mood, an emotion or a story event there ('anxious', 'determined', 'starts hopeful') - those belong to a clip's delivery and action.
+   - STATIC BIBLE RULE: "appearance" and "voice" hold ONLY permanent, unchanging physical facts ('tall and lean', 'jet black hair', 'smoky alto with a faint Irish lilt'). NEVER put a mood, an emotion or a story event there ('anxious', 'determined', 'starts hopeful') - those belong to a clip's delivery and action.
+   - "voice" IS THE INSTRUMENT, NOT THE PERFORMANCE (CRITICAL): give its pitch, grain and accent only. NEVER 'controlled', 'quiet', 'measured', 'calm', 'flat' or 'restrained' - those describe how someone is speaking in one moment, and written here they make EVERY line in the film inherit them. A character whose voice is 'low, controlled alto' will never be allowed to shout.
    - VISUAL SEPARATION RULE: each character's reference portrait is generated automatically from "appearance", and these clips are watched on a phone in dark, dim rooms. Every character MUST be identifiable at a glance:
      * No two characters may share a hair colour. If the story dresses them in the same uniform, their hair colour AND hair style must BOTH differ.
      * Every character needs a real "distinguishing_feature" - something visible on the face or head. Never 'none'.
@@ -608,8 +665,8 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (FIRST-PERSON POV + LIVE DIALOGUE):
    - REVEAL ORDER (CRITICAL): a line may only use what the audience already knows. List in "reveals" the key terms each beat discloses for the FIRST time - names, places, room numbers, objects. NEVER let an earlier beat's lines speak a term that a later beat reveals: the protagonist cannot name Room 404 in clip 2 if a co-worker reveals it in clip 3.
 
 6. ABSOLUTE RULES:
-   - NEVER have more than 2 consecutive voiceover clips.
-   - NEVER have more than 3 consecutive dialogue clips.
+   - NEVER have more than 3 consecutive voiceover clips, and 2 is the working length: past that the viewer is listening to someone think instead of watching something happen.
+   - Consecutive dialogue clips are NOT capped. A scene takes the clips it takes; never break one up just to insert narration.
    - For shock_action clips, speech_budget must be 0 and audio_lines must be an empty array.
    - For voiceover and dialogue clips, speech_budget must be {MIN_WORDS} to {MAX_WORDS} words.
    - This is a FIRST-PERSON story, so when a shock_action beat has ANY people in it, the camera stays with the pov_protagonist: they must be among its present_characters and be its speaker_or_actor. Everyone else present may still react in the clip - they simply are not who the shot is about. A shock_action beat with NOBODY on screen (an establishing or atmospheric shot) has empty present_characters and an empty speaker_or_actor.
@@ -755,7 +812,8 @@ def _narrated_act_breakdown_prompt(topic: str, duration: int, total_clips: int,
     act_instruction = (
         f"Divide the {duration}s story ({total_clips} clips) into exactly {act_count} narrative acts as requested in the premise."
         if act_count else
-        f"Divide the {duration}s story ({total_clips} clips) into {default_acts} narrative acts (~15 clips per act)."
+        f"Divide the {duration}s story ({total_clips} clips) into about {default_acts} narrative acts. "
+        f"Size each one by what it has to do, NOT by dividing {total_clips} evenly - unequal acts are expected and correct."
     )
 
     system_prompt = f"""You are a master showrunner and director for viral dramatic mini-series (ReelShort / DramaBox style).
@@ -770,15 +828,22 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (ACT BREAKDOWN & SCENE BIBLE)
 
 2. CASTING THE SCREEN & STATIC BIBLE:
    - CASTING RULE: unless the premise asks for a specific ethnicity, default the cast to Western, European or British demographics.
-   - STATIC BIBLE RULE: "appearance" and "voice" hold ONLY permanent, unchanging physical facts ('tall and lean', 'jet black hair', 'low smoky alto'). NEVER put a mood, an emotion or a story event there ('anxious', 'determined', 'starts hopeful') - those belong to a clip's delivery and action.
+   - STATIC BIBLE RULE: "appearance" and "voice" hold ONLY permanent, unchanging physical facts ('tall and lean', 'jet black hair', 'smoky alto with a faint Irish lilt'). NEVER put a mood, an emotion or a story event there ('anxious', 'determined', 'starts hopeful') - those belong to a clip's delivery and action.
+   - "voice" IS THE INSTRUMENT, NOT THE PERFORMANCE (CRITICAL): give its pitch, grain and accent only. NEVER 'controlled', 'quiet', 'measured', 'calm', 'flat' or 'restrained' - those describe how someone is speaking in one moment, and written here they make EVERY line in the film inherit them. A character whose voice is 'low, controlled alto' will never be allowed to shout.
    - VISUAL SEPARATION RULE: each character's reference portrait is generated automatically from "appearance", and these clips are watched on a phone in dark, dim rooms. Every character MUST be identifiable at a glance:
      * No two characters may share a hair colour. If the story dresses them in the same uniform, their hair colour AND hair style must BOTH differ.
      * Every character needs a real "distinguishing_feature" - something visible on the face or head. Never 'none'.
    - Fill every "appearance" field precisely. It is the only description of that character the camera will ever get.
    - PROPS: list in "props" every object a character carries, picks up, sets down, uses, changes or breaks in the story (a laundry cart, a silver case, a phone receiver, a knife), each with a snake_case "id" and a full fixed "description" of how it looks. NOT furniture that simply stands in the room, and NOT what characters wear.
 
-3. LOCATION CONTINUITY & PROGRESSION ACROSS ACTS:
-   - Confinement within an act, progression between acts.
+3. DRAMATISE, DO NOT REPORT (CRITICAL):
+   - An act's main turns must HAPPEN IN FRONT OF THE CAMERA, physically, between people in the same room. Things the audience is only told about did not happen to them.
+   - Never build an act around events the camera cannot see: money moving, accounts freezing, orders being carried out elsewhere, numbers changing on a monitor. If the story needs those, they are a BRIDGE of 1 to 2 voiceover clips, and then we cut to the scene where someone has to face the person who did it.
+   - Phone calls, texts and screens are fine as BEATS - a call lands, she reads it, she reacts - but never as the spine of a stretch of clips. One character alone in a room holding a receiver is not a scene, however good the lines are; the person on the other end has to be in the room before it becomes one.
+   - Ask of every act: who is physically present, and what do they DO to each other? If the answer is "one person, and she listens", restructure it.
+
+4. LOCATION CONTINUITY & PROGRESSION ACROSS ACTS:
+   - Confinement within a SCENE, progression between scenes.
    - Each act anchors in 1 to 2 core locations during its dramatic sequence. Do NOT jump between random unestablished rooms every 5 seconds.
    - The story MUST progress to new locations between acts! For a {total_clips}-clip production ({duration}s), establish 4 to 8 distinct locations total across the entire story (e.g. Grand Lobby, Executive Office, Archives, Private Sedan, Rooftop Terrace).
    - "description": fixed look in 1-2 sentences true for the whole story.
@@ -786,8 +851,13 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (ACT BREAKDOWN & SCENE BIBLE)
    - "views": 2 or 3 camera VIEWPOINTS showing the place EMPTY.
    - "image_prompt": wide text-to-image prompt showing the EMPTY place with NO PEOPLE and NO PROPS.
 
-4. MULTI-ACT STRUCTURE:
+5. MULTI-ACT STRUCTURE:
    - {act_instruction}
+   - LENGTH FOLLOWS CONTENT (CRITICAL): acts are NOT equal lengths. Decide what each act has to do, then give it the clips that takes. An act that is one long confrontation may need 18 clips; an act that exists to move the story from one place to the next may need 4. Equal-length acts are a sign the story has not been thought about - the last production came out 12/12/12/12/12 and the middle acts were padded out with people saying nothing new.
+   - WHAT A STRETCH OF CLIPS IS FOR - there are two kinds, and mixing them up is what makes a drama drag:
+     * A SCENE is a moment PLAYED OUT in real time: two people in a room, the thing actually happening in front of the camera. Scenes are where drama lives, and they need room - a real confrontation runs 10 or more clips and must not be chopped up.
+     * A BRIDGE is time SKIPPED or consequences landing: it is carried by 1 to 2 voiceover clips over strong visuals, never more than 3, and it exists so the next scene can start later, elsewhere, or with everything changed. "I closed every port he owned" is a bridge - two clips. Do NOT expand a bridge into a scene: 12 clips of someone alone in a room reacting to things happening off-screen is unwatchable.
+   - LOCATIONS MOVE WITHIN AN ACT, not just between acts. An act may open in a car, arrive at a building and finish in a room upstairs. Listing one location per act is what produced five separate 60-second rooms.
    - For each act in "acts", specify:
      * "act_number": integer 1, 2, ...
      * "title": short dramatic title (e.g. 'Act 1: The Inciting Disruption')
@@ -799,7 +869,7 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (ACT BREAKDOWN & SCENE BIBLE)
      * "reveals": the key terms the audience learns for the FIRST time in this act - names, places, room numbers, objects.
    - Act spans must cover clips 1 to {total_clips} continuously without gaps.
 
-5. WHO LEARNS WHAT, AND WHEN (CRITICAL):
+6. WHO LEARNS WHAT, AND WHEN (CRITICAL):
    - Each act's beats are written in a separate later pass that cannot see the acts after it. The "reveals" lists are how that pass knows what it is not allowed to say yet, so they have to be right here.
    - A term belongs to exactly ONE act: the act that first discloses it. Never repeat a term in a later act's "reveals".
    - Nothing may be spoken before the act that reveals it. If Act 3 is where a character learns the room number, no line in Acts 1 or 2 may say that number - not even the narrator's.
@@ -823,12 +893,10 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (BEAT SCRIPTING):
    - POV Protagonist: '{bible.get("pov_protagonist", "protagonist")}'.
    - All voiceover (delivery_mode='voiceover') is strictly in FIRST-PERSON ("I", "my", "we") spoken by '{bible.get("pov_protagonist")}'!
 
-2. RAPID 20-TO-25 SECOND MICRO-CYCLE RHYTHM (CRITICAL):
-   Every 4 to 5 clips forms an addictive, self-contained dramatic cycle:
-     * Phase 1: NARRATIVE DRIVE (1–2 clips, delivery_mode='voiceover'):
-       The protagonist's internal monologue reflects on the situation, moves time forward, or sets the emotional stakes while acting physically.
-     * Phase 2: LIVE SPOKEN CLASH (2–3 clips, delivery_mode='dialogue'):
-       Sharp, intense on-camera dialogue confrontation with lip-sync between characters.
+2. SCENES PLAY, BRIDGES SKIP (CRITICAL):
+     * A SCENE (delivery_mode='dialogue'): the moment PLAYED OUT in real time, people in a room doing things to each other. It runs as many clips in a row as it needs and must NOT be chopped up to make room for narration. Let it build: proposition, objection, leverage, counter, ultimatum, decision.
+     * A BRIDGE (delivery_mode='voiceover'): time SKIPPED or consequences landing - 1 to 2 clips, 3 at the very most, then we are somewhere new with everything changed. A bridge NEVER narrates a scene that is still playing in front of the camera.
+     * DRAMATISE, DO NOT REPORT: the turns of this act happen physically, between people in the same room. Things that cannot be filmed - accounts freezing, orders carried out elsewhere, numbers on a monitor - are a BRIDGE of 1 to 2 clips, never a stretch of beats. A character alone holding a telephone is not a scene.
      * Phase 3: THE WORDLESS BEAT (0 or 1 clip, delivery_mode='shock_action'):
        Used ONLY when the story genuinely gives you one:
          (a) THE SHOCKWAVE - protagonist's own visceral reaction (frozen stare, gasped recoil, dropped item).
@@ -857,8 +925,8 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (BEAT SCRIPTING):
    - NEVER mention a secret fact/term before the clip that reveals it!
 
 6. ABSOLUTE RULES:
-   - NEVER have more than 2 consecutive voiceover clips.
-   - NEVER have more than 3 consecutive dialogue clips.
+   - NEVER have more than 3 consecutive voiceover clips, and 2 is the working length: past that the viewer is listening to someone think instead of watching something happen.
+   - Consecutive dialogue clips are NOT capped. A scene takes the clips it takes; never break one up just to insert narration.
    - Output clip_number starting at {start_clip} and ending at {end_clip}. Exactly {clip_count} beats.
 """
 
@@ -1092,6 +1160,14 @@ def _check_scene_bible(bible: dict) -> list[str]:
             m = _MOOD_IN_LOOK.search(value)
             if m:
                 problems.append(f"{cname}: appearance.{field} says '{m.group(0)}', which is a mood, not a permanent physical fact. Describe only what the camera sees in every clip.")
+        voice = (c.get("voice") or "").strip()
+        vm = _PERFORMANCE_IN_VOICE.search(voice)
+        if vm:
+            problems.append(
+                f"{cname}: voice says '{vm.group(0)}', which is how a line is PERFORMED, not what the voice IS. "
+                f"A permanent performance note makes every delivery in the film inherit it. Describe only pitch, "
+                f"grain and accent ('smoky alto with a faint Irish lilt', 'gravelled baritone')."
+            )
         color_fam = _family(appearance.get("hair_color"), _HAIR_COLORS)
         style_fam = _family(appearance.get("hair_style"), _HAIR_STYLES)
         for other, other_color, other_style in seen_hair:
@@ -1215,8 +1291,18 @@ def _check_beats(beats: list[dict], bible: dict, prior_beats: list[dict] | None 
         if mode == "voiceover":
             consecutive_vo += 1
             consecutive_dial = 0
-            if consecutive_vo > 2:
-                problems.append(f"Clip {i}: more than 2 consecutive voiceover clips. Alternate into live dialogue!")
+            if consecutive_vo > MAX_CONSECUTIVE_VO:
+                problems.append(
+                    f"Clip {i}: {consecutive_vo} voiceover clips in a row. {MAX_CONSECUTIVE_VO} is the absolute "
+                    f"ceiling - past that the viewer is listening to {consecutive_vo * CLIP_SECONDS} seconds of "
+                    f"someone thinking. Narration SKIPS time and covers what cannot be filmed; the moment itself "
+                    f"has to be played, so cut into the scene."
+                )
+            elif consecutive_vo == VO_RUN_WORTH_NOTING:
+                problems.append(
+                    f"[SOFT] Clip {i}: three voiceover clips in a row ({VO_RUN_WORTH_NOTING * CLIP_SECONDS}s of "
+                    f"narration). Two is the working length; three is for when the story genuinely needs it."
+                )
             # The clip validator enforces the same rule, so catching it here means a cheap plan retry
             # instead of a clip fighting it mid-run: a first-person voiceover over a scene with people in
             # it has to include the narrator, even if they are only a voice on a line. A beat with nobody
@@ -1233,8 +1319,14 @@ def _check_beats(beats: list[dict], bible: dict, prior_beats: list[dict] | None 
         elif mode == "dialogue":
             consecutive_dial += 1
             consecutive_vo = 0
-            if consecutive_dial > 3:
-                problems.append(f"Clip {i}: more than 3 consecutive dialogue clips in a row. Break the run with a voiceover beat - the protagonist's inner reaction to what was just said - or with a shock_action beat if the story gives you a real one. Do not invent a jolt.")
+            # No hard cap. A confrontation is supposed to run: capping it at 3 is what forced voiceover in as
+            # spacer, and those spacer beats narrated scenes that were still playing.
+            if consecutive_dial == DIALOGUE_RUN_WORTH_NOTING + 1:
+                problems.append(
+                    f"[SOFT] Clip {i}: {consecutive_dial} dialogue clips unbroken "
+                    f"({consecutive_dial * CLIP_SECONDS}s). Fine if the scene is still turning; if it has started "
+                    f"repeating itself, the scene is over and the story should move."
+                )
             if spk and spk.lower() not in char_names:
                 problems.append(f"Clip {i}: dialogue speaker '{spk}' is not in scene_bible characters list.")
         elif mode == "shock_action":
@@ -1645,7 +1737,7 @@ def _narrated_chapter_prompt(
 - The single speech turn MUST be spoken by '{protagonist}'.
 {line_rule}
 - Its window should start between 0.5 and 0.8 seconds and end between 4.0 and 4.6 seconds.
-- Its delivery is the emotional vocal tone of their thoughts (e.g. 'urgent, breathless whisper', 'cold, resolute dread', 'tense, hushed realization').
+- Its delivery is the emotional vocal tone of their thoughts, and inner thought is NOT automatically quiet: it can seethe, break, accuse, or land flat with exhaustion (e.g. 'shaking with suppressed rage', 'bitter, half a laugh in it', 'raw and close to tears', 'urgent, breathless', 'cold, resolute dread', 'barely a whisper'). Pick the one this moment actually calls for.
 - MOUTH CLOSED DIRECTIVE (CRITICAL): In action_steps, {protagonist} and all visible characters MUST keep their mouths completely closed with natural resting facial expressions. Describe solely physical, visible acting (e.g. staring at the telephone receiver, tightening grip on desk, glancing toward doorway). ZERO talking or mouth-moving actions!"""
     elif mode == "dialogue":
         mode_instructions = f"""THIS IS A LIVE SPOKEN DIALOGUE BEAT:
@@ -1653,7 +1745,9 @@ def _narrated_chapter_prompt(
 {line_rule}
 - When two or three characters speak in one clip, FRAME THEM ALL: a two-shot, a profile two-shot, or a medium shot that holds everyone who speaks. Never give a line to someone the camera cannot see, unless they are a remote voice on a telephone or intercom.
 - A single-turn clip should start between 0.5 and 0.9 seconds and end between 4.0 and 4.6 seconds. Two or three turns share the same {CLIP_SECONDS} seconds between them, back to back, with a beat of air between each.
-- Each turn's delivery is that speaker's emotional tone (e.g. 'sharp accusation', 'guarded, suspicious murmur', 'panicked whisper').
+- Each turn's delivery is that speaker's emotional tone at THIS moment, and people in a drama shout, snarl, laugh and beg as well as murmur (e.g. 'roared, furious', 'shouted across the room', 'spat through clenched teeth', 'laughing, delighted and cruel', 'pleading, voice cracking', 'sharp accusation', 'guarded, suspicious murmur', 'barely a whisper').
+- A REPLY REACTS (CRITICAL): when a turn answers the one before it in the same clip, its delivery must carry what that line just did to them - stung, amused, winded, hardening, goaded into hitting back. A jab met with a blank, even tone plays as a robot answering a person. If the previous turn mocked them, this one either shows the hurt or returns the mockery harder; it never simply states words.
+- EMOTIONAL RANGE (CRITICAL): never write a delivery that cancels its own emotion - 'fury without raised volume', 'anger held under perfect calm', 'defiance without a raised note' are instructions to sound flat, and a whole film of them is unwatchable. If a character is furious, they SOUND furious. The previous clips' deliveries are listed in the history below: if the last two were restrained, this one breaks the pattern unless the beat genuinely calls for another quiet moment.
 - Lip synchronization is active for on-screen speakers. Action steps describe natural head movements, gestures, and expressive acting while speaking."""
     else:  # shock_action
         mode_instructions = """THIS IS A WORDLESS BEAT (no speech of any kind):
@@ -1661,18 +1755,17 @@ def _narrated_chapter_prompt(
 - IF THE BEAT HAS CHARACTERS IN IT, this is a reaction shot: describe visceral physical reactions in action_steps - a stunned freeze, a gasped recoil, an object slipping from a hand, a sudden sharp camera push. Everyone present may react; the camera stays on the POV protagonist. Zero dialogue, zero lip movement.
 - IF THE BEAT HAS NO CHARACTERS (present_characters is empty), this is an ESTABLISHING or ATMOSPHERIC shot of the place itself - the building from the street, a lift door sliding open, rain on a window, an empty corridor. Leave "blocking" and "action_steps" as EMPTY arrays, put the framing and light in "shot", and put everything that MOVES in "environment". Nobody appears."""
 
-    system_prompt = f"""You are directing Clip {clip_index + 1} of {total_clips} in a fast-paced Hybrid Narrated Drama.
+    # This block is the same bytes for every clip of a job, so nothing clip-specific is allowed in front of
+    # it. OpenAI discounts the longest common PREFIX of a request automatically, above 1024 tokens; while
+    # this text opened with "Clip N of M" and this clip's own quoted lines, the common prefix across a
+    # 43-clip run measured 6 tokens and all ~3,400 tokens of rules below were billed at full rate 43 times
+    # over. Everything that changes from clip to clip lives in the user message instead, which is why rule 1
+    # is delivered there. The rules keep their original numbers so the run logs and PROGRESS.md still match.
+    system_prompt = f"""You are directing one {CLIP_SECONDS}-second clip of a fast-paced Hybrid Narrated Drama.
 POV Protagonist: {protagonist}.
-Delivery Mode for this clip: {mode.upper()}.
-
-{mode_instructions}
 
 ABSOLUTE SPATIAL & CONTINUITY RULES:
-1. MANDATORY LOCATION ANCHOR (CRITICAL):
-   Clip {clip_index + 1} MUST be set in location '{target_loc_id}'.
-   Description: {loc_desc}
-   Layout: {loc_layout}
-   Do NOT invent new locations or transition to unlisted hallways, archives, or rooms!
+1. MANDATORY LOCATION ANCHOR (CRITICAL): given with the clip you are directing, below. The clip MUST be set in the location it names, and you may never invent a location or move to an unlisted one.
 
 2. CONTINUITY ACROSS CUTS:
    Blocking describes TWO moments: where each character is at 0.0s (position, posture, screen_profile, eyeline) and where the action leaves them at the end of the clip (end_position, end_posture, end_screen_profile, end_eyeline).
@@ -1736,7 +1829,11 @@ ABSOLUTE SPATIAL & CONTINUITY RULES:
    One short sentence of what the location itself does during this clip, with NO people in it: the storm flaring at the windows, a lift door sliding open, the brass bell still trembling, the monitor flashing, rain crawling down the glass. This is where every non-human movement lives, because action_steps always belong to a character. For a wordless establishing shot with nobody on screen, this field carries the whole motion of the clip. Leave it an empty string only when the place is genuinely still.
 
 8. THE PROP DIARY ("prop_state", REQUIRED):
-   One entry for EVERY prop in the Scene Bible that has appeared in the story so far - in every clip from its first appearance onward, even when the camera cannot see it. Give each one "holder" (the character carrying it, or 'scene' when it rests somewhere), "in_frame" (true ONLY if the camera clearly sees it where the action happens - a prop elsewhere in the room is false, or the video model draws it into the shot) and "state" (its condition and exactly where it is). A prop never teleports, never changes hands off screen, and never repairs itself. The system writes each prop's fixed description into the video prompt for you.
+   List ONLY two kinds of prop, and nothing else:
+     (a) every prop the camera SEES in this clip, and
+     (b) every prop whose holder or state CHANGED in this clip, even if it is off camera.
+   A prop that is off camera and unchanged is simply left out - the system carries it forward on its own, so repeating it here wastes the clip's words. Most clips will list only one or two props.
+   Give each one "holder" (the character carrying it, or 'scene' when it rests somewhere), "in_frame" (true ONLY if the camera clearly sees it where the action happens - a prop elsewhere in the room is false, or the video model draws it into the shot) and "state" (its condition and exactly where it is). A prop never teleports, never changes hands off screen, and never repairs itself. The system writes each prop's fixed description into the video prompt for you.
 {props_block}
 9. PHYSICAL VISIBLE ACTING ONLY:
    Describe visible physical movements, gestures, and facial expressions in action_steps. Never describe unfilmable inner thoughts (no 'wonders', 'realizes', 'feels').
@@ -1746,6 +1843,9 @@ ABSOLUTE SPATIAL & CONTINUITY RULES:
 
 11. THE BEAT'S CAST IS THE CLIP'S CAST (CRITICAL):
    Every character the beat lists in present_characters MUST appear in this clip's blocking. A character may be in_frame 'off screen' (a voice on a telephone, someone just out of shot), but may NEVER be dropped from the clip, and their actions may NEVER be reassigned to somebody else. Silently removing a character rewrites who the story is about.
+
+Story Premise:
+{topic}
 """
 
     history_summary = ""
@@ -1794,8 +1894,17 @@ ABSOLUTE SPATIAL & CONTINUITY RULES:
             for i, b in enumerate(so_far)
         )
 
-    user_prompt = f"""Story Premise:
-{topic}
+    # Everything that differs from clip to clip, so that the system message above stays a cacheable prefix.
+    user_prompt = f"""You are directing Clip {clip_index + 1} of {total_clips}.
+Delivery Mode for this clip: {mode.upper()}.
+
+{mode_instructions}
+
+1. MANDATORY LOCATION ANCHOR (CRITICAL):
+   Clip {clip_index + 1} MUST be set in location '{target_loc_id}'.
+   Description: {loc_desc}
+   Layout: {loc_layout}
+   Do NOT invent new locations or transition to unlisted hallways, archives, or rooms!
 {roadmap}
 
 Target Beat for Clip {clip_index + 1}:
@@ -1843,6 +1952,16 @@ def _check_narrated_chapter(
         problems.append(f"clip {clip_index + 1} is set in location '{loc_id}', but beat {clip_index + 1} requires '{target_loc}'.")
     if loc_id not in bible_locs:
         problems.append(f"clip {clip_index + 1}: location '{loc_id}' is not in Scene Bible locations ({list(bible_locs)}).")
+
+    # 2b. A delivery that cancels its own emotion ("fury without raised volume") is an instruction to
+    #     sound flat, and a scene of them is why the first 5-minute run had no heat in it anywhere.
+    for t in _clip_turns(clip):
+        d = (t.get("delivery") or "")
+        if _CANCELS_EMOTION.search(d):
+            problems.append(
+                f"[SOFT] clip {clip_index + 1}: delivery '{d}' cancels its own emotion. "
+                f"If the moment is hot, let it sound hot; if it is quiet, say so plainly."
+            )
 
     # 3. Character verification (No hallucinated names)
     for p in clip.get("present_characters", []):
@@ -1994,10 +2113,36 @@ def _check_narrated_chapter(
         holder = (p.get("holder") or "").strip()
         if holder and holder.lower() != "scene" and holder.lower() not in bible_chars:
             problems.append(f"clip {clip_index + 1}: prop '{pid}' is held by '{holder}', who is not in the Scene Bible. Use a character's name, or 'scene' when it rests somewhere.")
-    if prev_clip:
-        for p in prev_clip.get("prop_state", []) or []:
-            if p.get("prop_id") and p["prop_id"] not in seen_props:
-                problems.append(f"clip {clip_index + 1}: prop '{p['prop_id']}' was in the previous clip's diary and has been dropped from this one. Once a prop appears it stays in prop_state for the rest of the story, in frame or not.")
+    # A prop the clip leaves out is off camera and unchanged, which is now the expected way to say so:
+    # _repair_narrated_clip carries it forward with in_frame False before this check ever runs, so the
+    # stored diary stays complete while the model only has to write what the clip actually uses.
+    #
+    # The exception is a prop the ACTION touches. Since omission now means "unchanged", a prop that moves
+    # here but goes unlisted is frozen at its old holder and state by the carry-forward - and that wrong
+    # state then follows it for the rest of the story and into the video prompt. Matching is deliberately
+    # conservative (the whole name, or a distinctive long word from it) because a false positive costs a
+    # retry, while the fix for one is harmless: listing a prop the action names is never wrong.
+    action_text = " ".join(st.get("action", "") for st in clip.get("action_steps", [])).lower()
+    if action_text:
+        # A single word only stands for a prop if nothing else answers to it. "radio" looks like
+        # car_radio_mic, but the harbour terminal has a radio console in its layout, so an action step
+        # saying "at the radio console" is describing furniture. Words that name scenery, or that belong to
+        # more than one prop, are dropped and only the prop's whole name is matched.
+        scenery = " ".join(f"{l.get('description', '')} {l.get('layout', '')}"
+                           for l in bible.get("locations", [])).lower()
+        for pid in sorted(bible_props - seen_props):
+            phrases = {pid.replace("_", " ")}
+            longest = max(pid.split("_"), key=len, default="")
+            shared = sum(1 for other in bible_props if longest in other.split("_"))
+            if (len(longest) >= 5 and shared == 1
+                    and not re.search(rf"\b{re.escape(longest)}\b", scenery)):
+                phrases.add(longest)
+            if any(re.search(rf"\b{re.escape(p)}\b", action_text) for p in phrases):
+                problems.append(
+                    f"clip {clip_index + 1}: an action step handles '{pid}', but it is not in this clip's "
+                    f"prop_state. Anything the action moves or uses must be listed here with its new holder "
+                    f"and state, or it stays frozen where the last clip left it."
+                )
 
     # 5. Speech timing validation (SOFT)
     if mode in ("voiceover", "dialogue"):
@@ -2051,6 +2196,18 @@ def _check_narrated_chapter(
                             f"[SOFT] clip {clip_index + 1}: {b['character']} opens at '{curr_fp}', but was '{prev_fp}' in the previous clip (180-degree rule / screen direction flip across the cut). "
                             f"Maintain screen side unless an action step visibly moves them across."
                         )
+
+    # 7b. Dynamic range. Two restrained clips back to back is normal; it is only worth noting because the
+    #     first run managed five in a row, 25 seconds in which nobody raised their voice even once.
+    if prev_clip:
+        def _all_restrained(c):
+            turns_ = _clip_turns(c)
+            return bool(turns_) and all(_PERFORMANCE_IN_VOICE.search(t.get("delivery") or "") for t in turns_)
+        if _all_restrained(clip) and _all_restrained(prev_clip):
+            problems.append(
+                f"[SOFT] clip {clip_index + 1}: this clip and the one before it are both delivered entirely "
+                f"under restraint. Let the temperature move unless the scene genuinely calls for another quiet beat."
+            )
 
     # 8. Inner states check in descriptions
     texts = [("shot", clip.get("shot", ""))] + [("action_steps", s.get("action", "")) for s in clip.get("action_steps", [])]
@@ -2122,7 +2279,39 @@ def _repair_narrated_clip(clip: dict, beat: dict, bible: dict, prev_clip: dict |
         clip["speech"] = turns
         fixed.append(f"re-spaced {len(turns)} speech window(s) so they fit the clip without overlapping")
 
-    # 2. A prop that appeared earlier and goes unmentioned here simply did not change.
+    # 1b. A delivery that cancels its own emotion is an instruction to sound robotic, and the model obeys
+    #     it: the first 5-minute run asked for "low, controlled counterstrike WITHOUT HEAT" and got exactly
+    #     that, in the same clip where "bright, needling amusement" gave the other character real personality.
+    #     The cancelling clause is always a tail on an otherwise usable delivery, so it is cut rather than
+    #     re-asked - a retry is an OpenAI call, and this needs no judgement.
+    for t in _clip_turns(clip):
+        d = (t.get("delivery") or "").strip()
+        trimmed = _CANCELS_EMOTION.sub("", d).strip(" ,;")
+        if trimmed and trimmed != d:
+            t["delivery"] = trimmed
+            fixed.append(f"delivery {d!r} -> {trimmed!r} (it cancelled its own emotion)")
+    if any("cancelled its own emotion" in f for f in fixed):
+        clip["speech"] = _clip_turns(clip)
+
+    # 2a. One prop, one entry. A real run produced a clip with 563 prop entries - the same ledger case 554
+    #     times - because the model fell into a repetition loop that nothing stopped. That single clip cost
+    #     36,408 tokens. Keeping the first entry per prop is deterministic and costs no retry.
+    diary = clip.get("prop_state") or []
+    if diary:
+        unique, seen = [], set()
+        for prop in diary:
+            pid = prop.get("prop_id")
+            if pid in seen:
+                continue
+            seen.add(pid)
+            unique.append(prop)
+        if len(unique) != len(diary):
+            clip["prop_state"] = unique
+            fixed.append(f"dropped {len(diary) - len(unique)} repeated prop entries, keeping one per prop")
+
+    # 2b. A prop that appeared earlier and goes unmentioned here is off camera and unchanged - the clip is
+    #     asked to list only what it sees or moves, so filling the rest back in is the normal path, not a
+    #     rescue. It keeps the stored diary complete without paying to regenerate it every clip.
     if prev_clip:
         present = {p.get("prop_id") for p in clip.get("prop_state") or []}
         carried = []
@@ -2288,7 +2477,7 @@ def supervise_narrated_chapter(
     c_num = clip.get("clip_number", beat.get("clip_number", "?"))
     print(f"  Script supervisor is checking continuity for clip {c_num}...", flush=True)
     sys_p, usr_p = _narrated_supervisor_prompt(topic, bible, beat, prev_clips, clip)
-    answer = _ask_openai_json(sys_p, usr_p, "narrated_supervisor", SUPERVISOR_SCHEMA)
+    answer = _ask_openai_json(sys_p, usr_p, "narrated_supervisor", SUPERVISOR_SCHEMA, model=app.OPENAI_CLIP_MODEL)
     problems = [f"script supervisor: {p}" for p in answer.get("problems", []) if p and str(p).strip()]
     return problems
 
@@ -2305,6 +2494,9 @@ def write_narrated_chapter(
     """Writes an individual clip script with validation."""
     beat = beats[clip_index]
     sys_p, usr_p = _narrated_chapter_prompt(topic, clip_index, total_clips, beat, bible, prev_clips, beats=beats)
+    # A retry adds to this rather than replacing it: the beat, the roadmap and the clip history are what the
+    # model needs in order to fix anything, and keeping the message's head unchanged keeps the cached prefix.
+    base_usr = usr_p
     prev_clip = prev_clips[-1] if prev_clips else None
 
     # Dynamic schema locking locations and characters from scene_bible
@@ -2316,7 +2508,7 @@ def write_narrated_chapter(
     supervisor_retried = False
 
     for attempt in range(CHAPTER_RETRIES + 1):
-        data = _ask_openai_json(sys_p, usr_p, "narrated_chapter", schema)
+        data = _ask_openai_json(sys_p, usr_p, "narrated_chapter", schema, model=app.OPENAI_CLIP_MODEL)
         clip = data["clips"][0]
         _normalize_narrated_clip(clip, bible)  # settle names and the turn shape before repairing
         last_attempt = attempt == CHAPTER_RETRIES
@@ -2340,8 +2532,9 @@ def write_narrated_chapter(
                         for sp in sup_problems:
                             print(f"    - {sp}")
                         usr_p = (
-                            f"Story Premise:\n{topic}\n\n"
-                            f"Previous answer broke these rules / supervisor notes:\n- " + "\n- ".join(sup_problems)
+                            base_usr
+                            + "\n\nHere is the clip you wrote:\n" + json.dumps(clip, indent=2, ensure_ascii=False)
+                            + "\n\nThe script supervisor raised these continuity notes:\n- " + "\n- ".join(sup_problems)
                             + "\n\nCRITICAL INSTRUCTION: You must strictly maintain visual, location, and character continuity. "
                             f"Clip {clip_index+1} MUST stay in location '{beat['location_id']}'. "
                             "Fix the specific continuity violations while keeping the narrative consistent. Return valid JSON."
@@ -2362,8 +2555,9 @@ def write_narrated_chapter(
             for h in hard:
                 print(f"    - {h}")
             usr_p = (
-                f"Story Premise:\n{topic}\n\n"
-                f"Previous answer broke these rules:\n- " + "\n- ".join(hard)
+                base_usr
+                + "\n\nHere is your previous answer:\n" + json.dumps(clip, indent=2, ensure_ascii=False)
+                + "\n\nIt broke these rules:\n- " + "\n- ".join(hard)
                 + "\n\nCRITICAL INSTRUCTION: You must strictly maintain visual, location, and character continuity. "
                 f"Clip {clip_index+1} MUST stay in location '{beat['location_id']}'. "
                 "Fix the specific continuity violations while keeping the narrative consistent. Return valid JSON."
