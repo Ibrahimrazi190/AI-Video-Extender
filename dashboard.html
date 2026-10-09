@@ -175,6 +175,35 @@
   .plan-msg { font-size: 13px; font-weight: 500; min-height: 18px; }
   .plan-msg.success { color: var(--done); }
   .plan-msg.error { color: var(--failed); }
+  .plan-notes { margin: 8px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+  .plan-notes h4 { margin: 0 0 6px; font-size: 13.5px; }
+  .plan-notes ul { margin: 0; padding-left: 18px; }
+  .plan-notes li { margin: 3px 0; }
+  .plan-notes .review { color: var(--failed); font-weight: 600; }
+  .plan-notes details { margin-top: 6px; color: var(--muted); }
+  .plan-revise { margin: 10px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+  .plan-revise h4 { margin: 0 0 4px; font-size: 14px; }
+  .plan-revise h5 { margin: 12px 0 6px; font-size: 13px; }
+  .plan-revise textarea { width: 100%; box-sizing: border-box; margin-top: 6px; font: inherit; padding: 8px; }
+  .revise-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .revise-status { color: var(--muted); font-size: 13px; margin: 10px 0; }
+  .revise-error { color: var(--failed); font-size: 13px; margin: 6px 0; }
+  .revise-items { margin: 0; padding-left: 18px; font-size: 13px; }
+  .revise-items li { margin: 4px 0; }
+  .revise-items li.out { color: var(--muted); }
+  .revise-items .why { font-size: 12px; margin-left: 2px; }
+  .chip { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; font-weight: 600; background: var(--line); }
+  .chip.rule { background: #6f42c1; color: #fff; }
+  .chip.fix { background: var(--accent); color: #fff; }
+  .revise-row { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 13px; cursor: pointer; }
+  .revise-row .muted, .revise-diff .muted { color: var(--muted); font-size: 12px; }
+  .revise-diff { padding: 7px 0; border-top: 1px solid var(--line); font-size: 13px; }
+  .revise-diff .old { color: var(--muted); text-decoration: line-through; }
+  .revise-diff .new { font-weight: 500; }
+  .revise-warn { color: var(--failed); font-size: 13px; }
+  #rules-box { margin-top: 12px; }
+  #rules-box li { margin: 3px 0; font-size: 13px; }
+  #rules-box button { margin-left: 6px; padding: 0 6px; font-size: 12px; }
 
   .beats-list { display: grid; gap: 10px; margin-top: 4px; }
   .beat-card {
@@ -314,7 +343,21 @@
         </div>
       </div>
       <div id="plan-msg" class="plan-msg" role="status"></div>
-      
+      <div id="plan-notes" class="plan-notes" hidden></div>
+
+      <div id="plan-revise" class="plan-revise" hidden>
+        <h4>✏️ Revise the plan</h4>
+        <p class="plan-sub">Read the beats and spoken lines below. If something is wrong, say what, in your own words. The planner finds the clips it touches and shows them to you before it changes anything. It rewrites what characters say, do and know in the clips that already exist: the number of clips and the places stay the same.</p>
+        <textarea id="revise-note" rows="3" maxlength="3000" placeholder="e.g. Lily must never recognise Ethan when he comes back as Jack. She only learns who he really is when Harrison says “Mr. Blackwood”."></textarea>
+        <div class="revise-actions">
+          <button type="button" id="revise-btn" class="secondary">🔎 Find the clips to change</button>
+          <button type="button" id="cast-btn" class="secondary" title="Find people the plan shows on screen who are not in the cast (a parent at a dinner, a waiter) and add them, so they get a portrait and keep their face">👥 Check the cast</button>
+          <span id="revise-msg" class="plan-msg" role="status"></span>
+        </div>
+        <div id="revise-result"></div>
+        <div id="rules-box"></div>
+      </div>
+
       <div class="beats-list" id="beats-editor"></div>
 
       <details class="bible-details" id="bible-details">
@@ -424,7 +467,7 @@
 
 <script>
 (() => {
-  const CLIP_COUNTS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 24, 30, 60];
+  const CLIP_COUNTS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 24, 30, 36, 60];
   const DEFAULT_CLIPS = 3;
   const POLL_MS = 4000;
   const STORE_KEY = "videoExtender.lastJob";
@@ -705,6 +748,374 @@
   // --- Master Plan / Story Progression Review ---
   let planBusy = false;
 
+  // --- Revise the plan (Narrated Drama): a note -> the clips it touches -> only the clips you tick are rewritten ---
+  let reviseSig = null;
+  const reviseTicked = new Set(); // clips ticked in the proposal on screen
+  let reviseKeepUnticked = null;  // clips the user had unticked when they added more clips: they stay unticked after the list is redrawn
+
+  // "21-23, 27 30" -> [21, 22, 23, 27, 30]
+  function parseClipNumbers(text) {
+    const out = new Set();
+    (String(text).match(/\d+\s*[-–]\s*\d+|\d+/g) || []).forEach((tok) => {
+      const m = tok.match(/(\d+)\s*[-–]\s*(\d+)/);
+      if (m) {
+        let a = Number(m[1]), b = Number(m[2]);
+        if (a > b) [a, b] = [b, a];
+        for (let n = a; n <= b && out.size < 500; n++) out.add(n);
+      } else if (out.size < 500) out.add(Number(tok));
+    });
+    return [...out];
+  }
+  const revisionBusy = (job) => !!(job.revision && ["proposing", "applying"].includes(job.revision.status));
+  const beatWords = (b) => (b.audio_lines || []).map((t) => `${String(t.speaker || "").split(" ")[0]}: “${t.line}”`).join(" / ") || "(no spoken words)";
+  const snapWords = (s) => (s.lines || []).map((t) => `${String(t.speaker || "").split(" ")[0]}: “${t.line}”`).join(" / ") || "(no spoken words)";
+
+  function hasUnsavedEdits() {
+    const job = shownJob;
+    if (!job || !job.beats) return false;
+    const edited = gatherEditedBeats();
+    return job.beats.some((b, i) => {
+      const e = edited[i] || {};
+      return (e.action || "") !== String(b.summary || b.action || "").trim() || (e.location_id || "") !== String(b.location_id || "").trim();
+    });
+  }
+
+  async function reviseCall(path, body, method = "POST") {
+    const job = shownJob;
+    const res = await fetch(`/jobs/${encodeURIComponent(job.id)}${path}`, {
+      method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(describeError(data));
+    return data;
+  }
+
+  async function reviseAction(label, fn) {
+    const msg = $("revise-msg");
+    if (planBusy) return;
+    planBusy = true;
+    msg.className = "plan-msg";
+    msg.textContent = label;
+    try {
+      await fn();
+      msg.textContent = "";
+      poll(shownJob.id);
+    } catch (e) {
+      msg.className = "plan-msg error";
+      msg.textContent = e.message;
+    } finally {
+      planBusy = false;
+    }
+  }
+
+  function renderProposal(out, job, rev) {
+    out.appendChild(el("h5", null, "What the planner understood"));
+    const items = el("ul", "revise-items");
+    (rev.items || []).forEach((it) => {
+      const li = el("li", it.in_scope ? "" : "out");
+      li.appendChild(el("span", `chip ${it.kind === "rule" ? "rule" : "fix"}`, it.kind === "rule" ? "Standing rule" : "One-time fix"));
+      li.appendChild(document.createTextNode(` ${it.text}`));
+      if (!it.in_scope) li.appendChild(el("div", "why", `Not done: ${it.why_out_of_scope}`));
+      if (it.in_scope && it.stops_when) li.appendChild(el("div", "why", `Applies until: ${it.stops_when}`));
+      if (it.in_scope && it.probe) li.appendChild(el("div", "why", `Asked of every clip: ${it.probe}`));
+      items.appendChild(li);
+    });
+    out.appendChild(items);
+    if ((rev.replaces || []).length) out.appendChild(el("p", "revise-status", `Saving this replaces rule ${rev.replaces.join(", ")}.`));
+    if (rev.blocked) out.appendChild(el("p", "revise-error", rev.blocked));
+    const clips = rev.clips || [];
+    const maybes = clips.filter((c) => c.selected === false).length;
+    out.appendChild(el("h5", null, clips.length
+      ? `Clips found (${clips.length}). The ticked ones are the planner's confident picks; untick any you want to keep as they are${maybes ? `, and tick the ${maybes} "maybe" you want changed` : ""}.`
+      : "No clip needs to change."));
+    const applyBtn = el("button", "button", "");
+    applyBtn.type = "button";
+    const refresh = () => {
+      const n = reviseTicked.size;
+      const rulesOnly = n === 0 && ((rev.rules_new || []).length || (rev.replaces || []).length);
+      applyBtn.textContent = n ? `✍️ Rewrite ${n} clip${n === 1 ? "" : "s"}` : (rulesOnly ? "💾 Save the rule only" : "✍️ Rewrite");
+      applyBtn.disabled = !!rev.blocked || planBusy || (!n && !rulesOnly);
+    };
+    clips.forEach((c) => {
+      const row = el("label", "revise-row");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = reviseTicked.has(c.clip);
+      cb.addEventListener("change", () => { if (cb.checked) reviseTicked.add(c.clip); else reviseTicked.delete(c.clip); refresh(); });
+      row.appendChild(cb);
+      const text = el("div");
+      text.appendChild(el("strong", null, `Clip ${c.clip}`));
+      if (c.selected === false) text.appendChild(el("span", "chip fix", "maybe"));
+      text.appendChild(document.createTextNode(` — ${c.reason}`));
+      if (c.quote) text.appendChild(el("div", "muted", `It says: “${c.quote}”`));
+      else if (c.change) text.appendChild(el("div", "muted", `Change: ${c.change}`));
+      const b = (job.beats || [])[c.clip - 1];
+      if (b) text.appendChild(el("div", "muted", `Now: ${b.summary} | ${beatWords(b)}`));
+      row.appendChild(text);
+      out.appendChild(row);
+    });
+    // the finder can miss a clip: the user, who has read the plan, can add clips by number
+    const addRow = el("div", "revise-actions");
+    const addBox = document.createElement("input");
+    addBox.type = "text";
+    addBox.placeholder = "Also change clips the list missed, e.g. 21-23, 27";
+    addBox.style.minWidth = "280px";
+    const addBtn = el("button", "secondary", "➕ Add clips");
+    addBtn.type = "button";
+    addBtn.addEventListener("click", () => {
+      const nums = parseClipNumbers(addBox.value);
+      if (!nums.length) {
+        $("revise-msg").className = "plan-msg error";
+        $("revise-msg").textContent = "Type clip numbers, for example 21-23, 27.";
+        return;
+      }
+      reviseKeepUnticked = new Set(clips.map((c) => c.clip).filter((n) => !reviseTicked.has(n)));
+      reviseAction("Adding the clips…", () => reviseCall("/revise-plan/add-clips", { clips: nums }));
+    });
+    addRow.append(addBox, addBtn);
+    out.appendChild(addRow);
+    const actions = el("div", "revise-actions");
+    applyBtn.addEventListener("click", () => reviseAction("Rewriting the selected clips…", () => reviseCall("/revise-plan/apply", { clips: [...reviseTicked].sort((a, b) => a - b) })));
+    const cancelBtn = el("button", "secondary", "Cancel");
+    cancelBtn.type = "button";
+    cancelBtn.addEventListener("click", () => reviseAction("", () => reviseCall("/revise-plan/cancel")));
+    actions.append(applyBtn, cancelBtn);
+    out.appendChild(actions);
+    refresh();
+  }
+
+  function renderApplied(out, job, rev) {
+    const changed = rev.changed || [];
+    out.appendChild(el("h5", null, changed.length ? `Done: ${changed.length} clip${changed.length === 1 ? "" : "s"} rewritten` : "Done: nothing needed rewriting."));
+    changed.forEach((c) => {
+      const row = el("div", "revise-diff");
+      row.appendChild(el("strong", null, `Clip ${c.clip}`));
+      row.appendChild(el("div", "old", `${c.before.summary} | ${snapWords(c.before)}`));
+      row.appendChild(el("div", "new", `${c.after.summary} | ${snapWords(c.after)}`));
+      out.appendChild(row);
+    });
+    (rev.unresolved || []).forEach((u) => {
+      out.appendChild(el("p", "revise-warn", `Clip ${u.clip} was kept as it was: ${(u.problems || []).join(" ")}`));
+    });
+    if ((rev.contradictions || []).length) {
+      out.appendChild(el("h5", null, "Still conflicting with a rule. Check these clips:"));
+      rev.contradictions.forEach((c) => out.appendChild(el("p", "revise-warn", `Clip ${c.clip}: ${c.reason}`)));
+    }
+    if ((rev.notes || []).length) {
+      const det = el("details");
+      det.appendChild(el("summary", null, `Details (${rev.notes.length})`));
+      rev.notes.forEach((n) => det.appendChild(el("div", "muted", n)));
+      out.appendChild(det);
+    }
+    const actions = el("div", "revise-actions");
+    if (job.plan_versions_count > 0) {
+      const undo = el("button", "secondary", "↩ Undo this revision");
+      undo.type = "button";
+      undo.addEventListener("click", () => reviseAction("Restoring the earlier version…", () => reviseCall("/undo-plan-revision")));
+      actions.appendChild(undo);
+    }
+    const done = el("button", "secondary", "Done");
+    done.type = "button";
+    done.addEventListener("click", () => reviseAction("", () => reviseCall("/revise-plan/cancel")));
+    actions.appendChild(done);
+    out.appendChild(actions);
+  }
+
+  // Add people to the cast: the people the plan shows on screen without casting them, each with a name and the clips they are in
+  const clipRanges = (nums) => {
+    const s = [...new Set(nums)].sort((a, b) => a - b), out = [];
+    for (let i = 0; i < s.length; ) {
+      let j = i;
+      while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++;
+      out.push(s[i] === s[j] ? String(s[i]) : `${s[i]}-${s[j]}`);
+      i = j + 1;
+    }
+    return out.join(", ");
+  };
+
+  function renderCast(out, job, rev) {
+    if (rev.status === "proposing") { out.appendChild(el("p", "revise-status", "Looking for people the plan shows on screen who are not in the cast…")); return; }
+    if (rev.status === "applying") { out.appendChild(el("p", "revise-status", "Writing their looks and adding them to the cast. This takes about a minute.")); return; }
+    if (rev.status === "applied") {
+      const added = rev.added || [];
+      out.appendChild(el("h5", null, `Done: ${added.length} ${added.length === 1 ? "person" : "people"} added to the cast`));
+      added.forEach((a) => {
+        const row = el("div", "revise-diff");
+        row.appendChild(el("strong", null, a.name));
+        row.appendChild(document.createTextNode(`${a.relation ? ` (${a.relation})` : ""} in clips ${clipRanges(a.clips || [])}`));
+        if (a.look) row.appendChild(el("div", "muted", a.look));
+        out.appendChild(row);
+      });
+      (rev.notes || []).forEach((n) => out.appendChild(el("p", "revise-warn", n)));
+      out.appendChild(el("p", "revise-status", "They get a portrait when the video is made, and keep that face in every clip they are in. Their lines were not changed."));
+      const actions = el("div", "revise-actions");
+      if (job.plan_versions_count > 0) {
+        const undo = el("button", "secondary", "↩ Undo: take them back out of the cast");
+        undo.type = "button";
+        undo.addEventListener("click", () => reviseAction("Restoring the earlier version…", () => reviseCall("/undo-plan-revision")));
+        actions.appendChild(undo);
+      }
+      const done = el("button", "secondary", "Done");
+      done.type = "button";
+      done.addEventListener("click", () => reviseAction("", () => reviseCall("/revise-plan/cancel")));
+      actions.appendChild(done);
+      out.appendChild(actions);
+      return;
+    }
+    // proposed
+    const people = rev.people || [];
+    const cancel = el("button", "secondary", people.length ? "Cancel" : "Close");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => reviseAction("", () => reviseCall("/revise-plan/cancel")));
+    if (!people.length) {
+      out.appendChild(el("h5", null, "Nobody is missing: everyone the plan shows on screen is in the cast."));
+      const a = el("div", "revise-actions");
+      a.appendChild(cancel);
+      out.appendChild(a);
+      return;
+    }
+    out.appendChild(el("h5", null, `The plan shows ${people.length} ${people.length === 1 ? "person" : "people"} on screen who ${people.length === 1 ? "is" : "are"} not in the cast`));
+    out.appendChild(el("p", "revise-status", `They would be added as supporting characters: a portrait and a face that stays the same in every clip. You can change a name or the clips, and untick anyone you do not want. Tip: every extra face in a clip is harder to keep consistent, so two or three extra people is the safe range. Supporting characters now: ${rev.supporting_now || 0} (at most ${rev.max_supporting || 4} in a film).`));
+    const rows = [];
+    people.forEach((p) => {
+      const row = el("div", "revise-row");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = p.include !== false;
+      const nameBox = document.createElement("input");
+      nameBox.type = "text";
+      nameBox.value = p.suggested_name || p.label;
+      nameBox.maxLength = 40;
+      nameBox.style.cssText = "display:inline-block;width:230px;max-width:100%";
+      const clipsBox = document.createElement("input");
+      clipsBox.type = "text";
+      clipsBox.value = clipRanges(p.clips || []);
+      clipsBox.style.cssText = "display:inline-block;width:150px;max-width:100%";
+      clipsBox.title = "The clips this person is in, e.g. 11-17, 20";
+      const text = el("div");
+      const top = el("div");
+      top.append(el("strong", null, p.label), document.createTextNode(p.relation && p.relation !== p.label ? ` (${p.relation})` : ""), document.createTextNode(" · name: "), nameBox, document.createTextNode(" · clips: "), clipsBox);
+      text.appendChild(top);
+      if (p.evidence) text.appendChild(el("div", "muted", p.evidence));
+      if (p.speaks) text.appendChild(el("div", "muted", "The plan gives them spoken words. Supporting characters speak at most 2 lines in a film."));
+      row.append(cb, text);
+      out.appendChild(row);
+      rows.push({ cb, nameBox, clipsBox, p });
+    });
+    const addBtn = el("button", "button", "");
+    addBtn.type = "button";
+    const refresh = () => {
+      const n = rows.filter((r) => r.cb.checked).length;
+      const over = (rev.supporting_now || 0) + n > (rev.max_supporting || 4);
+      addBtn.textContent = n ? `➕ Add ${n} to the cast` : "➕ Add to the cast";
+      addBtn.disabled = planBusy || !n || over;
+      addBtn.title = over ? `At most ${rev.max_supporting || 4} supporting characters fit in a film: untick some.` : "";
+    };
+    rows.forEach((r) => r.cb.addEventListener("change", refresh));
+    addBtn.addEventListener("click", () => {
+      const chosen = rows.map((r) => ({ name: r.nameBox.value.trim(), relation: r.p.relation || r.p.label, clips: parseClipNumbers(r.clipsBox.value), include: r.cb.checked }));
+      reviseAction("Adding them to the cast…", () => reviseCall("/cast-check/apply", { people: chosen }));
+    });
+    const actions = el("div", "revise-actions");
+    actions.append(addBtn, cancel);
+    out.appendChild(actions);
+    refresh();
+  }
+
+  function renderRules(job) {
+    const box = $("rules-box");
+    box.replaceChildren();
+    const rules = job.plan_rules || [];
+    if (!rules.length) return;
+    box.appendChild(el("h5", null, `Standing rules (${rules.length} of 12). Every later step follows them.`));
+    const ul = el("ul");
+    rules.forEach((r) => {
+      const li = el("li");
+      li.appendChild(document.createTextNode(r.text));
+      if (r.stops_when) li.appendChild(el("span", "muted", ` (until: ${r.stops_when})`));
+      const edit = el("button", "secondary", "✎");
+      edit.type = "button";
+      edit.title = "Edit this rule";
+      edit.addEventListener("click", () => {
+        const text = prompt("Edit the rule:", r.text);
+        if (text && text.trim() && text.trim() !== r.text) {
+          reviseAction("Saving the rules…", () => reviseCall("/plan-rules", { rules: rules.map((x) => (x.id === r.id ? { id: x.id, text: text.trim(), stops_when: x.stops_when || "" } : x)) }, "PUT"));
+        }
+      });
+      const del = el("button", "secondary", "✕");
+      del.type = "button";
+      del.title = "Delete this rule";
+      del.addEventListener("click", () => {
+        if (confirm(`Delete this rule?\n\n${r.text}`)) {
+          reviseAction("Saving the rules…", () => reviseCall("/plan-rules", { rules: rules.filter((x) => x.id !== r.id) }, "PUT"));
+        }
+      });
+      li.append(edit, del);
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
+  }
+
+  function renderRevise(job, canEdit) {
+    const box = $("plan-revise");
+    if (!box) return;
+    const show = job.mode === "narrated_drama" && job.status === "plan_ready" && canEdit;
+    box.hidden = !show;
+    if (!show) return;
+    const busy = revisionBusy(job);
+    $("revise-btn").disabled = busy || planBusy;
+    if ($("cast-btn")) $("cast-btn").disabled = busy || planBusy;
+    $("revise-note").disabled = busy;
+    const sig = JSON.stringify([job.revision, job.plan_rules, job.plan_versions_count, job.beats && job.beats.length]);
+    if (sig === reviseSig) return;
+    reviseSig = sig;
+    const out = $("revise-result");
+    out.replaceChildren();
+    const rev = job.revision;
+    if (rev) {
+      if (rev.kind === "cast" && rev.status !== "failed") renderCast(out, job, rev);
+      else if (rev.status === "proposing") out.appendChild(el("p", "revise-status", "Reading the plan to find the clips this touches…"));
+      else if (rev.status === "applying") out.appendChild(el("p", "revise-status", "Rewriting the selected clips and checking them. This takes about a minute."));
+      else if (rev.status === "failed") {
+        out.appendChild(el("p", "revise-error", `The revision could not be done: ${rev.error}. The plan was not changed.`));
+        const dismiss = el("button", "secondary", "Dismiss");
+        dismiss.type = "button";
+        dismiss.addEventListener("click", () => reviseAction("", () => reviseCall("/revise-plan/cancel")));
+        out.appendChild(dismiss);
+      } else if (rev.status === "proposed") {
+        reviseTicked.clear();
+        (rev.clips || []).forEach((c) => { if (c.selected !== false) reviseTicked.add(c.clip); });
+        if (reviseKeepUnticked) { reviseKeepUnticked.forEach((n) => reviseTicked.delete(n)); reviseKeepUnticked = null; }
+        renderProposal(out, job, rev);
+      } else if (rev.status === "applied") renderApplied(out, job, rev);
+    }
+    renderRules(job);
+  }
+
+  $("revise-btn")?.addEventListener("click", async () => {
+    const job = shownJob;
+    const note = $("revise-note").value.trim();
+    if (!job || planBusy || !note) { if (!note) { $("revise-msg").className = "plan-msg error"; $("revise-msg").textContent = "Write what you want changed first."; } return; }
+    if (hasUnsavedEdits()) {
+      if (!confirm("You have edits to the beats that are not saved yet.\n\nOK saves them first and continues. Cancel stops.")) return;
+      try {
+        const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/plan`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ beats: gatherEditedBeats() }) });
+        if (!res.ok) throw new Error(describeError(await res.json().catch(() => ({}))));
+        renderJob(await res.json());
+      } catch (e) {
+        $("revise-msg").className = "plan-msg error";
+        $("revise-msg").textContent = `Could not save your edits: ${e.message}`;
+        return;
+      }
+    }
+    reviseAction("Sending your note…", () => reviseCall("/revise-plan", { note }));
+  });
+
+  $("cast-btn")?.addEventListener("click", () => {
+    if (!shownJob || planBusy) return;
+    reviseAction("Looking for people the plan shows but does not cast…", () => reviseCall("/cast-check"));
+  });
+
   function gatherEditedBeats() {
     const job = shownJob;
     if (!job || !job.beats) return [];
@@ -733,12 +1144,13 @@
 
     const canEdit = job.status === "plan_ready";
     const isContinuation = (job.clips || []).some((c) => c.status === "done");
+    const revBusy = revisionBusy(job);
     $("approve-plan").hidden = !canEdit;
-    $("approve-plan").disabled = planBusy;
+    $("approve-plan").disabled = planBusy || revBusy;
     $("save-plan-btn").hidden = !canEdit;
-    $("save-plan-btn").disabled = planBusy;
+    $("save-plan-btn").disabled = planBusy || revBusy;
     $("replan-btn").hidden = !canEdit || isContinuation;
-    $("replan-btn").disabled = planBusy;
+    $("replan-btn").disabled = planBusy || revBusy;
     $("discard-plan-btn").hidden = !canEdit;
     $("discard-plan-btn").disabled = planBusy;
     $("discard-plan-btn").textContent = isContinuation ? "🗑️ Discard Continuation" : "🗑️ Discard & Cancel Idea";
@@ -747,6 +1159,57 @@
     if (!canEdit) {
       msg.className = "plan-msg";
       msg.textContent = "Plan approved · Video generation in progress or complete.";
+    }
+
+    renderRevise(job, canEdit);
+
+    // What the plan checks found. "[REVIEW]" items are rules about how the film looks or sounds that the plan broke and
+    // that nothing stopped: read them before approving. The rest are soft notes (story delivery, pacing, places).
+    const notesBox = $("plan-notes");
+    if (notesBox) {
+      const all = (job.plan_report && job.plan_report.problems) || [];
+      const review = all.filter((p) => p.startsWith("[REVIEW] ")).map((p) => p.slice(9));
+      const soft = all.filter((p) => !p.startsWith("[REVIEW] ")).map((p) => p.replace(/^\[SOFT\] /, ""));
+      // The shape of the story as planned: each act, and inside it the scenes (played out) and bridges (time skipped).
+      const acts = (job.acts || []).filter((a) => a && Array.isArray(a.sequences) && a.sequences.length);
+      notesBox.hidden = !(canEdit && (review.length || soft.length || acts.length));
+      notesBox.innerHTML = "";
+      if (!notesBox.hidden) {
+        if (review.length) {
+          notesBox.appendChild(el("h4", "review", `Review before approving (${review.length})`));
+          const ul = el("ul");
+          review.forEach((t) => ul.appendChild(el("li", null, t)));
+          notesBox.appendChild(ul);
+        }
+        if (acts.length) {
+          const det = el("details");
+          det.appendChild(el("summary", null, `Story structure (${acts.length} ${acts.length === 1 ? "act" : "acts"})`));
+          const ul = el("ul");
+          acts.forEach((a) => {
+            const li = el("li");
+            li.appendChild(el("strong", null, `Act ${a.act_number} · ${a.title || ""} (clips ${a.start_clip}–${a.end_clip}, ${a.end_clip - a.start_clip + 1} clips)`));
+            const inner = el("ul");
+            let cursor = a.start_clip;
+            a.sequences.forEach((s) => {
+              const last = Math.min(cursor + (Number(s.clip_count) || 0) - 1, a.end_clip);
+              inner.appendChild(el("li", null, `${s.kind === "bridge" ? "BRIDGE" : "SCENE"} · clips ${cursor}–${last} · ${s.location_id} · ${s.purpose || ""}`));
+              cursor = last + 1;
+            });
+            li.appendChild(inner);
+            ul.appendChild(li);
+          });
+          det.appendChild(ul);
+          notesBox.appendChild(det);
+        }
+        if (soft.length) {
+          const det = el("details");
+          det.appendChild(el("summary", null, `Plan notes (${soft.length})`));
+          const ul = el("ul");
+          soft.forEach((t) => ul.appendChild(el("li", null, t)));
+          det.appendChild(ul);
+          notesBox.appendChild(det);
+        }
+      }
     }
 
     const container = $("beats-editor");
@@ -1762,6 +2225,11 @@
       }
       if (job.status === "plan_ready") {
         setBusy(false);
+        if (revisionBusy(job)) {   // a revision is working on the plan: keep looking until it finishes
+          formMsg.textContent = "Revising the plan…";
+          pollTimer = setTimeout(() => poll(jobId), POLL_MS);
+          return;
+        }
         formMsg.textContent = "Master Plan is ready! Please review and approve the story progression below.";
         return;
       }

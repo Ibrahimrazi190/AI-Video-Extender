@@ -14,8 +14,10 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal, get_args
 
@@ -170,6 +172,33 @@ class PlanApprovalRequest(BaseModel):
     movie_bible: dict | None = None
 
 
+class ReviseRequest(BaseModel):
+    note: str = Field(min_length=1)
+
+
+class ReviseApplyRequest(BaseModel):
+    clips: list[int] = Field(default_factory=list)   # the clips to rewrite (an empty list saves the standing rules only)
+
+
+class AddClipsRequest(BaseModel):
+    clips: list[int] = Field(min_length=1, max_length=500)
+
+
+class CastPerson(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    relation: str = Field(default="", max_length=120)
+    clips: list[int] = Field(default_factory=list, max_length=500)
+    include: bool = True
+
+
+class CastApplyRequest(BaseModel):
+    people: list[CastPerson] = Field(default_factory=list, max_length=12)
+
+
+class RulesRequest(BaseModel):
+    rules: list[dict] = Field(default_factory=list)
+
+
 class ExtendStoryRequest(BaseModel):
     continuation_prompt: str
     duration: int = Field(default=30, description="Additional duration in seconds (must be multiple of 5)")
@@ -197,6 +226,11 @@ class Job(BaseModel):
     movie_bible: dict | None = None
     beats: list | None = None
     acts: list | None = None           # Narrated Drama: the act breakdown long plans are built from
+    delivery: dict | None = None       # Narrated Drama: story_in_five, must-understand facts and jargon (what the script must SAY)
+    plan_report: dict | None = None    # Narrated Drama: delivery checks, spoken-script stats, dialogue-only page, blind reader
+    plan_rules: list | None = None     # Narrated Drama: standing rules the user added while revising the plan [{"id", "text"}]
+    revision: dict | None = None       # Narrated Drama: the plan revision in progress or just finished (status, note, clips, result)
+    plan_versions_count: int = 0       # how many earlier versions of the plan can be restored (kept in Redis, see _plan_versions)
     cast_bank: dict | None = None      # character name -> FLUX image URL
     location_bank: dict | None = None  # location id -> list of FLUX image URLs
     voice_bank: dict | None = None     # character name -> voice sample URL
@@ -268,6 +302,63 @@ def update_job(job_id: str, **fields) -> Job:
         return job
 
     return redis_client.transaction(apply, key, value_from_callable=True)
+
+
+# --- One running task per job ---
+# The worker runs 8 tasks at once and /resume used to accept a job that was still "generating", so a second click (or a
+# second queued task) ran the same job twice: every script and every kie.ai render paid for twice, by two tasks writing
+# the same clips. A job's status cannot tell "running" from "the worker died" (a dead worker leaves it "generating"), so
+# the running task holds a lock instead. It is renewed every JOB_LOCK_TTL / 3 seconds by a background thread and simply
+# runs out if the worker dies, so a crashed job can still be resumed after at most JOB_LOCK_TTL seconds. The only job
+# the lock cannot free is one whose worker is alive but stuck: restarting the worker ends its thread, and the lock
+# runs out after the same JOB_LOCK_TTL.
+JOB_LOCK_TTL = 90
+
+
+class JobBusy(Exception):
+    """Another task already holds this job."""
+
+
+_RENEW_LOCK = redis_client.register_script(
+    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('expire', KEYS[1], ARGV[2]) else return 0 end")
+_RELEASE_LOCK = redis_client.register_script(
+    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end")
+
+
+def _lock_key(job_id: str) -> str:
+    return f"joblock:{job_id}"
+
+
+def job_is_running(job_id: str) -> bool:
+    """Is a task holding this job right now?"""
+    return bool(redis_client.exists(_lock_key(job_id)))
+
+
+@contextmanager
+def job_lock(job_id: str):
+    """Hold the job for the length of the block, or raise JobBusy at once if another task has it. The lock is only ever
+    renewed or released by the task that took it (compared by a private token), so it can never free someone else's."""
+    key, token = _lock_key(job_id), uuid.uuid4().hex
+    if not redis_client.set(key, token, nx=True, ex=JOB_LOCK_TTL):
+        raise JobBusy(f"job {job_id} is already being run by another task")
+    stop = threading.Event()
+
+    def renew() -> None:
+        while not stop.wait(JOB_LOCK_TTL / 3):
+            try:
+                _RENEW_LOCK(keys=[key], args=[token, JOB_LOCK_TTL])
+            except Exception:
+                pass   # a missed renewal is survivable: two more come before the lock runs out
+
+    threading.Thread(target=renew, daemon=True, name=f"joblock-{job_id[:8]}").start()
+    try:
+        yield
+    finally:
+        stop.set()
+        try:
+            _RELEASE_LOCK(keys=[key], args=[token])
+        except Exception:
+            pass   # it runs out by itself
 
 
 # --- OpenAI Helper ---
@@ -395,7 +486,7 @@ def generate_script(topic: str, num_clips: int, mode: Mode = "talking_head", cli
 # token counts - the authoritative figure is OpenAI's own usage page. A model that is not listed still gets
 # its tokens reported; only the dollar estimate is skipped.
 OPENAI_PRICES = {
-    "gpt-5.5":     (5.00, None, 30.00),
+    "gpt-5.5":     (5.00, 0.50, 30.00),   # cached rate from OpenAI's gpt-5.5 model page, checked 2026-10-08
     "gpt-6-luna":  (0.10, 0.01, 0.50),
 }
 USAGE_LOG: list[dict] = []   # one entry per OpenAI call made by this process
@@ -461,20 +552,45 @@ def usage_summary(reset: bool = False) -> dict:
     return {"total": total, "by_name": by_name}
 
 
+class OpenAIOutputCut(ValueError):
+    """The reply hit `max_completion_tokens` and was cut off, so its JSON is unusable. A ValueError, like every
+    other unusable reply, so existing handlers keep working; callers that can retry catch this one by name."""
+
+
 def _ask_openai_json(system_prompt: str, user_content: str, name: str, schema: dict,
-                     model: str | None = None) -> dict:
-    """One Structured Outputs call (strict JSON schema); returns the parsed JSON or raises ValueError."""
+                     model: str | None = None, max_completion_tokens: int | None = None, reasoning_effort: str | None = None) -> dict:
+    """One Structured Outputs call (strict JSON schema); returns the parsed JSON or raises ValueError.
+
+    `max_completion_tokens` caps the whole reply, reasoning included, so a model stuck repeating itself costs a
+    bounded amount (one clip once ran to 36,408 tokens on a repeated prop entry). Left out unless given.
+    `reasoning_effort` ("low", "medium", "high") is sent only when given; a model that does not take it is asked again without it."""
     model = model or OPENAI_MODEL
-    response = OpenAI(api_key=OPENAI_API_KEY, timeout=300).chat.completions.create(
-        name=name,
-        model=model,
-        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
-        response_format={"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
-    )
+    extra = {"max_completion_tokens": max_completion_tokens} if max_completion_tokens else {}
+    if reasoning_effort:
+        extra["reasoning_effort"] = reasoning_effort
+
+    def _create(kw):
+        return OpenAI(api_key=OPENAI_API_KEY, timeout=300).chat.completions.create(
+            name=name,
+            model=model,
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
+            response_format={"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
+            **kw,
+        )
+    try:
+        response = _create(extra)
+    except Exception as e:
+        if reasoning_effort and "reasoning_effort" in str(e):
+            extra.pop("reasoning_effort")
+            response = _create(extra)
+        else:
+            raise
     _record_usage(name, model, getattr(response, "usage", None))
     message = response.choices[0].message
     if message.refusal:
         raise ValueError(f"OpenAI refused to write the script: {message.refusal}")
+    if getattr(response.choices[0], "finish_reason", None) == "length":
+        raise OpenAIOutputCut(f"{name}: the reply was cut off at the {max_completion_tokens or 'model'} token limit")
     try:
         return json.loads(message.content)
     except (TypeError, json.JSONDecodeError) as e:
@@ -1069,6 +1185,13 @@ def _save_master_plan_file(job: Job) -> Path:
         "acts": job.acts,
         "beats": job.beats,
     }
+    if job.delivery:
+        data["delivery"] = job.delivery
+    if job.plan_report:
+        data["plan_report"] = job.plan_report
+        page = job.plan_report.get("dialogue_only")
+        if page:  # the spoken script alone, to read before anything is rendered
+            (folder / "plan_dialogue.txt").write_text(page + "\n", encoding="utf-8")
     plan_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return plan_path
 
@@ -1157,15 +1280,19 @@ def _continue_movie_job(job_id: str) -> None:
 
 
 def _generate_narrated_plan(job_id: str) -> None:
-    """Phase 1 for Narrated Drama: Master Plan outline generation with rapid micro-cycles."""
+    """Phase 1 for Narrated Drama: the Master Plan (bible, acts, beats, and the delivery map of what the spoken script
+    must make the audience understand), then a report on whether the script actually delivers it."""
     job = get_job(job_id)
-    topic = job.request.topic
-    total_clips = job.request.num_clips
     import hybrid_narrated_drama as hnd
+    topic = hnd.topic_with_rules(job.request.topic, job.plan_rules)   # the standing rules ride along with the premise
+    total_clips = job.request.num_clips
     task_log.info("job %s: generating narrated drama master plan for %d clips", job_id, total_clips)
     outline, problems = hnd.write_narrated_outline(topic, job.request.duration, total_clips)
-    hard = hnd._hard_problems(problems)
-    if hard:
+    # Only a problem that would break rendering stops the plan. The rules about how the film looks or sounds go to the review
+    # gate instead (split_plan_problems), where a person reads them before approving, so a plan that is nearly right is not
+    # thrown away together with every planning call already paid for.
+    blocking, reviewable = hnd.split_plan_problems(hnd._hard_problems(problems))
+    if blocking:
         # Nothing has been paid for yet: FLUX images and clips both come after the plan is approved. Saving
         # the rejected plan for inspection and refusing it here is what keeps a broken plan from becoming a
         # paid run. It is not stored on the job, so it cannot be resumed by accident.
@@ -1174,16 +1301,39 @@ def _generate_narrated_plan(job_id: str) -> None:
         (folder / "master_plan_rejected.json").write_text(json.dumps(outline, indent=2, ensure_ascii=False), encoding="utf-8")
         raise ValueError(
             "the Master Plan still breaks these rules after retries, so nothing was generated and no credits "
-            "were spent (the rejected plan is saved as master_plan_rejected.json):\n- " + "\n- ".join(hard)
+            "were spent (the rejected plan is saved as master_plan_rejected.json):\n- " + "\n- ".join(blocking)
         )
+    for p in reviewable:
+        task_log.warning("job %s: plan needs your review: %s", job_id, p)
     for p in hnd._soft_problems(problems):
         task_log.warning("job %s: plan note: %s", job_id, p)
     bible = outline["scene_bible"]
     beats = outline["beats"]
+    # Every spoken line, not only the key facts, must be plain language a viewer with basic English understands at first
+    # hearing: one cheap review per ~15 beats rewrites the ones that are not (and never raises).
+    plain = hnd.plain_pass_plan(outline)
+    task_log.info("job %s: plain-language review: %d line(s) checked, %d rewritten", job_id, plain["checked"], plain["rewritten"])
+    # What the viewer will actually be told, before any credit is spent: the free checks, the spoken-script stats, the
+    # dialogue-only page and one cheap blind-reader call. It never fails a plan: a report that cannot run is skipped.
+    try:
+        report = hnd.plan_delivery_report(outline)
+    except Exception as e:
+        task_log.warning("job %s: delivery report skipped: %s", job_id, e)
+        report = None
+    if reviewable:   # shown first in the plan review, before the soft notes
+        report = report or {"problems": []}
+        report["problems"] = [f"[REVIEW] {p}" for p in reviewable] + list(report.get("problems") or [])
     update_job(job_id, movie_bible=bible, beats=beats, acts=outline.get("acts"),
+               delivery=outline.get("delivery"), plan_report=report,
                scene_bible=json.dumps(bible, ensure_ascii=False),
                status="plan_ready")
     _save_master_plan_file(get_job(job_id))
+    if report and report.get("stats"):
+        stats = report["stats"]
+        blind = report.get("blind") or {}
+        task_log.info("job %s: delivery report: %d lines, %d words, narration %d%%, blind reader understood %s of %s facts, "
+                      "%d note(s)", job_id, stats["spoken_lines"], stats["spoken_words"], int(stats["narration_share"] * 100),
+                      blind.get("understood", "-"), blind.get("total", "-"), len(report["problems"]))
     task_log.info("job %s: narrated drama master plan ready (%d beats, protagonist %s)",
                   job_id, len(beats), bible.get("pov_protagonist"))
 
@@ -1191,11 +1341,11 @@ def _generate_narrated_plan(job_id: str) -> None:
 def _continue_narrated_drama_job(job_id: str) -> None:
     """Phase 1.5: FLUX images -> Phase 2: Narrated drama per-clip (VO / Dialogue / Shock) -> assemble."""
     job = get_job(job_id)
-    topic = job.request.topic
+    import hybrid_narrated_drama as hnd
+    topic = hnd.topic_with_rules(job.request.topic, job.plan_rules)   # every clip writer sees the standing rules (the same text each clip, so it still caches)
     total_clips = len(job.clips)
     bible = job.movie_bible
     beats = job.beats
-    import hybrid_narrated_drama as hnd
 
     # Phase 1.5: FLUX images
     cast_bank = job.cast_bank or {}
@@ -1224,7 +1374,7 @@ def _continue_narrated_drama_job(job_id: str) -> None:
             task_log.info("job %s: scripting narrated clip %d of %d", job_id, i + 1, total_clips)
             is_supervise = getattr(job.request, "supervise", False)
             ch_data, clip_problems = hnd.write_narrated_chapter(
-                topic, i, total_clips, beats, bible, prev_clips, supervise=is_supervise
+                topic, i, total_clips, beats, bible, prev_clips, supervise=is_supervise, acts=job.acts
             )
             clip_hard = hnd._hard_problems(clip_problems)
             if clip_hard:
@@ -1521,8 +1671,15 @@ def _execute_movie_job_traced(job_id: str, **kwargs) -> None:
 
 @celery_app.task
 def execute_movie_job(job_id: str) -> None:
-    """Execute the Story Videos pipeline after Master Plan approval. Traced with Langfuse."""
-    _execute_movie_job_traced(job_id, langfuse_trace_id=job_id)
+    """Execute the Story Videos / Narrated Drama pipeline after Master Plan approval. Traced with Langfuse.
+
+    One task per job: if another task already holds it (a second Resume, or a second queued copy), this one stops at once
+    without touching the job, its status or its clips."""
+    try:
+        with job_lock(job_id):
+            _execute_movie_job_traced(job_id, langfuse_trace_id=job_id)
+    except JobBusy:
+        task_log.warning("job %s: another task is already running it; this one stops without changing anything", job_id)
 
 
 @observe(name="extend_movie_plan")
@@ -1539,8 +1696,13 @@ def _extend_movie_plan_task_traced(job_id: str, continuation_prompt: str, additi
             import hybrid_narrated_drama as hybrid
             prev_beats = job.beats or []
             outline, problems = hybrid.write_narrated_continuation_outline(
-                job.request.topic, continuation_prompt, bible, prev_beats, additional_clips
+                hybrid.topic_with_rules(job.request.topic, job.plan_rules), continuation_prompt, bible, prev_beats, additional_clips, delivery=job.delivery
             )
+            try:  # the new lines get the same plain-language review as the first plan's (never raises)
+                hybrid.plain_pass_beats(outline.get("beats", []), bible, job.delivery, start_clip=len(prev_beats) + 1,
+                                        prior_beats=prev_beats)
+            except Exception as e:
+                task_log.warning("job %s: plain-language review of the continuation skipped: %s", job_id, e)
         else:
             prev_clips = [c.movie_script for c in job.clips if c.movie_script]
             outline, problems = movie.write_continuation_outline(
@@ -1583,6 +1745,233 @@ def _extend_movie_plan_task_traced(job_id: str, continuation_prompt: str, additi
 def extend_movie_plan_task(job_id: str, continuation_prompt: str, additional_duration: int) -> None:
     """Analyze previous story, generate continuation outline/beats. Traced with Langfuse."""
     _extend_movie_plan_task_traced(job_id, continuation_prompt, additional_duration, langfuse_trace_id=job_id)
+
+
+# --- Plan revision (Narrated Drama): the user reads the plan and asks for changes before approving it ---
+def _versions_key(job_id: str) -> str:
+    return f"jobplanv:{job_id}"
+
+
+def _plan_versions(job_id: str) -> list[dict]:
+    """Earlier versions of the plan, newest last (at most PLAN_VERSIONS_KEPT). Kept beside the job, not in it, so the dashboard's
+    polling does not carry copies of every plan on each request."""
+    raw = redis_client.get(_versions_key(job_id))
+    return json.loads(raw) if raw else []
+
+
+def _set_plan_versions(job_id: str, versions: list[dict]) -> None:
+    if versions:
+        redis_client.set(_versions_key(job_id), json.dumps(versions[-PLAN_VERSIONS_KEPT:], ensure_ascii=False))
+    else:
+        redis_client.delete(_versions_key(job_id))
+
+
+PLAN_VERSIONS_KEPT = 5
+
+
+def _revision_busy(job: Job) -> bool:
+    return bool(job.revision and job.revision.get("status") in ("proposing", "applying"))
+
+
+def _fail_revision(job_id: str, note: str, error: str) -> None:
+    task_log.error("job %s: plan revision failed: %s", job_id, error)
+    update_job(job_id, revision={"status": "failed", "note": note, "error": error, "at": time.time()})
+
+
+def _propose_revision(job_id: str) -> None:
+    """Step one: split the note and find the clips it touches. Changes nothing in the plan."""
+    import hybrid_narrated_drama as hnd
+    job = get_job(job_id)
+    rev = (job.revision if job else None) or {}
+    if job is None or rev.get("status") != "proposing" or job.status != "plan_ready":
+        return
+    try:
+        result = hnd.propose_plan_revision(rev.get("note", ""), job.plan_rules, job.beats or [], job.acts, job.movie_bible or {},
+                                           premise=job.request.topic)
+        update_job(job_id, revision={
+            "status": "proposed", "note": rev.get("note", ""), "items": result["items"], "rules_new": result["rules_new"],
+            "replaces": result["replaces"], "blocked": result["blocked"], "rules_new_hints": result.get("rules_new_hints", []),
+            "rules_new_meta": result.get("rules_new_meta", []),
+            # a clip the scan is sure of (score 2 or 3) comes ticked; a "maybe" (1) is listed unticked for the user to decide
+            "clips": [{**c, "selected": c.get("score", hnd.PICK_SCORE) >= hnd.PICK_SCORE} for c in result["clips"]], "at": time.time(),
+        })
+        task_log.info("job %s: plan revision proposed: %d item(s), %d clip(s) to change", job_id, len(result["items"]), len(result["clips"]))
+    except Exception as e:
+        _fail_revision(job_id, rev.get("note", ""), f"{type(e).__name__}: {e}")
+
+
+def _apply_revision(job_id: str, chosen: list[int]) -> None:
+    """Step two: rewrite the clips the user ticked (story model), check them, save a version to undo to, and report what changed."""
+    import hybrid_narrated_drama as hnd
+    job = get_job(job_id)
+    rev = (job.revision if job else None) or {}
+    if job is None or rev.get("status") != "applying" or job.status != "plan_ready":
+        return
+    note = rev.get("note", "")
+    try:
+        proposal = {c["clip"]: c for c in rev.get("clips") or []}
+        selected = {n: proposal[n].get("change", "") for n in chosen if n in proposal}
+        replaces = set(rev.get("replaces") or [])
+        new_texts = rev.get("rules_new") or []
+        new_hints = list(rev.get("rules_new_hints") or []) + [""] * len(new_texts)   # a rule keeps the tells, the probe and the stop point the scan used
+        new_meta = list(rev.get("rules_new_meta") or []) + [{}] * len(new_texts)
+        final_rules = hnd.clean_rules([r for r in hnd.clean_rules(job.plan_rules) if r["id"] not in replaces]
+                                      + [{"text": t, "hint": new_hints[i], "probe": new_meta[i].get("probe", ""),
+                                          "stops_when": new_meta[i].get("stops_when", "")} for i, t in enumerate(new_texts)])
+        instructions = [hnd.item_instruction(i) for i in rev.get("items") or [] if i.get("in_scope")]
+        if selected:
+            result = hnd.apply_plan_revision(selected, instructions, final_rules, job.beats, job.movie_bible, job.delivery, job.acts)
+        else:
+            result = {"beats": job.beats, "changed": [], "unresolved": [], "notes": []}
+        new_beats = result["beats"]
+        try:   # what still contradicts a rule: reported, never fixed on its own
+            contradictions = hnd.verify_plan_revision(final_rules, new_beats, job.acts)
+        except Exception as e:
+            task_log.warning("job %s: the final rule check could not run: %s", job_id, e)
+            contradictions = []
+        report = job.plan_report
+        if result["changed"]:
+            try:
+                fresh = hnd.plan_delivery_report({"scene_bible": job.movie_bible, "acts": job.acts, "beats": new_beats, "delivery": job.delivery})
+                kept = [p for p in ((job.plan_report or {}).get("problems") or []) if p.startswith("[REVIEW] ") and not p.startswith("[REVIEW] Cast: ")]
+                fresh["problems"] = kept + list(fresh.get("problems") or [])
+                fresh["plain_pass"] = (job.plan_report or {}).get("plain_pass")
+                report = fresh
+            except Exception as e:
+                task_log.warning("job %s: the plan report could not be rebuilt: %s", job_id, e)
+        versions = _plan_versions(job_id) + [{"id": uuid.uuid4().hex[:8], "at": time.time(), "label": note[:100], "beats": job.beats,
+                                              "plan_report": job.plan_report, "plan_rules": job.plan_rules, "movie_bible": job.movie_bible}]
+        _set_plan_versions(job_id, versions)
+        update_job(job_id, beats=new_beats, plan_report=report, plan_rules=final_rules,
+                   plan_versions_count=min(len(versions), PLAN_VERSIONS_KEPT),
+                   revision={"status": "applied", "note": note, "changed": result["changed"], "unresolved": result["unresolved"],
+                             "notes": result["notes"], "contradictions": contradictions, "rules_saved": [r["text"] for r in final_rules],
+                             "at": time.time()})
+        _save_master_plan_file(get_job(job_id))
+        task_log.info("job %s: plan revision applied: %d clip(s) changed, %d unresolved, %d still contradicting a rule",
+                      job_id, len(result["changed"]), len(result["unresolved"]), len(contradictions))
+    except Exception as e:
+        _fail_revision(job_id, note, f"{type(e).__name__}: {e}")
+
+
+def _propose_cast(job_id: str) -> None:
+    """Cast check, step one: who does the plan show on screen without casting them? Changes nothing in the plan."""
+    import hybrid_narrated_drama as hnd
+    job = get_job(job_id)
+    rev = (job.revision if job else None) or {}
+    if job is None or rev.get("kind") != "cast" or rev.get("status") != "proposing" or job.status != "plan_ready":
+        return
+    try:
+        gaps = hnd.find_cast_gaps(job.beats or [], job.movie_bible or {})
+        update_job(job_id, revision={
+            "kind": "cast", "status": "proposed", "people": [{**g, "include": True} for g in gaps],
+            "supporting_now": sum(1 for c in (job.movie_bible or {}).get("characters", []) if hnd._is_supporting(c)),
+            "max_supporting": hnd.MAX_SUPPORTING, "at": time.time(),
+        })
+        task_log.info("job %s: cast check found %d person(s) shown on screen without being cast", job_id, len(gaps))
+    except Exception as e:
+        _fail_revision(job_id, "cast check", f"{type(e).__name__}: {e}")
+
+
+def _apply_cast(job_id: str, people: list[dict]) -> None:
+    """Cast check, step two: write looks for the people the user kept, add them to the cast, put them in the clips they belong in,
+    save a version to undo to (it carries the old cast), and rebuild the plan report."""
+    import hybrid_narrated_drama as hnd
+    job = get_job(job_id)
+    rev = (job.revision if job else None) or {}
+    if job is None or rev.get("kind") != "cast" or rev.get("status") != "applying" or job.status != "plan_ready":
+        return
+    try:
+        result = hnd.add_supporting_cast(people, job.beats, job.movie_bible)
+        report = job.plan_report
+        try:
+            fresh = hnd.plan_delivery_report({"scene_bible": result["bible"], "acts": job.acts, "beats": result["beats"], "delivery": job.delivery})
+            kept = [p for p in ((job.plan_report or {}).get("problems") or []) if p.startswith("[REVIEW] ") and not p.startswith("[REVIEW] Cast: ")]
+            fresh["problems"] = kept + list(fresh.get("problems") or [])
+            fresh["plain_pass"] = (job.plan_report or {}).get("plain_pass")
+            report = fresh
+        except Exception as e:
+            task_log.warning("job %s: the plan report could not be rebuilt: %s", job_id, e)
+        label = "Added to the cast: " + ", ".join(a["name"] for a in result["added"])
+        versions = _plan_versions(job_id) + [{"id": uuid.uuid4().hex[:8], "at": time.time(), "label": label[:100], "beats": job.beats,
+                                              "plan_report": job.plan_report, "plan_rules": job.plan_rules, "movie_bible": job.movie_bible}]
+        _set_plan_versions(job_id, versions)
+        update_job(job_id, movie_bible=result["bible"], scene_bible=json.dumps(result["bible"], ensure_ascii=False), beats=result["beats"],
+                   plan_report=report, plan_versions_count=min(len(versions), PLAN_VERSIONS_KEPT),
+                   revision={"kind": "cast", "status": "applied", "added": result["added"], "notes": result["notes"], "at": time.time()})
+        _save_master_plan_file(get_job(job_id))
+        task_log.info("job %s: %d supporting character(s) added to the cast", job_id, len(result["added"]))
+    except Exception as e:
+        _fail_revision(job_id, "cast check", f"{type(e).__name__}: {e}")
+
+
+@observe(name="plan_revision")
+def _plan_revision_traced(job_id: str, step: str, chosen: list[int] | None = None, people: list[dict] | None = None, **kwargs) -> None:
+    """Run one step of a plan revision under the JOB's Langfuse trace (the trace id is the job id, as for every other task), so
+    its calls sit with the planning and clip-scripting calls of the same job, and flush before the worker moves on: the Celery
+    child processes would otherwise keep the events in a buffer."""
+    try:
+        get_client().update_current_span(
+            name=f"plan_revision_{step}",
+            metadata={"job_id": job_id, "step": step, "clips": chosen or []},
+            tags=["narrated_drama", "plan_revision", step],
+        )
+    except Exception:
+        pass
+    try:
+        if step == "propose":
+            _propose_revision(job_id)
+        elif step == "cast_propose":
+            _propose_cast(job_id)
+        elif step == "cast_apply":
+            _apply_cast(job_id, people or [])
+        else:
+            _apply_revision(job_id, chosen or [])
+    finally:
+        try:
+            get_client().flush()
+        except Exception:
+            pass
+
+
+@celery_app.task
+def propose_plan_revision_task(job_id: str) -> None:
+    """Find the clips a revision note touches (cheap model, in windows). One task per job (see job_lock). Traced with Langfuse."""
+    try:
+        with job_lock(job_id):
+            _plan_revision_traced(job_id, "propose", langfuse_trace_id=job_id)
+    except JobBusy:
+        task_log.warning("job %s: another task holds this job; the revision proposal stops without changing anything", job_id)
+
+
+@celery_app.task
+def propose_cast_additions_task(job_id: str) -> None:
+    """Find the people the plan shows on screen without casting them (cheap model). One task per job (see job_lock). Traced with Langfuse."""
+    try:
+        with job_lock(job_id):
+            _plan_revision_traced(job_id, "cast_propose", langfuse_trace_id=job_id)
+    except JobBusy:
+        task_log.warning("job %s: another task holds this job; the cast check stops without changing anything", job_id)
+
+
+@celery_app.task
+def apply_cast_additions_task(job_id: str, people: list) -> None:
+    """Add the chosen people to the cast and to their clips. One task per job (see job_lock). Traced with Langfuse."""
+    try:
+        with job_lock(job_id):
+            _plan_revision_traced(job_id, "cast_apply", people=people, langfuse_trace_id=job_id)
+    except JobBusy:
+        task_log.warning("job %s: another task holds this job; the cast change stops without changing anything", job_id)
+
+
+@celery_app.task
+def apply_plan_revision_task(job_id: str, chosen: list[int]) -> None:
+    """Rewrite the ticked clips (story model) and check them. One task per job (see job_lock). Traced with Langfuse."""
+    try:
+        with job_lock(job_id):
+            _plan_revision_traced(job_id, "apply", chosen, langfuse_trace_id=job_id)
+    except JobBusy:
+        task_log.warning("job %s: another task holds this job; the revision stops without changing anything", job_id)
 
 
 REGENERATE_LABELS = {"script": "Regenerate Script", "scene": "Regenerate Scene"}
@@ -1718,19 +2107,20 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/enhance-prompt", response_model=EnhancePromptResponse)
-@observe(name="enhance_prompt")
-def enhance_prompt_endpoint(req: EnhancePromptRequest) -> EnhancePromptResponse:
-    """Enhance and expand a short story premise into a rich, cinematic screenplay synopsis tailored to the selected duration."""
-    topic = req.topic.strip()
-    if not topic:
-        raise HTTPException(status_code=400, detail="topic cannot be empty")
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured")
+def _enhance_prompts(topic: str, req: EnhancePromptRequest) -> tuple[str, str]:
+    """The (system, user) messages for /enhance-prompt. A pure function, so the wording can be checked without
+    calling OpenAI.
 
+    The dramatic modes (everything except Talking Head and Story Time) are told the runtime is EPISODE ONE of a
+    longer story: write only as many events as will genuinely play, and end on a cliffhanger. Writing a complete
+    arc with a resolution is how a 20-minute plot ended up squeezed into 5 minutes, and "reported" instead of played."""
     duration = req.duration or 30
     clip_duration = req.clip_duration or 5
     num_clips = max(1, duration // clip_duration)
+    import hybrid_narrated_drama as _hnd  # lazy: it imports this module
+    dramatic = req.mode not in ("talking_head", "story_time")
+    # A plan of CONCLUDE_AT_SECONDS (30 minutes) or more tells a whole story and ends it; a shorter one is episode one.
+    episode_one = dramatic and duration < _hnd.CONCLUDE_AT_SECONDS
 
     if req.mode == "talking_head":
         mode_directive = (
@@ -1744,11 +2134,40 @@ def enhance_prompt_endpoint(req: EnhancePromptRequest) -> EnhancePromptResponse:
             "Establish character visual appearance, specific physical environments across cuts, concrete visual actions, "
             "and the voiceover narrative text."
         )
+    elif req.mode == "narrated_drama":
+        mode_directive = (
+            "- MODE: Narrated Drama (the protagonist's first-person voiceover over live dramatic scenes with spoken dialogue).\n"
+            "Establish the protagonist and their voice. Focus on physical staging, character interactions, tangible environmental props, "
+            "exact spoken dialogue in quotes, and the protagonist's own first-person voiceover lines in quotes, each marked (VO)."
+        )
     else:  # story_videos (default)
         mode_directive = (
             "- MODE: Story Videos cinematic drama (multi-character dramatic scenes with physical acting, blocking, props, and dialogue).\n"
             "Focus on physical staging, character interactions, tangible environmental props, and exact spoken dialogue."
         )
+
+    # The planner that reads this premise must be able to make the audience UNDERSTAND the story from the spoken script
+    # alone, so the premise states what the story is in plain spoken terms (not only moods and images).
+    if req.mode == "narrated_drama":
+        thoughts_rule = (
+            "   - NEVER write abstract emotional summaries (e.g. BANNED: 'she feels heartbroken', 'a devastating truth', 'every relationship is doomed to slip away'). "
+            "The protagonist's inner thoughts may appear ONLY as first-person voiceover lines in quotes marked (VO): plain words that state a want, a decision, a cost or a secret. "
+            "An AI camera still films only physical things.\n"
+        )
+    else:
+        thoughts_rule = (
+            "   - NEVER write abstract emotional summaries or internal thoughts (e.g. BANNED: 'she feels heartbroken', 'a devastating truth', 'wonders if it is a dream', 'every relationship is doomed to slip away'). "
+            "An AI camera CANNOT film internal thoughts or generic summaries!\n"
+        )
+    delivery_rule = (
+        "   - STORY DELIVERY: a viewer who only HEARS the film must be able to retell it. In quotes, have the characters state plainly - inside the conflict - "
+        "what the protagonist wants, what stands in the way, what is at stake, the key backstory, and any lie or secret (say THAT a secret exists early; reveal WHAT it is later). "
+        "Explain any special term (a family name, a legal word, a place) in plain words the first time it is spoken. Quiet or stoic characters still say what the story is; only HOW they say it is restrained.\n"
+        "   - PLAIN LANGUAGE: write EVERY spoken line and voiceover line in plain, literal English that a viewer with basic English understands the first time they hear it: "
+        "no metaphors, similes, idioms or poetic images, and no sample line should be copied if it is poetic (say its meaning plainly). Sharp or witty lines are welcome as long as they are literal and plain. When a character does something meaningful "
+        "(returns a ring, signs, hands something over, walks out), have a line say what it means.\n"
+        if dramatic else ""
+    )
 
     if duration <= 45:
         p1_end = max(10, round(duration * 0.5))
@@ -1771,21 +2190,32 @@ def enhance_prompt_endpoint(req: EnhancePromptRequest) -> EnhancePromptResponse:
             f"   Develop an escalating dramatic sequence across 3 defined Acts with rich physical staging, tangible props, and dense dialogue in quotes:\n"
             f"   * ACT 1: THE INCITING DISRUPTION (0–{p1_end}s): Concrete physical staging at second 0, sudden catalyst/arrival, initial shock, and opening dialogue clash in quotes.\n"
             f"   * ACT 2: THE RISING CONFLICT & TANGIBLE PROOF ({p1_end}–{p2_end}s): Deepening stakes, tactical pushback, discovery of physical evidence or proof, and high-density verbal sparring in quotes.\n"
-            f"   * ACT 3: THE CLIMAX & IRREVERSIBLE TURN ({p2_end}–{duration}s): The confrontation reaches its peak, decisive physical/dramatic action, irreversible choice, and dramatic consequence.\n"
+            f"   * ACT 3: THE CLIMAX & IRREVERSIBLE TURN ({p2_end}–{duration}s): The confrontation reaches its peak, decisive physical/dramatic action, irreversible choice, and " + ("a consequence that is only beginning, with the next question left open" if episode_one else "dramatic consequence") + ".\n"
             f"7. FORMAT & DIALOGUE DENSITY:\n"
             f"   - Format with clear Act headings: 'ACT 1: ...', 'ACT 2: ...', 'ACT 3: ...'.\n"
             f"   - STRICT BAN ON CLIP LISTS: NEVER output 'Clip 1:', 'Clip 2:', or pre-chopped clip lists! Write immersive narrative paragraphs under each Act heading.\n"
             f"   - DIALOGUE IN QUOTES: Every Act MUST contain 2 to 4 exact, punchy spoken lines of dialogue in quotation marks."
         )
     else:
+        if episode_one:
+            progression = (
+                "You MUST advance the story across progressive locations through a 4-Act progression - but this runtime is EPISODE ONE of a longer story, "
+                "NOT a whole film. Write only as many major events as can genuinely PLAY in the runtime (about one per 60 seconds, each staged between people "
+                "in a room with room for its dialogue), and do NOT compress or summarise further events to reach an ending. Whatever does not fit belongs to the next episode:\n"
+            )
+            act4 = ("     * ACT 4 (The Cliffhanger): The episode's strongest turn lands and is left OPEN - a reveal, a threat arriving, an arrival or a choice "
+                    "still undecided. NO resolution, no wrap-up, no closing line, no moral.\n")
+        else:
+            progression = "You MUST advance the story into a complete 4-Act cinematic progression across progressive locations that fills the entire runtime:\n"
+            act4 = "     * ACT 4 (The Climax & Resolution): High-stakes physical confrontation, decisive turning point, and a satisfying, memorable resolution.\n"
         pacing_directive = (
             f"6. DURATION-CALIBRATED 4-ACT MULTI-SEQUENCE STRUCTURE ({num_clips} CLIPS, {duration}s):\n"
             f"   - DO NOT trap characters in one room or stretch the opening scene! The user premise is ONLY the opening incident (Act 1). "
-            f"You MUST advance the story into a complete 4-Act cinematic progression across progressive locations that fills the entire runtime:\n"
+            f"{progression}"
             f"     * ACT 1 (The Inciting Disruption): The opening catalyst, immediate tension, and dramatic hook.\n"
             f"     * ACT 2 (The Escalation / Rising Stakes): Moving to a new location, uncovering new complications, facing escalating pressure or pursuit.\n"
             f"     * ACT 3 (The Discovery / Key Confrontation): Interacting with an ally, rival, or key figure, packed with sharp, snappy back-and-forth dialogue in quotes!\n"
-            f"     * ACT 4 (The Climax & Resolution): High-stakes physical confrontation, decisive turning point, and a satisfying, memorable resolution.\n"
+            f"{act4}"
             f"7. FORMAT & DIALOGUE DENSITY:\n"
             f"   - Format with clear Act headings: 'ACT 1: ...', 'ACT 2: ...', 'ACT 3: ...', 'ACT 4: ...' (300 to 500 words).\n"
             f"   - STRICT BAN ON CLIP LISTS: NEVER output 'Clip 1:', 'Clip 2:', or pre-chopped clip lists! Write immersive narrative paragraphs under each Act heading.\n"
@@ -1798,13 +2228,14 @@ def enhance_prompt_endpoint(req: EnhancePromptRequest) -> EnhancePromptResponse:
         f"{mode_directive}\n\n"
         f"CRITICAL DIRECTIVES FOR ADDING REAL CINEMATIC DETAILS:\n"
         f"1. CONCRETE FILMABLE REALITY ONLY (STRICTLY BAN NOVELISTIC FLUFF):\n"
-        f"   - NEVER write abstract emotional summaries or internal thoughts (e.g. BANNED: 'she feels heartbroken', 'a devastating truth', 'wonders if it is a dream', 'every relationship is doomed to slip away'). An AI camera CANNOT film internal thoughts or generic summaries!\n"
+        f"{thoughts_rule}"
         f"   - EVERYTHING MUST BE PHYSICALLY VISIBLE OR AUDIBLE: Describe physical actions, bodily reactions, tangible props, and environmental details that an actor can perform and a camera can capture.\n"
         f"2. SPECIFIC CHARACTER NAMES & STARTING ACTION:\n"
         f"   - Assign concrete, realistic names to unnamed characters.\n"
         f"   - Establish the specific physical setting and what the character is physically doing at second 0 based on the user's premise.\n"
         f"3. EXACT SPOKEN DIALOGUE IN QUOTES (HIGH DENSITY):\n"
         f"   - Include snappy, dramatic lines of spoken dialogue in quotation marks matching the genre and characters. In dialogue scenes, write sharp back-and-forth lines between characters so the scene is alive with speech.\n"
+        f"{delivery_rule}"
         f"4. TANGIBLE PROPS & PHYSICAL PROOF:\n"
         f"   - Include real physical props and visible manifestations of the conflict that fit the user's world (e.g. dropped objects, slammed doors, drawn tools, cracked screens, glowing artifacts).\n"
         f"5. STRICT CHRONOLOGICAL CONTINUITY (NO EVENT REPETITION):\n"
@@ -1815,11 +2246,13 @@ def enhance_prompt_endpoint(req: EnhancePromptRequest) -> EnhancePromptResponse:
 
     user_content = f"User Premise: {topic}\nTarget Runtime: {duration} seconds ({num_clips} clips)"
     if duration >= 100:
+        last_act = ("Act 4 (The Cliffhanger - the episode's strongest turn, left OPEN, with no resolution)" if episode_one
+                    else "Act 4 (The Climax & Resolution)")
         user_content += (
             f"\n\nCRITICAL MULTI-ACT DIRECTIVE: The user premise above is ONLY the opening inciting incident (Act 1)! "
             f"Because the target duration is {duration} seconds ({num_clips} clips), you MUST actively continue the story forward across all acts. "
             f"Do NOT stop at the opening scene! Progress the narrative through Act 2 (The Escalation), Act 3 (The Discovery/Confrontation with rapid snappy dialogue), "
-            f"and Act 4 (The Climax & Resolution), introducing where the characters go next, who they encounter, and exact spoken dialogue lines in quotes. "
+            f"and {last_act}, introducing where the characters go next, who they encounter, and exact spoken dialogue lines in quotes. "
             f"STRICTLY format with clear Act headings ('ACT 1: ...', 'ACT 2: ...', 'ACT 3: ...', 'ACT 4: ...') — NEVER output 'Clip 1:', 'Clip 2:' lists!"
         )
     else:
@@ -1827,6 +2260,20 @@ def enhance_prompt_endpoint(req: EnhancePromptRequest) -> EnhancePromptResponse:
             f"\n\nCRITICAL DIRECTIVE: Format strictly with clear Act headings ('ACT 1: ...', 'ACT 2: ...'). "
             f"NEVER output 'Clip 1:', 'Clip 2:', or numbered clip lists! Write rich narrative paragraphs with exact quoted dialogue."
         )
+
+    return system_prompt, user_content
+
+
+@app.post("/enhance-prompt", response_model=EnhancePromptResponse)
+@observe(name="enhance_prompt")
+def enhance_prompt_endpoint(req: EnhancePromptRequest) -> EnhancePromptResponse:
+    """Enhance and expand a short story premise into a rich, cinematic screenplay synopsis tailored to the selected duration."""
+    topic = req.topic.strip()
+    if not topic:
+        raise HTTPException(status_code=400, detail="topic cannot be empty")
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured")
+    system_prompt, user_content = _enhance_prompts(topic, req)
 
     try:
         client = OpenAI(api_key=OPENAI_API_KEY, timeout=60)
@@ -1974,6 +2421,8 @@ def save_plan(job_id: str, request: PlanApprovalRequest) -> Job:
         raise HTTPException(status_code=404, detail="job not found")
     if job.status not in ("plan_ready", "pending"):
         raise HTTPException(status_code=409, detail=f"cannot edit plan when job status is '{job.status}'")
+    if _revision_busy(job):
+        raise HTTPException(status_code=409, detail="the plan is being revised; wait for it to finish")
     fields = {}
     if request.beats is not None:
         fields["beats"] = request.beats
@@ -1994,6 +2443,8 @@ def approve_plan(job_id: str, request: PlanApprovalRequest | None = None) -> dic
         raise HTTPException(status_code=404, detail="job not found")
     if job.status != "plan_ready":
         raise HTTPException(status_code=409, detail=f"cannot approve plan when job status is '{job.status}' (expected 'plan_ready')")
+    if _revision_busy(job):
+        raise HTTPException(status_code=409, detail="the plan is being revised; wait for it to finish, then approve")
     fields = {}
     if request:
         if request.beats is not None:
@@ -2013,6 +2464,166 @@ def approve_plan(job_id: str, request: PlanApprovalRequest | None = None) -> dic
     return {"job_id": job_id, "status": "generating"}
 
 
+def _revisable_job(job_id: str) -> Job:
+    """The job, if its plan may be revised now (a Narrated Drama plan waiting for approval); raises the HTTP error otherwise."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.mode != "narrated_drama":
+        raise HTTPException(status_code=400, detail="plan revision is only available for Narrated Drama")
+    if job.status != "plan_ready":
+        raise HTTPException(status_code=409, detail=f"the plan can only be revised while it waits for approval, not when the job is '{job.status}'")
+    if not job.beats or not job.movie_bible:
+        raise HTTPException(status_code=400, detail="job has no plan to revise")
+    return job
+
+
+@app.post("/jobs/{job_id}/revise-plan", status_code=202)
+def revise_plan(job_id: str, request: ReviseRequest) -> dict:
+    """Step one of a revision: split the note and find the clips it touches. Nothing in the plan changes yet."""
+    import hybrid_narrated_drama as hnd
+    job = _revisable_job(job_id)
+    if _revision_busy(job):
+        raise HTTPException(status_code=409, detail="a revision is already running")
+    note = request.note.strip()
+    if not note:
+        raise HTTPException(status_code=400, detail="write what you want changed")
+    if len(note) > hnd.MAX_NOTE_CHARS:
+        raise HTTPException(status_code=400, detail=f"the note is too long ({len(note)} characters, at most {hnd.MAX_NOTE_CHARS}): split it into shorter notes")
+    update_job(job_id, revision={"status": "proposing", "note": note, "at": time.time()})
+    try:
+        propose_plan_revision_task.delay(job_id)
+    except Exception as e:
+        update_job(job_id, revision=None)
+        raise HTTPException(status_code=503, detail=f"could not queue the revision: {e}") from e
+    return {"job_id": job_id, "status": "proposing"}
+
+
+@app.post("/jobs/{job_id}/revise-plan/apply", status_code=202)
+def apply_revision(job_id: str, request: ReviseApplyRequest) -> dict:
+    """Step two: rewrite the clips the user ticked, and save the standing rules."""
+    job = _revisable_job(job_id)
+    rev = job.revision or {}
+    if rev.get("status") != "proposed" or rev.get("kind") == "cast":
+        raise HTTPException(status_code=409, detail="there is no proposal to apply; write a note first")
+    if rev.get("blocked"):
+        raise HTTPException(status_code=409, detail=rev["blocked"])
+    offered = {c["clip"] for c in rev.get("clips") or []}
+    chosen = sorted(set(request.clips))
+    stray = [n for n in chosen if n not in offered]
+    if stray:
+        raise HTTPException(status_code=400, detail=f"clip(s) {stray} were not in the proposal")
+    if not chosen and not rev.get("rules_new") and not rev.get("replaces"):
+        raise HTTPException(status_code=400, detail="nothing to apply: tick at least one clip")
+    update_job(job_id, revision={**rev, "status": "applying", "at": time.time()})
+    try:
+        apply_plan_revision_task.delay(job_id, chosen)
+    except Exception as e:
+        update_job(job_id, revision=rev)
+        raise HTTPException(status_code=503, detail=f"could not queue the revision: {e}") from e
+    return {"job_id": job_id, "status": "applying"}
+
+
+@app.post("/jobs/{job_id}/revise-plan/add-clips")
+def add_revision_clips(job_id: str, request: AddClipsRequest) -> dict:
+    """Add clips the finder missed to the proposal (the user knows which ones); they come ticked. Changes nothing in the plan."""
+    job = _revisable_job(job_id)
+    rev = job.revision or {}
+    if rev.get("status") != "proposed" or rev.get("kind") == "cast":
+        raise HTTPException(status_code=409, detail="there is no proposal to add clips to; write a note first")
+    total = len(job.beats or [])
+    wrong = sorted({n for n in request.clips if not 1 <= n <= total})
+    if wrong:
+        raise HTTPException(status_code=400, detail=f"clip(s) {wrong[:10]} do not exist: the plan has {total} clips")
+    have = {c["clip"] for c in rev.get("clips") or []}
+    added = [n for n in sorted(set(request.clips)) if n not in have]
+    clips = sorted((rev.get("clips") or []) + [{"clip": n, "reason": "You asked for this clip.", "change": "", "selected": True, "manual": True} for n in added],
+                   key=lambda c: c["clip"])
+    update_job(job_id, revision={**rev, "clips": clips, "at": time.time()})
+    return {"job_id": job_id, "added": added}
+
+
+@app.post("/jobs/{job_id}/cast-check", status_code=202)
+def cast_check(job_id: str) -> dict:
+    """Step one of adding people to the cast: find who the plan shows on screen without casting them. Nothing in the plan changes yet."""
+    job = _revisable_job(job_id)
+    if _revision_busy(job):
+        raise HTTPException(status_code=409, detail="a revision is already running")
+    update_job(job_id, revision={"kind": "cast", "status": "proposing", "at": time.time()})
+    try:
+        propose_cast_additions_task.delay(job_id)
+    except Exception as e:
+        update_job(job_id, revision=None)
+        raise HTTPException(status_code=503, detail=f"could not queue the cast check: {e}") from e
+    return {"job_id": job_id, "status": "proposing"}
+
+
+@app.post("/jobs/{job_id}/cast-check/apply", status_code=202)
+def cast_check_apply(job_id: str, request: CastApplyRequest) -> dict:
+    """Step two: add the people the user kept (named, with their clips) to the cast, as supporting characters."""
+    job = _revisable_job(job_id)
+    rev = job.revision or {}
+    if rev.get("kind") != "cast" or rev.get("status") != "proposed":
+        raise HTTPException(status_code=409, detail="there is no cast proposal to apply; press 'Check the cast' first")
+    chosen = [p.model_dump() for p in request.people if p.include]
+    if not chosen:
+        raise HTTPException(status_code=400, detail="tick at least one person to add")
+    update_job(job_id, revision={**rev, "status": "applying", "at": time.time()})
+    try:
+        apply_cast_additions_task.delay(job_id, chosen)
+    except Exception as e:
+        update_job(job_id, revision=rev)
+        raise HTTPException(status_code=503, detail=f"could not queue the cast change: {e}") from e
+    return {"job_id": job_id, "status": "applying"}
+
+
+@app.post("/jobs/{job_id}/revise-plan/cancel")
+def cancel_revision(job_id: str) -> dict:
+    """Throw a proposal, a failure or a finished revision's report away. Also frees a revision whose worker died."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job_is_running(job_id):
+        raise HTTPException(status_code=409, detail="the revision is still working; it can be cancelled once it stops")
+    update_job(job_id, revision=None)
+    return {"job_id": job_id, "ok": True}
+
+
+@app.post("/jobs/{job_id}/undo-plan-revision")
+def undo_plan_revision(job_id: str) -> dict:
+    """Put the plan back as it was before the last applied revision (up to PLAN_VERSIONS_KEPT steps back)."""
+    job = _revisable_job(job_id)
+    if _revision_busy(job) or job_is_running(job_id):
+        raise HTTPException(status_code=409, detail="a revision is running; wait for it to finish")
+    versions = _plan_versions(job_id)
+    if not versions:
+        raise HTTPException(status_code=409, detail="there is no earlier version to go back to")
+    last = versions.pop()
+    _set_plan_versions(job_id, versions)
+    restored = {}
+    if last.get("movie_bible"):   # versions made before the cast could change carry none: the cast stays as it is
+        restored = {"movie_bible": last["movie_bible"], "scene_bible": json.dumps(last["movie_bible"], ensure_ascii=False)}
+    update_job(job_id, beats=last["beats"], plan_report=last.get("plan_report"), plan_rules=last.get("plan_rules"),
+               plan_versions_count=len(versions), revision=None, **restored)
+    _save_master_plan_file(get_job(job_id))
+    return {"job_id": job_id, "ok": True, "restored": last.get("label", "")}
+
+
+@app.put("/jobs/{job_id}/plan-rules")
+def put_plan_rules(job_id: str, request: RulesRequest) -> dict:
+    """Replace the standing rules (the dashboard uses this to edit or delete one)."""
+    import hybrid_narrated_drama as hnd
+    job = _revisable_job(job_id)
+    if _revision_busy(job):
+        raise HTTPException(status_code=409, detail="a revision is running; wait for it to finish")
+    try:
+        rules = hnd.clean_rules(request.rules)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    update_job(job_id, plan_rules=rules)
+    return {"job_id": job_id, "rules": rules}
+
+
 @app.post("/jobs/{job_id}/replan", status_code=202)
 def replan_story(job_id: str) -> dict:
     """Ask OpenAI to re-generate a new Master Plan outline for this job."""
@@ -2021,7 +2632,10 @@ def replan_story(job_id: str) -> dict:
         raise HTTPException(status_code=404, detail="job not found")
     if job.status not in ("plan_ready", "failed"):
         raise HTTPException(status_code=409, detail=f"cannot replan when job status is '{job.status}'")
-    update_job(job_id, status="generating", error=None)
+    if _revision_busy(job):
+        raise HTTPException(status_code=409, detail="the plan is being revised; wait for it to finish")
+    _set_plan_versions(job_id, [])   # a new plan: the old versions no longer apply (the standing rules stay, and shape the new plan)
+    update_job(job_id, status="generating", error=None, revision=None, plan_versions_count=0)
     try:
         run_generation_job.delay(job_id)
     except Exception as e:
@@ -2042,6 +2656,11 @@ def resume_job(job_id: str) -> dict:
         raise HTTPException(status_code=409, detail=f"cannot resume job when status is '{job.status}'")
     if not job.movie_bible or not job.beats:
         raise HTTPException(status_code=400, detail="job has no master plan to resume")
+    if job_is_running(job_id):
+        # A second run would script and render every clip again, paid for twice. A job whose worker died is not
+        # "running": its lock runs out within JOB_LOCK_TTL seconds and it can then be resumed.
+        raise HTTPException(status_code=409, detail=f"this job is still running, so it cannot be resumed yet. If the worker has "
+                                                    f"crashed, try again in {JOB_LOCK_TTL} seconds.")
     update_job(job_id, status="generating", error=None)
     try:
         execute_movie_job.delay(job_id)
@@ -2096,6 +2715,7 @@ def delete_job(job_id: str) -> dict:
         import shutil
         shutil.rmtree(media_dir, ignore_errors=True)
     redis_client.delete(f"job:{job_id}")
+    redis_client.delete(_versions_key(job_id))
     return {"ok": True, "job_id": job_id, "action": "deleted"}
 
 

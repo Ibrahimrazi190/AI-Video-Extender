@@ -29,14 +29,14 @@ Running log of the build, following `EXECUTION_GUIDE.md`. One section per comple
 | 12 | Final video assembly | **Built (2026-09-27)**, verified offline (real ffmpeg on Seedance-shaped clips) and on the dashboard with a throwaway API. Your testing note next (no credits): press "Build final video" on one of your existing jobs per mode, then download and watch it |
 | Watch | Story Time quality over a long chain (5+ clips) | **Watch item, not a blocker.** First data point (2026-09-27, 5 clips x 5 s): quality fell a bit down the chain; you're accepting it for now |
 | Movie Mode | Multi-Speaker Dramatic Scene Pipeline (`movie_scene_multispeaker.py`) | **Built & Completed (2026-10-01)**: 60-clip (5-minute) thriller fully generated, verified, and seamlessly assembled via `app.py` lead-in audio trimming and Lanczos normalization. Permanent pipeline integration completed. |
-| Narrated Drama | Hybrid Narrated Drama (`hybrid_narrated_drama.py`) | **Built and run.** First 5-minute run 2026-10-06 (job `d54e40da…`, 43 of 60 clips). Reworked 2026-10-07/08: prompt-caching layout, emotional range, scenes allowed to play (A1), per-call model and usage capture. The planner work **A2 is specified but NOT built** — see `FIRST_PRIORITY_IMPLEMENT.md` |
+| Narrated Drama | Hybrid Narrated Drama (`hybrid_narrated_drama.py`) | **Built; run for real twice.** 2026-10-06: job `d54e40da…`, 43 of 60 clips. 2026-10-08: a 36-clip (3-minute) job `ff99756b…`, planned with the new code and rendered while you reviewed it (findings in the last section). Since then built and checked offline only: sequences (A2 Part 1), limits that follow the plan length, one task per job, a story-so-far window, and **"Revise plan"** with its clip finder. 856 offline checks pass. **Read the last section, "Current state", first.** |
 
 ---
 
 ## How to run (current state)
 
 1. `cp .env.example .env`, then put real `OPENAI_API_KEY` / `KIE_API_KEY` in `.env` only (`.env` is git-ignored; `.env.example` stays blank).
-2. `docker-compose up --build` (rebuild after every code change: there are no bind mounts, `app.py` is baked into the image). Downloaded clips and final videos live in the `media` volume (`/srv/media` in the api and worker); `docker-compose down -v` would delete them along with the jobs in Redis.
+2. `docker-compose up -d`. `docker-compose.yml` **bind-mounts** `app.py`, `dashboard.html`, `movie_scene_multispeaker.py` and `hybrid_narrated_drama.py`, so code edits are already visible inside the containers; **restart the api and worker** (`docker-compose restart`) for a running process to load them. `.env` is read when a container is *created*, so a change there needs `docker-compose up -d --force-recreate`. A rebuild (`--build`) is only needed for `requirements.txt` or the Dockerfile, and a new Python module would need adding to the compose volumes and the Dockerfile `COPY`. Downloaded clips and final videos live in the `media` volume (`/srv/media` in the api and worker); `docker-compose down -v` would delete them along with the jobs in Redis.
 3. Dashboard: http://localhost:8001/ (API on the same port; health: http://localhost:8001/health). Redis from the host: `localhost:6380`.
 4. Python shell inside the stack: `docker-compose exec api python`.
 5. **kie.ai calls are yours to run.** Anything that generates video, or otherwise calls kie.ai live, costs credits: the assistant writes the code and gives you a paste-in command, and never runs it itself (standing rule, saved as a memory note).
@@ -186,7 +186,7 @@ The original unmuted videos stay in `Clip.video_url` and are what gets stitched 
 
 ## Prompt 3: OpenAI script/scene generation (done)
 
-**Built (in `app.py`):** `generate_script(topic, num_clips) -> {"scene_bible": str, "clips": [{"dialogue": str, "delivery": str}, ...]}`, with helpers `SCRIPT_SCHEMA`, `_script_system_prompt(num_clips)` and `_check_script(...)`. New config `OPENAI_MODEL` (default `gpt-5.5`; override in `.env`, documented in `.env.example`). `openai==3.19.2` added to `requirements.txt`.
+**Built (in `app.py`):** `generate_script(topic, num_clips) -> {"scene_bible": str, "clips": [{"dialogue": str, "delivery": str}, ...]}`, with helpers `SCRIPT_SCHEMA`, `_script_system_prompt(num_clips)` and `_check_script(...)`. New config `OPENAI_MODEL` (default `gpt-5.5` when written; **the code default is now `gpt-5.6`**, and the deployed `.env` sets `gpt-5.5` for the story model and `gpt-6-luna` as `OPENAI_CLIP_MODEL`; override in `.env`, documented in `.env.example`). `openai==3.19.2` added to `requirements.txt`.
 
 **Verified:**
 - You ran the testing note (`generate_script("a girl telling us her story of how she did not like her husband at first, sitting on a sofa, talking to camera", 3)`) and approved the output: `scene_bible` is a concrete, reusable physical description, and the 3 lines read as one continuous story.
@@ -1841,7 +1841,7 @@ rewritten, except where a statement was simply an error.
 | what | fix |
 |---|---|
 | Prompt 5's row said "**Not run through the worker yet**" while the row directly beneath it recorded the run | corrected — it ran 2026-09-27 |
-| the status table had **no row at all** for Hybrid Narrated Drama, now the main mode | row added, including that A2 is specified but not built |
+| the status table had **no row at all** for Hybrid Narrated Drama, now the main mode | row added, including that A2 was specified but not built at that time (Part 2 and Part 1 were built later; see the last section) |
 | Movie Mode's "`MIN_WORDS = 8` to `MAX_WORDS = 16`" | annotated: movie mode became 6–12 on 2026-10-04, hybrid is 6–15 since 2026-10-07 |
 | the 2026-10-04 "6, 12" entry read as if it covered both files | annotated: still current for `movie_scene_multispeaker.py` only |
 | 2026-10-05: "a run of more than 3 dialogue clips is still broken up" | annotated as superseded — that cap was removed outright on 2026-10-07, and it was the cause of the spacer-voiceover problem |
@@ -1859,3 +1859,245 @@ fixed there. Note also that the `_PERFORMANCE_IN_VOICE` guard added on 2026-10-0
 the showrunner staying put, cached and reasoning token capture, the conservative unknown-cache-rate costing,
 unpriced models, and a missing usage object. Seven mocks in the suite took exactly four positional arguments
 and were widened to accept the new `model` keyword. No OpenAI or kie.ai calls were made.
+
+---
+
+## Hybrid Narrated Drama — runaway protection and a shorter history (2026-10-08)
+
+Prompted by Langfuse showing clip 43 of the first 5-minute run at 36,408 tokens against ~14k for a normal clip.
+It had written the same prop entry 563 times. Clip 42's diary already repeated one prop 5 times, and that
+repeat was pasted into clip 43's prompt as history, so the loop fed itself. No live run yet; offline only.
+
+- **Output ceilings** (`max_completion_tokens`, reasoning included): clip writer 16,000, showrunner 32,000,
+  supervisor 8,000. A normal clip is ~3k and a normal act of beats ~5k. `_ask_openai_json` raises
+  `OpenAIOutputCut` (a `ValueError`) when a reply hits the ceiling. The clip writer counts it as a failed
+  attempt and retries (with every attempt spent, the job stops before the clip is rendered); the showrunner
+  asks once more (`_ask_planner`); the supervisor just skips its notes.
+- **Schema limits** in `_narrated_chapter_schema`: `prop_state` <= props in the bible, `blocking` <= cast size,
+  `speech` <= 3, `action_steps` <= 16. Checked against all 43 stored clips: none exceeds any of them (busiest
+  real clip: 10 props, 4 characters, 2 turns, 10 steps). Strict mode supports `maxItems` except on fine-tuned models.
+- **History**: only the newest clip in the 3-clip history carries its end state (poses, what each character
+  knew, environment, prop diary); the older two keep shot, actions and speech. `HISTORY_END_STATE_CLIPS = 1`;
+  set it to 3 to restore the old behaviour. On the stored run: ~449k -> ~396k input tokens (-12%, approximate).
+  `_props_line` also shows one entry per prop.
+- `OPENAI_PRICES`: gpt-5.5 cached input is $0.50/M (OpenAI's model page); it was unknown and charged at full rate.
+- `.env`: `OPENAI_CLIP_MODEL=gpt-6-luna` (clip writer and supervisor; the showrunner stays on `OPENAI_MODEL`).
+- **Not changed**: the "story so far" list, the rulebook, reasoning effort.
+- **Unmeasured, to check on the next real run**: cached tokens (the `[openai]` lines), whether Luna passes the
+  validators first time, and whether props and poses stay as consistent with the shorter history.
+
+`verify_narrated_fixes.py`: **352 checks, all passing** (was 321); new section `[28]`. Seven mocks widened for
+the new keyword and the gpt-5.5 cost check updated for its cached rate.
+
+**Same day, later: action timeline sent to Seedance.** `build_narrated_prompt` used to drop each action step's
+`start_time`; it now sends `Action timeline (seconds into the clip): 0-1s: … 1-2s: …` (whole seconds, contiguous,
+`TIMED_ACTIONS = True`; `False` restores the old untimed sentence). 39 of the 43 stored clips get a timeline.
+Offline only, not rendered yet. 366 checks pass (new section `[29]`). Full session log:
+`CHAT_LOG_token_cost_and_video_prompting.md`.
+
+**Same day, later: episode one (A2 Part 2).** The three planners and `/enhance-prompt` (dramatic modes, >= 100 s)
+now treat the runtime as the opening movement of a longer story: tell only what will genuinely play, never compress
+events to reach an ending, end on a cliffhanger (`EPISODE_ONE = True`; `False` restores the old prompts). The batch
+holding the last clip is told to end the episode; Act 4 in the enhancer is "The Cliffhanger". Prompt wording only,
+not yet generated against OpenAI. 385 checks pass (new section `[30]`). (A2 Part 1, sequences, was built later the same day: see the last section.)
+See `CHAT_LOG_token_cost_and_video_prompting.md`.
+
+**Same day, later: Phase 1, Story Delivery (offline only).** The first 5-minute run planned good events but did not tell
+the audience the story: what Elena wants was never said, "Rossi", "manifests" and "the ports" were never explained, and
+the central secret was stated once, by the villain, at clip 34 of 43. The planners now produce a **delivery map**
+(`story_in_five`, must-understand facts with an owner, clip and deadline, jargon) and every beat carries `function`,
+`turn` and `delivers`; the beat writer is told which facts each batch must deliver; free checks flag a fact that is
+missing from its clip (hard) and soft notes cover ownership, jargon, repeats and treading water; one cheap **blind-reader**
+call retells the story from the spoken lines only; `plan_delivery_report` and `plan_dialogue.txt` (the dialogue-only page)
+are saved with the plan. All retries and rewrites of one plan share a **60,000-token repair budget** (`_RepairBudget`)
+after which problems are reported, not re-asked. Prompt contradictions left by earlier implementations were removed (see
+`VIBE_DIRECTOR_PLAN.md`, "Build status"). `STORY_DELIVERY` / `BLIND_READ` switch it off. No OpenAI or kie.ai call was made;
+471 offline checks pass (new section `[31]`). **Note:** the containers bind-mount the four Python files, so restart them
+rather than rebuilding; the earlier "baked into the image" statements in this file were wrong.
+
+**Same day, later: fewer retries, and the replica's dialogue control ported.** A fact the lines do not say is no longer a
+reason to re-ask a whole act (about 11k tokens on the story model): it is a soft note, and `_repair_missing_facts` rewrites
+just that beat with one small call on the cheap model (about 2k tokens), accepted only if it keeps the cast, the line
+counts, the word budget, the fact's key terms and the reveal order (otherwise the beat is left as written and reported).
+Ported from the replica: a plain draft `line` per fact (its `keyDialogue`), character `motivation`, `relationships` and
+`speech_style`, and a self-check in each batch's fact list. 498 offline checks pass, run with no network and no API key.
+
+**Same day, later: retries run on Luna, merged so they cannot overwrite good work.** Every planner retry (act breakdown, beat
+batches, single-call plan, reveal-leak rewrite, continuation) now runs on `OPENAI_CLIP_MODEL`; the first write of each part
+stays on the story model. A retry's answer is merged in code: only the clips (or the part of the plan: bible, delivery map,
+acts) that a broken rule names are taken from it, so the story model's good lines are never replaced by a cheaper rewrite. The
+continuation retry now says what was wrong (it re-sent the same request). `RETRY_ON_CLIP_MODEL`, `BATCH_MAX_CLIPS` (20) and
+`BATCH_MIN_CLIPS` (6) are settings. 520 offline checks pass (new section `[32]`).
+
+**Same day, later: the plan report now shows places.** `plan_delivery_report` adds `location_lines` (places used of defined, the
+longest stay in one place), the list of stretches, and a soft note for any stay over `LONG_STAY_CLIPS` (15 clips = 75 s). Never
+a retry. 528 offline checks pass (new section `[33]`).
+
+**Same day, later: plain language for every spoken line.** The delivery map only covers the key facts; the rest of the script was
+still poetic. The old "plain words" rule listed figurative lines as GOOD examples (including "Tonight he hands me a pen"). New
+**PLAIN LANGUAGE TEST** in the planner and beat-writer prompts (literal, no metaphor, say who and what, explain meaningful acts,
+plain beats poetic even over the premise); `plain_pass_plan` runs one cheap review per 15 beats after the plan and rewrites lines
+that are not plain, guarded and logged (`plan_report.plain_pass`); `/enhance-prompt` asks for plain English too. Switches
+`PLAIN_LANGUAGE` and `PLAIN_PASS`. 561 offline checks pass (new section `[34]`).
+
+---
+
+**Same day, later: contradiction audit before the first real run, and the premise-vs-cliffhanger precedence.** The prompts were read as the
+model sees them and every documented decision was checked against the code. Fixed: (1) the **30-minute rule was documented but absent**: a plan
+of 1800 s or more (and a continuation that brings the total there) is now told to tell a whole story and end it (`CONCLUDE_AT_SECONDS`), the
+enhancer agrees; (2) the **25-35% narration band** was checked in the report but never told to the planner (the Don's premise asks for the
+upper end): it is now rule 11, from one constant; (3) the **ending fact could land on a wordless final beat**: it now goes on the last beat
+with words, and every fact's clip must be a voiceover or dialogue beat; (4) **"wrap nothing up, end on a cliffhanger" was sent to every batch**: it now
+binds only the last batch, and each act answers its own smaller question while only the one central question stays open; (5) a **fact could
+require a word the reveal ledger forbids** (for example "ports" in Act 1): now a hard problem of the delivery map; (6) a bridge (1-2
+voiceover clips that skip time) is explicitly allowed; (7) the plain-language review can no longer push a beat past the word budget;
+(8) **a premise with a closed ending** (the Don's: "5 acts, 12 per act", the ship leaving) had no precedence against the cliffhanger rule: the premise
+now decides cast, world, tone, events and order; its act count and clips-per-act are guides; and its closing is NOT filmed in a plan under 30
+minutes (it belongs to the next episode and the earlier events are zoomed). The 90-second enhancer climax leaves the next question open for
+episode one. A test for each is in section `[35]`-`[37]` of `verify_narrated_fixes.py`; 607 offline checks pass. Details:
+`CHAT_LOG_token_cost_and_video_prompting.md` sections 2.14 and 2.15.
+
+## State at the end of 2026-10-08, morning snapshot (superseded where it differs by "Current state", the last section of this file)
+
+**What happens for a 5-minute narrated-drama job now (60 clips of 5 s, 480p).** Written before the 36-clip real run (see the last section for what that run showed).
+1. *Planning, OpenAI only, no credits.* `gpt-5.5` writes the act breakdown (scene bible with each character's motivation, relationships and
+   speech style; acts; and the **delivery map**: the story in five sentences, 6-10 must-understand facts each with an owner, a clip, a plain
+   draft line and key terms, and a jargon list), then the beats of each act batch (every spoken line of the film, plus a function, a turn
+   and the facts each beat delivers). Batches follow the acts: 6-20 clips each, an act under 6 clips merges into the previous batch.
+2. *Free checks and cheap repairs.* A fact missing from its clip is a soft note and is fixed by ONE small Luna call for that beat. Real
+   problems (an unknown location, a leaked reveal, a wrong number of beats) trigger a retry that runs on Luna and is **merged in code**
+   so only the clips or parts a broken rule names are taken from it. All retries and rewrites of one plan share a 60,000-token budget.
+3. *Plain language for every line.* A Luna review (one call per 15 beats) rewrites lines that a viewer with basic English would not
+   understand at first hearing, with guards; every rewrite is logged.
+4. *Report and gate.* The plan report (checks, spoken-script stats, places used and longest stay, plain-language rewrites, the dialogue-only
+   page, and one cheap blind-reader call) is saved with the plan; `master_plan.json` and `plan_dialogue.txt` are written; the job pauses at
+   `plan_ready` for your approval.
+5. *Rendering after approval.* FLUX portraits and location plates, then for each clip in order: the clip screenplay (Luna; the spoken lines
+   are copied from the plan), the Seedance prompt compiled in code (with the timed action list), the kie.ai render, voice banking; then assembly.
+
+**Ending rule and what a premise decides.** A plan under 30 minutes is episode one and ends on a cliffhanger; a plan of 30 minutes or more (and a continuation that brings
+the total there) is told to tell a whole story and end it. This is **prompt-level only**: nothing yet checks that every opened thread is paid. **Precedence (added after a contradiction was found):** the premise
+decides the cast, world, tone, events and their order; its act count and clips-per-act are guides (every act takes the clips it needs);
+and if it gives the story a closing (the Don's ship leaving, him on his knees) that closing is NOT filmed in a plan under 30 minutes: the
+plan stops at the strongest unresolved turn before it and the closing belongs to the next episode (the earlier events are zoomed instead).
+Each act still answers its own smaller question; only the ONE central question stays open. From 30 minutes the premise's ending is kept.
+There is **no manual "final episode" switch**: a story that would naturally end earlier still ends on a cliffhanger until its total reaches
+30 minutes (your decision; it can be added).
+
+**Switches** (module constants; `False` restores the older behaviour): `STORY_DELIVERY`, `BLIND_READ`, `PLAIN_LANGUAGE`, `PLAIN_PASS`,
+`EPISODE_ONE`, `RETRY_ON_CLIP_MODEL`, `TIMED_ACTIONS`; settings: `HISTORY_END_STATE_CLIPS` (1), `BATCH_MAX_CLIPS` (20), `BATCH_MIN_CLIPS` (6),
+`LONG_STAY_CLIPS` (15), `PLAN_REPAIR_BUDGET_TOKENS` (60,000), `CONCLUDE_AT_SECONDS` (1800), `NARRATION_SHARE_BAND` (25-35%), `PLAIN_PASS_CHUNK` (15); reply ceilings: `CLIP_MAX_OUTPUT` (16,000), `PLAN_MAX_OUTPUT` (32,000), `SUPERVISOR_MAX_OUTPUT` (8,000), `BLIND_READ_MAX_OUTPUT` (2,500), `PLAIN_PASS_MAX_OUTPUT` (3,500), `FACT_REPAIR_MAX_OUTPUT` (1,200); schema limit `MAX_ACTION_STEPS` (16). All were checked against the code on 2026-10-08.
+
+**Earlier entries this file corrects.** (a) "A fact missing from its clip is a HARD problem" (the Phase 1 entry) is superseded: it is soft and
+repaired by one small call. (b) "A2 is specified but NOT built" (the status table, the 2026-10-07 and 10-08 entries): A2 Part 2 ("episode one")
+is built; A2 Part 1 (sequences as a validated field) was built later the same day. (c) "no bind mounts / baked into the image" is wrong (see step 2 above). (d) The
+check counts in each entry (321, 352, 366, 385, 471, 498, 520, 528, 561) are historical; the suite held 607 when this section was written and holds **856** at the end of the day. (e) The planner prompts no
+longer talk about "micro-cycles" and no longer give poetic lines as GOOD examples.
+
+**Verification.** `verify_narrated_fixes.py` runs offline (stored data and mocks; run it with no network and a blank API key so no real call
+is possible): `docker run --rm --network none -e OPENAI_API_KEY= -e KIE_API_KEY= -e REDIS_URL=redis://localhost:1/0 -v "<project>:/work" -w /work ai-video-extender python verify_narrated_fixes.py`.
+**Was unverified before the 36-clip real run (results in the last section; most of it is still only partly measured):** whether the model writes plainer, better-delivered lines, how often repairs and retries are
+needed, Luna's token use and first-pass rate, the cache hit rate, and the quality of the plain-language rewrites.
+
+**Audited this session:** the narrated-drama prompts in `hybrid_narrated_drama.py` and `/enhance-prompt` in `app.py`, for instructions that
+contradict each other (details in `CHAT_LOG_token_cost_and_video_prompting.md`, section 2.14). **Not audited:** the Story Videos prompts in
+`movie_scene_multispeaker.py` (a separate mode) and Talking Head / Story Time.
+
+**Not built:** (A2 Part 1, sequences, was built afterwards: see the next section); checking that every thread is paid at a final ending; recap-and-seam checks between batches; batched shot
+writing (2 clips per call); two-shot 5 s clips; look profiles; the Director chat; a dashboard view of the plan report. **Known small gaps:**
+the voice-sample thresholds differ (1.5 s in `_is_good_voice_sample`, 2.0 s in `trim_windowed_voice`) and the fallback in `bank_voice` has no
+length check; the reveal-leak backstop rewrites only the first leaking act; the clip-level speech-timing check reads fields no longer in the schema.
+
+
+---
+
+## Later on 2026-10-08: token control, one task per job, limits that follow the length, and sequences (built; checked offline; then used by the 36-clip real run)
+
+Written with 756 offline checks (the suite stands at 856 at the end of the day: `verify_narrated_fixes.py`, run with no network and blank keys), plus
+`verify_job_lock.py` (20 checks, needs a throwaway Redis; its header says how). The 36-clip job `ff99756b…` was planned and rendered on this code, so these items ran for real once (see the last section). Restart `api` and `worker` after any later code change (`docker-compose restart api worker`).
+
+- **History after an empty frame.** With only the newest clip carrying its end state, the clip after a wordless empty frame was told "none on screen". The poses and
+  awareness now come from the last clip that had people in it, provided every clip since is in the same place (`_end_state_source`). Four clips of the first run were affected (16, 28, 32, 37).
+- **"Story so far" is a window.** The last `STORY_SO_FAR_WINDOW` (10) beats are listed; earlier acts get one summary line each (the last `STORY_SO_FAR_ACTS` = 3 finished acts, from the plan); an act summary that names
+  something not yet revealed is dropped. It stops growing (about 1k tokens at clip 350 instead of 14k). `0` restores the full list.
+- **One task per job.** `/resume` is refused (409) while a task holds the job, and a second task for the same job stops without touching it (`job_lock`, a Redis lock renewed every 30 s that runs out by itself in 90 s if the worker dies).
+  Before, the worker ran 8 tasks at once and a second Resume ran the same job twice.
+- **Limits follow the length of the plan** (identical at 60 clips, except a 20-clip batch's reply ceiling, 40k instead of 32k): facts per plan (the prompt used to say "30 to 16" from 165 clips), acts (about one per 15 clips), places (4-8 at 60, 12-24 at 300),
+  the repair budget (60k, then 1,000 a clip), reply ceilings, and a ceiling on every open-ended list in the planning schemas (`_cap_plan_schema`).
+  Not checked: the maximum reply size of gpt-5.5 and Luna at ceilings above 32k.
+- **The plan gate.** Only problems that would break rendering stop a plan (a location or speaker not in the bible, a two-line voiceover, words in a wordless beat, a leaked reveal, a wrong beat count). Look-alike characters, voiceover runs over 3 and the wording of
+  appearance, voice and location pictures go to the review gate (`[REVIEW]`, shown first on the dashboard). A voiceover over other people gets the narrator added in code; the continuation planner applies the same beat repairs.
+- **A2 Part 1, sequences.** Each act lists its sequences (scene or bridge, clip count, place, purpose), decided by the planner. Code repairs a small miscount (the longest scene absorbs it) and validates the rest: lengths add up, places exist, a bridge is at most 3 clips (hard); an act of one
+  kind or one place, identical act lengths, or no sequences (soft). The beat writer is told the stretches of its batch; the plan report compares the finished beats with them (soft); the dashboard lists each act's scenes and bridges under "Story structure". The prompt says every event an act's summary names must have a scene of its own.
+  A short plan (under 30 clips, one call, no acts) commits to its shape too: the single-call schema asks for `sequences` BEFORE the beats, the same checks, repairs and gate treatment apply, and the finished plan keeps them in one act spanning the whole story (`_single_acts`, so the plan report and the dashboard read it like a long plan's). Its prompt says how many places a story this short uses (`_short_places`: 2-3 for a minute, 2-4 for 90 seconds) and a soft note fires when a 8+ clip story never leaves one place.
+- **The act count is a range, not a figure.** With no act count in the premise the planner is told to choose between `_act_range(total)` acts (2-4 at 36 clips, 3-7 at 60, 17-33 at 300) "as many as the story needs to turn"; a count named in the premise still wins ("exactly N"). The one-per-15-clips figure (`_default_act_count`) is now only the fallback split when the model returns no acts.
+- **Not built:** saving planning progress so a replan resumes at the failed batch; rolling (act-by-act) planning for very long stories; a hard check that an act's events fit its clips (only the prompt and the soft notes cover it).
+
+
+---
+
+## Later on 2026-10-08: "Revise plan" (built; offline and real-Redis checks pass; its clip finder missed clips on the first real try, then was improved and has not been run again)
+
+**What it does.** While a Narrated Drama plan waits for approval, you can type a note ("Lily must never recognise Ethan when he comes back as Jack") and have only the affected clips rewritten, instead of re-planning (about $1, and everything you liked is lost). Nothing is changed until you have seen the list of clips and ticked the ones to change.
+
+**Flow** (`hybrid_narrated_drama.py`, section "Plan revision"; endpoints and tasks in `app.py`; panel "Revise the plan" in `dashboard.html`):
+1. `POST /jobs/{id}/revise-plan {note}` runs task `propose_plan_revision_task`, all on **Luna**. A first call splits the note into items: a standing *rule* (applies to the whole film) or a one-time *fix*; anything that adds or removes clips, places or characters, or changes who is in a clip, is marked out of scope with a reason and never done. For every in-scope item the splitter also writes **`how_to_spot`**: what a clip that breaks the item would say or show, including the indirect ways (a form of address, a reaction that only makes sense if the opposite were true).
+2. **The finder** reads the plan in windows of at most 20 clips (the plan's own batches; a 300-clip plan is never read in one call). It must give a **verdict, `change` or `ok`, on every clip of the window** (the answer schema demands exactly one entry per clip), seeing each clip's summary and its words, the item and its `how_to_spot`. A clip it leaves unjudged is asked for once more; one it never judges is printed in the worker log, not guessed. Nothing in the plan changes.
+3. The dashboard lists the items and the clips (reason, what should change, current text) with ticks. **Add clips yourself:** the box "Also change clips the list missed" takes numbers (`3, 7, 12-15`) and `POST /jobs/{id}/revise-plan/add-clips {clips}` (1-500 numbers) adds them to the list as ticked rows marked as added by you; the finder cannot be relied on to be complete, so this is the manual fallback.
+4. `POST /jobs/{id}/revise-plan/apply {clips}` runs `apply_plan_revision_task`. **The story model** (the planner's model, `OPENAI_MODEL`) rewrites ONLY the ticked clips (summary, turn and spoken words; place, cast and kind of clip are not in its answer, so they cannot change), 12 clips a call, with the neighbouring clips, the facts each clip must still say, and what the audience has not been told yet. A rewrite that breaks a hard rule gets ONE retry on Luna; if it still breaks, the OLD clip is kept and reported. A fact the rewrite dropped is repaired with one small call for that clip only; changed runs get the plain-language review; the plan report is rebuilt (earlier `[REVIEW]` notes kept). A final Luna check reads every clip against the standing rules (each rule with its `how_to_spot` hint, saved with the rule) and lists clips that still contradict one (reported, never auto-fixed).
+5. A copy of the previous plan is saved (last 5, in their own Redis key `jobplanv:<id>`, so polling stays small) and `POST /jobs/{id}/undo-plan-revision` restores it with the report and the rules. `POST /jobs/{id}/revise-plan/cancel` dismisses a proposal or clears a stuck revision (only when no task holds the job).
+
+**Standing rules** (`Job.plan_rules`, at most 12 of 220 characters each, plus the optional hint of up to 400; `PUT /jobs/{id}/plan-rules` edits or deletes): a rule is appended to the premise text (`topic_with_rules`) wherever a later stage reads it: a re-plan, the continuation planner and every clip writer (the same text for each clip, so the cached prompt prefix still holds). A new rule can replace an old one it contradicts; saving past 12 is blocked with the reason. A re-plan keeps the rules and drops the saved versions.
+
+**Safety.** One revision at a time per job (`job_lock`); while one runs, Save, Approve and Re-plan are refused (409) and the dashboard disables them and keeps polling; the dashboard offers to save unsaved beat edits first (an edited description lives in a beat's `action` field, which a rewrite keeps in step with the new summary).
+
+**Langfuse.** Both revision tasks run under the job's own trace (`langfuse_trace_id=job_id`, a span named `plan_revision` tagged `propose` or `apply`) and flush when they end, even on failure. They first ran without grouping or a flush, so their calls were missing or loose in Langfuse; fixed the same day.
+
+**Checks.** Offline suite **856 checks** (sections [38]-[43] cover the finder, rewrite, rules, versions, dashboard wiring and the Langfuse labels), `verify_job_lock.py` 20, `verify_plan_revision_redis.py` 13 (real Redis; same throwaway-Redis recipe in its header), all passing; mutation checks (a safeguard broken on purpose, a test confirmed to fail, code restored) were done for the finder windows, coverage retry and rules. The add-clips box was also exercised in a browser harness copy of the dashboard.
+
+**First real try, and why the finder was rebuilt.** On the real 36-clip plan the note about Lily never recognising Ethan returned only clip 36. Clips that imply recognition only indirectly were missed, because the first finder only had to *list* conflicting clips and read the note literally. That led to the three changes above: a verdict on every clip, the splitter's `how_to_spot` hints (also stored on the rule and used by the final check), and the manual add-clips box. **The improved finder has not been run on a real plan yet** (the dry run was not approved), so its recall is unmeasured. The old proposal on `ff99756b…` still lists only clip 36: press Cancel, then Find again, after the containers are restarted.
+
+**Cost.** Finding and checking: under a cent on Luna per pass; the rewrite: about 20 cents on the story model. Both are estimates, unmeasured on a real run.
+
+**Not built / limits.** Spoken lines are display-only in the dashboard (only a revision can change them); the act summaries and the delivery map are not rewritten by a revision; same clip count and places only (such notes ask for a re-plan).
+
+
+---
+
+## Current state (end of 2026-10-08): read this first; it overrides any earlier entry that differs
+
+**What is live.** `app.py`, `hybrid_narrated_drama.py` and `dashboard.html` are bind-mounted. `dashboard.html` is served from disk, but the `api` and `worker` processes load Python only at start: after the finder improvements and the Langfuse fix, `docker-compose restart api worker` is needed (only when no job or revision holds a lock) before they are live. Deployed `.env` models: story/planner `gpt-5.5` (`OPENAI_MODEL`; the code default is now `gpt-5.6`) and `gpt-6-luna` for everything cheap (`OPENAI_CLIP_MODEL`: retries, plain-language pass, blind reader, fact repairs, clip scripts, the revision finder). Clips are 5 s at 480p (`CLIP_SECONDS = 5`); the dashboard offers 36 clips (3 minutes).
+
+**Built and used for real (36-clip job `ff99756b…`, 2026-10-08):** the planner with delivery map, facts, blind reader and plain-language pass; sequences; the act-count range; limits that follow the plan length; the plan gate with `[REVIEW]` notes; one task per job; the shorter history and the story-so-far window; per-call model and usage capture in Langfuse.
+**Built, checked offline only:** Revise plan (previous section), including the improved finder.
+
+**What that real run showed.**
+- Plain-language pass: 17 of 64 lines were rewritten. Narration was 11% of the film, below the 25-35% band (`NARRATION_SHARE_BAND`, which is reported, not enforced). The blind reader understood 4 of its 6 questions.
+- Slips you found by reading the plan: a card pushed back at clip 12 that the story did not support; figurative summaries in clips 16-18 that gave the clip writer little concrete to film; a recorder implied in the dossier scene at clip 18 with an unclear audio source; and Lily seeming to recognise Ethan as Jack in clips 21-23, against the premise. The last is what "Revise plan" was built for. You decided to leave clip 16's prompt as it was.
+- In Langfuse you saw 4 calls on gpt-5.5 (about $0.82) next to 4 on Luna. Seedance can deliver expressive audio; the flat narration seen earlier was our delivery wording, not the model (saved as a memory note; not re-tested).
+
+**Open items.** (1) Run the improved finder on a real plan (Cancel the old proposal, Find again) and log its recall. (2) Not built: a check that every opened thread is paid at a final ending; saving planning progress so a replan resumes at the failed batch; rolling act-by-act planning for very long stories; recap-and-seam checks between batches; batched shot writing; look profiles; the Director chat; a dashboard view of the plan report. Not audited: the Story Videos prompts (`movie_scene_multispeaker.py`) and Talking Head / Story Time. (3) Known small gaps: the voice-sample thresholds differ (1.5 s in `_is_good_voice_sample`, 2.0 s in `trim_windowed_voice`); the reveal-leak backstop rewrites only the first leaking act; the clip-level speech-timing check reads fields no longer in the schema; the maximum reply size of gpt-5.5 and Luna at ceilings above 32k is unchecked.
+
+**Test commands.** Offline suite (no network, blank keys): `docker run --rm --network none -e OPENAI_API_KEY= -e KIE_API_KEY= -e REDIS_URL=redis://localhost:1/0 -v "<project>:/work" -w /work ai-video-extender python verify_narrated_fixes.py` (856 checks). `verify_job_lock.py` (20) and `verify_plan_revision_redis.py` (13) need a throwaway `redis:7-alpine`; their headers give the recipe. None of them calls kie.ai; anything that does is yours to run.
+
+
+---
+
+## 2026-10-09: scan finder, supporting cast, camera (built; offline suite 956 checks; each model step tried once on the real Mike/Hannah plan)
+
+**Finder for "Revise plan" (Luna).** The old yes/no finder missed clips that only IMPLY a broken rule (Lily's "You came back poor now?"). Now: the splitter reads the premise and writes a **probe** (one yes/no question per clip about what a line TAKES FOR GRANTED), generic **tells**, and **stops_when** (a rule that forbids what the premise's ending needs stops there); `scan_revision_clips` scores EVERY clip 0-3 with a quoted line; **3 passes at `reasoning_effort="high"`, merged by highest score** (one default-effort scan found all 3 target clips in 1 of 5 runs; high effort 4 of 10; the shipped 3-pass setup 3 of 3 full runs). Score 2-3 comes ticked, 1 is an unticked "maybe". Rules keep probe/stop point; the final check uses the same scan; the rewrite is told where a rule stops. Splitter ceiling 12,000 tokens (a 4,000 cap cut a longer note off) with one retry at low effort; scan ceiling 16,000. `_ask_openai_json` takes `reasoning_effort` (retries without it if a model rejects it). **Not measured:** the gpt-5.5 rewrite on a real run; notes that ADD something (a plant, a payoff) are still not found by a violation scan; clips named in a note are not added automatically.
+
+**Supporting cast.** People with a part in a shot must be cast: role `supporting` (same fixed look and portrait, one-phrase motivation/relationships/speech style, at most `MAX_SUPPORTING`=4, at most `SUPPORTING_MAX_LINES`=2 lines in the film). Planner prompts carry the rule and an ON-SCREEN rule; the clip writer keeps uncast people out of the shot. Plan report: a Luna cast-gap check adds a `[REVIEW] Cast:` note. **"Check the cast"** button (`POST /jobs/{id}/cast-check`, `/cast-check/apply`): finds uncast people, you rename/trim/untick, Luna writes looks (checked by the bible's own checks), they join the bible and the clips' on-screen lists, no line changes; every plan version now also keeps the cast, so Undo takes people out together with their clips. Verified: on the stored plan it proposed mother + father in 3 of 3 runs; after Add, the parents' portraits were generated at approval. **Untested:** the planner supporting rule on a freshly generated plan (needs a gpt-5.5 re-plan); 4+ faces in one kie.ai clip.
+
+**Camera (clip writer = Luna, `narrated_chapter`).** Rule 5 rewritten: "the camera is a person, not a tripod" (small motivated move in every shot, light handheld, never the words locked/static/frozen); narration and wordless clips move freely; two-person dialogue is speaker-first shot/reverse-shot over the listener's shoulder (angles copied word for word from the earlier clip), a clip where both speak is a profile two-shot; three or more people: wide master, then speaker cuts, the same wide three-shot never twice in a row; tracking shots, no cut mid-movement; every angle names its background from the layout; 180-degree rule kept with three allowed crossings (visible move, after a wide/neutral shot or place change, narration/action between scenes) and the mirror written out. Planner views: two views look opposite ways along a conversation. Real run on clips 1-6: shots now track/push/pan, name their backgrounds, clip 4 is a true over-the-shoulder push-in, clip 6 follows Mrs. Pennington out. **Limits:** most dialogue clips hold BOTH speakers, so they stay two-shots (a cut inside one clip is not built); whether Seedance keeps reverse-angle backgrounds right is untested (kie.ai). Applies to the NEXT job.
+
+**Stopping a job.** There is no stop button. The existing `DELETE /jobs/{id}` erases the job, plan and media. What worked: `docker-compose restart worker` (ends the task; acks are early so it is not re-queued), then set the job and the interrupted clip to `failed`. The clip already submitted to kie.ai still costs credits.
+
+**Checks:** `verify_narrated_fixes.py` 956; `verify_job_lock.py` 20; `verify_plan_revision_redis.py` 13 (throwaway Redis, no kie.ai call). Still not built: the Langfuse trace link for jobs created without one (the lookup can fail silently at creation).
+
+**Camera, second pass (2026-10-09, after your notes on the first clips: side views, frozen people, framing too wide).** (1) A clip where someone speaks is framed TIGHT because the video is vertical 9:16: Medium Close-Up or Close-Up, never wider than waist-up (wides only for a scene's first clip, groups and movement). (2) No profile two-shots: the speaker is three-quarter toward the lens; a clip where BOTH people speak CUTS INSIDE the clip, a hard cut timed in the gap between the lines (the writer writes the cut time into the shot, never more than two cuts); the build prompt no longer says "hold both in frame together". (3) "Not statues", kept LIGHT on purpose: no "frozen / holds still / stays still" for a listener, small natural moves only, and NO breaths, sighs, exhales, gulps or a "settling" before a line (the earlier breath-before-first-word problem was fixed in final assembly, so the prompt must not invite more of it). Real run on clips 1-7 (Luna, about $0.01): tight shots, cuts at 2.7 s between lines, three-quarter faces, none of the banned words. **Untested on kie.ai:** whether Seedance honours "hard cut at 2.7 seconds" inside one clip (if it ignores or blends it, the fallback is one smooth move from the first speaker to the second; change the one sentence in rule 1B); face distortion with more motion on the mini model. Suite 962 checks.
+
+**2026-10-09, after reading the first 7 generated clips (before the camera fixes): word limit, new people, room for the camera.**
+- **Dropped word.** Clip 1's voiceover (16 words by our count, since "twenty-eight" counts as two, in a 3.7 s window = 4.3 words/s) lost "night"; clip 2 (14 words, 3.7 words/s) was spoken whole. Over the limit was only a SOFT note ("may sound rushed"), on the old assumption that rushed is harmless. Now: **`MAX_WORDS` 15 -> 13** (6 to 13 words in total in a clip); more than 13 is a HARD problem so the planner/revision rewrite shortens it ("before the voice starts dropping words"), and one still over at the end goes to the review gate (listed in `_REVIEWABLE_PLAN_PROBLEMS`), never throws a plan away; a repaired fact line may no longer pass 13 either. **Clock:** a line spoken faster than `MAX_TURN_WORDS_PER_SECOND` (3.8) gets its window re-spaced by word count (`_turns_too_fast` in `_repair_narrated_clip`): clip 3's 9 words in 1.7 s (5.1 words/s) became 3.3 words/s. Untested on kie.ai whether 13 words/clip removes every drop; a post-render transcript check was offered and declined.
+- **New people in a shot.** The women appeared "behind" Mike in clip 3. Camera rule (6): a person not in the previous clip must not simply appear inside the frame of someone who was alone; either they enter/are revealed (walk in, door, the camera turns to their voices) or the shot CUTS TO THEM with the person who was alone soft and distant in the background. Nobody has to walk in. On the stored plan, clip 3 now pans to reveal them. No standing "witness shot" rule (not every scene wants one).
+- **Room for the camera.** The hallway pictures showed a corridor about a metre wide ("narrow stairwell" came from the planner), so no angles were possible. Both planner prompts now carry "SPACE FOR THE CAMERA" (a corridor is a wide landing or hall, 3 to 4 m across, doors well apart; never narrow/cramped/tiny/tight), the picture request adds "spacious and open, wide-angle, room for three people and a camera several metres back", and a SOFT bible check names a place described as narrow/cramped/tiny/tight/claustrophobic/confined/squeezed. **Untested:** whether FLUX gives a spacious room in a vertical 720x1280 picture (needs a kie.ai run); the planner rules on a fresh plan (needs a gpt-5.5 re-plan). Applies to the NEXT job. Suite 979 checks.

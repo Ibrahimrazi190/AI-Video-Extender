@@ -1,6 +1,6 @@
 # First Priority: Implement
 
-**Status: not built. Agreed 2026-10-07, deferred so token-saving work can go first.**
+**Status (updated later on 2026-10-08): Part 2 (plan a runtime's worth of story, end on a cliffhanger) is BUILT in the prompts, with the 30-minute whole-story rule; Part 1 (sequences as a validated field) is now BUILT too (see `PROGRESS.md`, last section). Neither has run against a real model yet. Agreed 2026-10-07.**
 
 This is "A2" — the unfinished half of the planner redesign. A1 (the caps, the word budget, scenes-play /
 bridges-skip, dramatise-don't-report, uneven acts) **is already built**; see `PROGRESS.md`,
