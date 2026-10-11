@@ -50,6 +50,9 @@ import movie_scene_multispeaker as movie
 # Constants & Configuration
 # ---------------------------------------------------------------------------
 CLIP_SECONDS = 5
+DEFAULT_CLIP_SECONDS = 15
+CLIP_MIN_SECONDS = 10
+CLIP_MAX_SECONDS = 15
 RESOLUTION = "480p"
 OUTPUT_DIR = Path("/srv/media/hybrid_narrated_drama")
 SCRIPTS_DIR = Path("/srv/media/hybrid_narrated_scripts")
@@ -59,18 +62,71 @@ WORDS_PER_SECOND = 2.5
 # plan: 14 words in a 3.8 s window were all spoken, 16 words in 3.7 s lost one; a faster line in a two-speaker clip, 5 words/s, is no safer).
 MIN_WORDS, MAX_WORDS = 6, 13
 MAX_TURN_WORDS_PER_SECOND = 3.8     # a line spoken faster than this has its window re-spaced by word count
-# Narration and dialogue are not symmetrical, and treating them as if they were is what flattened the first
-# 5-minute run. Narration COMPRESSES - it skips time and covers what cannot be filmed - so it is rationed:
-# two clips in a row is the working length, three is the ceiling and should feel exceptional. Dialogue PLAYS
-# - it is the scene actually happening - so it is not chopped. The old rule capped dialogue at 3 clips in a
-# row, which meant no confrontation could ever play out; the planner had to wedge voiceover in as spacer,
-# and those spacer beats are the ones that narrated a phone call while it was still happening.
+# Narration and dialogue are not symmetrical: narration compresses time, dialogue plays out live.
 MAX_CONSECUTIVE_VO = 3
-VO_RUN_WORTH_NOTING = 3          # allowed, but said out loud, because 15 seconds of narration is a lot
+VO_RUN_WORTH_NOTING = 3          # allowed, but said out loud, because 15-45 seconds of narration is a lot
 DIALOGUE_RUN_WORTH_NOTING = 10   # no hard cap: a scene takes the clips it takes
-MAX_VOICE_REFS = 3
+MAX_VOICE_REFS = 7               # maximum reference audio files / speakers per clip
+MAX_DIALOGUE_TURNS = 7           # maximum spoken turns per clip in dialogue
 MAX_REF_IMAGES = 9
 MAX_ON_SCREEN = 7
+
+
+def clip_word_budget(duration: int | None = None) -> tuple[int, int]:
+    """Returns (min_words, max_words) for a clip of the given duration in seconds.
+    5s: 6 to 13 words
+    10s: 14 to 25 words
+    12s: 17 to 30 words
+    15s: 22 to 85 words
+    """
+    if duration is None or duration <= 5:
+        return MIN_WORDS, MAX_WORDS
+    d = min(CLIP_MAX_SECONDS, max(CLIP_MIN_SECONDS, int(duration)))
+    budgets = {
+        10: (14, 25),
+        11: (15, 27),
+        12: (17, 30),
+        13: (18, 32),
+        14: (20, 34),
+        15: (22, 85),
+    }
+    if d in budgets:
+        return budgets[d]
+    min_w = max(6, round(d * 1.45))
+    max_w = min(85, round(d * 5.66))
+    return min_w, max_w
+
+
+def _normalize_beat_durations(beats: list[dict], target_duration: int | None = None) -> None:
+    """Ensures every beat has an integer duration between CLIP_MIN_SECONDS (10) and CLIP_MAX_SECONDS (15).
+    If target_duration is given, adjusts beat durations in integer seconds so their sum matches target_duration."""
+    if not beats:
+        return
+    for b in beats:
+        dur = b.get("duration")
+        try:
+            val = int(dur) if dur is not None else DEFAULT_CLIP_SECONDS
+        except (ValueError, TypeError):
+            val = DEFAULT_CLIP_SECONDS
+        b["duration"] = max(CLIP_MIN_SECONDS, min(CLIP_MAX_SECONDS, val))
+
+    if target_duration and target_duration > 0:
+        current_sum = sum(b["duration"] for b in beats)
+        diff = target_duration - current_sum
+        if diff > 0:
+            for _ in range(diff):
+                candidates = [b for b in beats if b["duration"] < CLIP_MAX_SECONDS]
+                if not candidates:
+                    break
+                cand = min(candidates, key=lambda x: x["duration"])
+                cand["duration"] += 1
+        elif diff < 0:
+            for _ in range(-diff):
+                candidates = [b for b in beats if b["duration"] > CLIP_MIN_SECONDS]
+                if not candidates:
+                    break
+                cand = max(candidates, key=lambda x: x["duration"])
+                cand["duration"] -= 1
 
 # --- Supporting cast: people who are on screen for a scene or two (a parent at a family dinner, a waiter) ---------------------
 # Only characters in the scene bible get a portrait, a stable face and a reference-image slot, and the clip writer may name only
@@ -103,7 +159,9 @@ _SUPPORTING_CAST_RULE = (
 _ON_SCREEN_RULE = (
     '   - ON-SCREEN RULE: "present_characters" lists everyone who is visible with a part in the beat, and every one of them is in the '
     'scene bible. Never write a beat that puts someone on screen who is not in the cast; if the story needs them seen, they are a '
-    f'supporting character. A supporting character speaks at most {SUPPORTING_MAX_LINES} lines in the whole film.'
+    f'supporting character. A supporting character speaks at most {SUPPORTING_MAX_LINES} lines in the whole film. '
+    'VERTICAL 9:16 FRAME DENSITY (CRITICAL): The vertical frame is narrow; list up to 4 characters in "present_characters" for any single beat '
+    '(the active speaker(s) and their immediate listener(s)). For fast-paced micro-sequences or multi-location transitions across a beat, up to 4 characters across the clip are fully supported (e.g. 2 to 3 in sequence 1, and 1 to 2 in sequence 2). Never crowd more than 3 characters into the exact same camera angle simultaneously to prevent visual morphing.'
 )
 PLACE_VIEWS = (2, 3)
 MIN_STEP_SECONDS = 1.0
@@ -639,11 +697,15 @@ OUTLINE_SCHEMA = {
                         "type": "string",
                         "description": "ONE character name and nothing else - never two names, never a slash, never a prop or a place. Whose beat this is: for voiceover the pov_protagonist, for dialogue the character the beat belongs to (each line already carries its own speaker in audio_lines), for shock_action the pov_protagonist, or an empty string for an establishing shot with nobody on screen."
                     },
+                    "duration": {
+                        "type": "integer",
+                        "description": "Duration of this clip in seconds, between 10 and 15 (default 15). Pick based on dramatic weight: 10-12s for sharp single-action or rapid beats, 13-15s for rich multi-beat sequences or back-and-forth dialogue."
+                    },
                     "summary": {"type": "string"},
                     "speech_budget": {"type": "integer"},
                     "audio_lines": {
                         "type": "array",
-                        "description": "The EXACT words heard in this clip, in the order they are heard, decided here and nowhere else. voiceover: exactly ONE line, by the pov_protagonist. dialogue: ONE to THREE lines that together make a real exchange (a jab and its retort can share one clip). shock_action: an empty array.",
+                        "description": "The EXACT words heard in this clip, in the order they are heard, decided here and nowhere else. voiceover: exactly ONE line, by the pov_protagonist. dialogue: ONE to SEVEN lines across up to 5 speakers that together make a real exchange (a jab and its retort can share one clip). shock_action: an empty array.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -677,7 +739,7 @@ OUTLINE_SCHEMA = {
                 },
                 "required": [
                     "clip_number", "cycle_number", "delivery_mode", "location_id",
-                    "present_characters", "speaker_or_actor", "summary", "speech_budget",
+                    "present_characters", "speaker_or_actor", "duration", "summary", "speech_budget",
                     "audio_lines", "reveals", "function", "turn", "delivers"
                 ],
                 "additionalProperties": False
@@ -781,15 +843,15 @@ def _narrated_chapter_schema(location_ids: list[str], character_names: list[str]
                         "speech": {
                             "type": "array",
                             "maxItems": MAX_VOICE_REFS,
-                            "description": "Everything heard in this clip, in time order, one entry per spoken line. voiceover: exactly one entry. dialogue: one to three entries, by up to three different speakers. shock_action: an empty array. Every line is the Master Plan's, copied word for word.",
+                            "description": f"Everything heard in this clip, in time order, one entry per spoken line. voiceover: exactly one entry. dialogue: one to {MAX_DIALOGUE_TURNS} entries, by up to {MAX_VOICE_REFS} different speakers. shock_action: an empty array. Every line is the Master Plan's, copied word for word.",
                             "items": {
                                 "type": "object",
                                 "properties": {
                                     "speaker": char_prop,
                                     "line": {"type": "string", "description": "The Master Plan's words for this turn, copied exactly."},
                                     "delivery": {"type": "string", "description": "How this turn is delivered, matching the heat of THIS moment. The full range is available and the film needs all of it: 'roared, furious, voice breaking', 'shouted over the rain', 'spat out through clenched teeth', 'laughing, delighted and cruel', 'pleading, close to tears', 'sharp accusation', 'cold, resolute warning', 'barely a whisper'. Never write a delivery that cancels its own emotion ('fury without raised volume')."},
-                                    "start_est": {"type": "number", "description": "When this turn starts, in seconds inside the clip (0.0 to 5.0). The first turn starts at 0.4s or later so the picture settles first."},
-                                    "end_est": {"type": "number", "description": "When this turn ends, in seconds inside the clip (at most 4.8). Turns must not overlap: each one starts after the previous one ends."}
+                                    "start_est": {"type": "number", "description": "When this turn starts, in seconds inside the clip (0.0 to 15.0). The first turn starts at 0.4s or later so the picture settles first."},
+                                    "end_est": {"type": "number", "description": "When this turn ends, in seconds inside the clip (at most the clip duration, e.g. 14.8). Turns must not overlap: each one starts after the previous one ends."}
                                 },
                                 "required": ["speaker", "line", "delivery", "start_est", "end_est"],
                                 "additionalProperties": False
@@ -904,15 +966,15 @@ EPISODE_ONE = True
 CONCLUDE_AT_SECONDS = 1800   # a plan this long (30 minutes) tells a WHOLE story and ends it; shorter ones are episode one
 
 
-def _episode_one_rule(duration: int, total_clips: int, acts: bool = False, final: bool = True) -> str:
+def _episode_one_rule(duration: int, total_clips: int, acts: bool = False, final: bool = True, is_finale: bool = False) -> str:
     """The shared 'play it out' rule for every planning prompt. Under CONCLUDE_AT_SECONDS the runtime is episode one and ends
-    on a cliffhanger; from CONCLUDE_AT_SECONDS up it is a whole story with an earned ending. `acts` adds the line only the
+    on a cliffhanger; from CONCLUDE_AT_SECONDS up (or when is_finale=True) it is a whole story with an earned ending. `acts` adds the line only the
     act breakdown needs: what the LAST act's fields must say. `final` is False for a batch of beats that is NOT the last one:
     the ending instruction (cliffhanger or resolution) then binds the last batch only, so a scene in the middle may still
     reach its own outcome."""
     if not EPISODE_ONE:
         return ""
-    if duration >= CONCLUDE_AT_SECONDS:
+    if duration >= CONCLUDE_AT_SECONDS or is_finale:
         last_act = ("\n   - The LAST act resolves the central dramatic question, and its \"summary\" names what it pays off.") if acts else ""
         thread_line = ("Keep the premise's cast, world, tone, events and ending. Every open thread (a question, a secret, a promise) is paid off by the end. The ending is earned and clear: the central conflict is resolved and the audience is told how everyone stands."
                        if final else
@@ -936,11 +998,11 @@ EPISODE ONE, NOT A WHOLE FILM (CRITICAL):
    - {ending_line}{last_act}"""
 
 
-def _cliffhanger_final_rule(duration: int = 0) -> str:
+def _cliffhanger_final_rule(duration: int = 0, is_finale: bool = False) -> str:
     """Extra instruction for the batch of beats that ends the plan: a cliffhanger for an episode, a resolution for a whole story."""
     if not EPISODE_ONE:
         return ""
-    if duration >= CONCLUDE_AT_SECONDS:
+    if duration >= CONCLUDE_AT_SECONDS or is_finale:
         return """
 THESE BEATS END THE STORY (CRITICAL):
    - Resolve the central conflict and pay off every open thread, plainly and where the audience can hear it: someone says what was decided, what it cost and where everyone stands.
@@ -955,9 +1017,9 @@ _OLD_PLAIN_RULE = '   - PLAIN, SPEAKABLE WORDS (CRITICAL): everybody - the narra
 
 
 _DELIVERY_NOTES = {
-    "quick_outline": " That quick-fire style is for a clash that carries no new fact: a beat that must DELIVER a fact (see STORY DELIVERY) uses one or two lines, never three.",
+    "quick_outline": " That quick-fire style is for a clash that carries no new fact: in 5s clips, a beat that must DELIVER a fact (see STORY DELIVERY) uses one or two lines, never three; in 10-15s clips it may use 1 to 5 lines across up to 5 speakers.",
     "plant_outline": " The EXISTENCE of a hidden secret may be planted earlier as a plain question or hint, without any reserved term (see STORY DELIVERY); that is encouraged.",
-    "quick_beats": " A beat that must DELIVER a fact (see FACTS below) uses one or two lines, never three quick-fire ones.",
+    "quick_beats": " In 5s clips, a beat that must DELIVER a fact (see FACTS below) uses one or two lines, never three quick-fire ones; in 10-15s clips it holds 1 to 5 lines across up to 5 speakers.",
     "plant_beats": "\n   - The EXISTENCE of a hidden secret may be planted earlier as a plain question or hint, without any reserved term (see FACTS below); that is encouraged.",
 }
 
@@ -984,6 +1046,8 @@ _PLAIN_RULE = """   - PLAIN LANGUAGE TEST (CRITICAL - EVERY spoken line, narrati
      * Short, common words; one or two short sentences; no abstract nouns doing a verb's work; no semicolons.
      * Say WHO and WHAT: 'he' must be clear from the line before. When a character does something that means something (returns a ring, signs, hands something over, walks out), a line says what it means: 'Take your ring back. We are done.'
      * When it matters, say what a character FEELS or WANTS in plain words.
+     * DRAMATIC TONE & VOCABULARY PRESERVED: 'Plain' means clear and direct, NOT polite or dumbed down! Preserve insults, threats, dramatic terms, and character venom (e.g. 'penniless', 'toy company', 'parasite', 'housewife', 'sweetie'). Never replace dramatic words with awkward phrases like 'with no money'.
+     * DO NOT NARRATE VISUAL ACTIONS: Never make characters state physical props or actions on camera (do NOT say 'even your pendant' or describe what the camera shows).
      * If the premise gives a sample line, keep its MEANING and write it in plain words: plain beats poetic, even when the premise asks for sharper lines.
      * BAD -> GOOD: 'Tonight he hands me a pen.' -> 'Tonight he is firing me.' / 'He waited for tears. I gave him the silence he feared.' -> 'He wanted me to beg. I did not.' / 'You just threw away the thing holding back the dark.' -> 'Without me, you will lose everything.' / 'I learned quiet from his mistakes.' -> 'I stay calm because I have watched him lose control.' / 'Her smile could not outrun the ledger.' -> 'She smiles, but she knows the money is gone.'"""
 
@@ -1024,6 +1088,10 @@ def _plain_pass_prompt(chunk: list[dict], first_clip: int, prev_beat: dict | Non
         "idiom or poetic image, if it is unclear who or what it refers to, or if it hides a plain fact behind a clever phrase. "
         "ALSO rewrite the closest line when the beat shows a meaningful act (returning a ring, signing, handing something over, "
         "walking out) and no line says what it means.\n"
+        "CRITICAL GUARDRAIL:\n"
+        "- NEVER rewrite, dumb down, or sanitize dramatic insults, mocking lines, sharp dialogue, or character vocabulary "
+        "(e.g. 'penniless', 'toy company', 'housewife', 'sweetie', 'leech', 'parasite'). A dramatic confrontation must keep its emotional bite!\n"
+        "- NEVER force a character to speak visual actions or props aloud when the visual already shows it (do NOT add 'even your pendant' or describe what the camera shows).\n"
         "When you rewrite: keep the speaker, the meaning, the attitude (a cold character stays cold, a proud one proud) and the "
         "story information; use short, common words; add no new facts and no new names; do not make it much longer than the "
         "original. Most lines are already fine: mark those 'plain' and leave plain_line empty. Return one entry for EVERY line."
@@ -1060,7 +1128,14 @@ def _apply_plain_rewrite(beat: dict, line_index: int, new_line: str, facts_here:
     old_words, new_words = len(_WORD.findall(old)), len(_WORD.findall(new))
     total_old = _spoken_words(turns)
     total_new = total_old - old_words + new_words
-    if new_words < 2 or total_new > max(total_old, MAX_WORDS):
+    b_dur = beat.get("duration")
+    b_max_words = clip_word_budget(b_dur)[1] if b_dur else MAX_WORDS
+    if new_words < 2 or total_new > max(total_old, b_max_words):
+        return None
+    lower_old, lower_new = old.lower(), new.lower()
+    if ("penniless" in lower_old and "no money" in lower_new) or ("toy company" in lower_old and "toy company" not in lower_new):
+        return None
+    if "pendant" in lower_new and "pendant" not in lower_old:
         return None
     before_text, after_text = _beat_text(beat), None
     after_text = before_text.replace(old, new, 1)
@@ -1151,6 +1226,7 @@ STORY DELIVERY (CRITICAL): a viewer who only HEARS this film - no pictures, no p
        * kind state_now: said plainly at that clip. kind plant_question: the audience is told a secret EXISTS ("He still doesn't know what I paid to keep him free") without being told what it is; its answer is a SEPARATE pay_later fact at the clip where the story reveals it. kind pay_later: the answer, said plainly.
        * Never put a term from an act's "reveals" in a plant_question's key_terms: a reveal stays hidden until its act.
        * Deadlines for {total_clips} clips: the protagonist's WANT by clip {by(0.10)}; what stands in their way by clip {by(0.25)}; what they are doing about it by clip {by(0.40)}; the stakes restated in new words by clip {by(0.75)}; the ending state (or the open question the episode ends on) at the last clip that has spoken words, by clip {total_clips} at the latest (if the final beat is wordless, say it in the one before).
+   - CINEMATIC REVEALS ARE NOT SPOKEN FACTS: Physical props, dropped objects, stolen jewelry, signatures, or visual actions filmed on camera are NEVER spoken facts (never invent spoken lines stating "my pendant is gone", "S.G. is on the hem", etc.). Facts are ONLY interpersonal conflicts (wants, ultimatums, secrets, deals). If the premise has quoted dialogue, delivery.facts MUST adopt those quoted lines verbatim rather than inventing new lines!
    - "delivery.jargon": every word the audience will not know (a family name used as a code word, a legal or trade term, an institution, a place) with a short plain gloss. It is explained in the same or the previous line the first time it is spoken.
    - Every character in the scene bible also has a "motivation" (what they want, in one plain sentence they could say aloud), "relationships" and a "speech_style". The protagonist's motivation must come back as a spoken line (the 'want' fact); a character's speech_style is HOW they talk, never a reason to be oblique about WHAT matters.
    - The protagonist's narration is the cheapest channel for early backstory and for the plan: a few plain words that state it, never a description of what the picture shows."""
@@ -1159,11 +1235,11 @@ STORY DELIVERY (CRITICAL): a viewer who only HEARS this film - no pictures, no p
 _DELIVERY_WRITING_RULES = f"""
 WRITING THE LINES SO THE STORY IS UNDERSTOOD (CRITICAL):
    1. Exposition through conflict: facts are demanded, refused, accused, confessed - never announced to nobody.
-   2. The protagonist SAYS what they want and what it costs them, plainly, early.
-   3. Name the stakes aloud whenever they change.
+   2. The protagonist SAYS what they want and what it costs them, plainly, early, inside the clash in natural cause-and-effect order (never blurted out before the provocation that triggers it).
+   3. Name the stakes aloud whenever they change, but NEVER narrate physical actions or visual objects the camera already films.
    4. The first time a listed jargon term is spoken, explain it in the same or the previous line, in plain words.
-   5. A comeback must also carry information (an answer plus a new fact). A line that only sounds sharp is rewritten.
-   6. One new fact per line, two at most per clip. A beat that delivers a fact uses ONE or TWO lines, never three quick-fire ones.
+   5. Sharp dramatic dialogue and comebacks: Preserve venomous, sarcastic, or defiant dialogue from the premise verbatim. Never strip away dramatic insults or punchy comebacks to add exposition.
+   6. One new fact per line, two at most per clip. In 5-second clips, a beat that delivers a fact uses ONE or TWO lines, never three quick-fire ones; in 10-15s clips, a beat holds 1 to 7 lines across up to 5 characters, giving each speaker room to clash.
    7. Plant the question, delay the answer: say THAT a secret exists, never WHAT it is, before its planned clip.
    8. Say the key facts twice, in different words, far apart.
    9. Subtext comes after text: an oblique line is fine once the fact it relies on has been said.
@@ -1204,7 +1280,7 @@ def _facts_block(delivery: dict | None, start_clip: int, end_clip: int) -> str:
         out.append("- none in this batch; keep the story moving and do not re-explain what the audience already knows.")
     else:
         out.append("BEFORE YOU ANSWER, check each fact above: the beat at its clip has a spoken line, by its owner, that contains its "
-                   "key terms, and that beat has only one or two lines so there is room to say it plainly.")
+                   "key terms, and that beat has room to say it plainly (1 to 5 lines).")
     if known:
         out.append("THE AUDIENCE ALREADY KNOWS: " + " | ".join(str(f.get("text")) for f in known[-8:]))
     if open_q:
@@ -1220,8 +1296,27 @@ def _narrated_outline_prompt(topic: str, duration: int, total_clips: int) -> tup
     """Builds the single-call Master Plan prompt (short videos): scenes play, bridges skip, a place is kept, and the
     story is DELIVERED in the spoken script."""
     places_lo, places_hi = _short_places(total_clips)
+    is_5s = (duration // total_clips <= 5) if total_clips else False
+    if is_5s:
+        clip_desc_line = f"You are directing a {duration}-second narrative divided into exactly {total_clips} continuous 5-second video clips."
+        speech_budget_line = f'   - The clip is only {CLIP_SECONDS} seconds long, so "speech_budget" - the TOTAL words across every line in the beat - must be {MIN_WORDS} to {MAX_WORDS}. Three speakers in one clip means roughly four words each: "Where is she?" / "Gone." / "You are lying." Short, hard lines land; long ones get cut off.{_delivery_note("quick_outline")}'
+        abs_speech_rule = f"   - For voiceover and dialogue clips, speech_budget must be {MIN_WORDS} to {MAX_WORDS} words."
+    else:
+        clip_desc_line = f"You are directing a {duration}-second narrative divided into exactly {total_clips} continuous video clips (each 10 to 15 seconds long)."
+        speech_budget_line = (
+            f'   - Each clip is 10 to 15 seconds long (set in beat "duration", integer 10 to 15, default 15). "speech_budget" - '
+            f'the TOTAL words across every line in the beat - scales with duration: 14 to 25 words for 10s, up to 22 to 85 words for 15s. '
+            f'A dialogue beat holds 1 to 5 punchy lines between up to 5 speakers (e.g. a jab, a sneer, a reaction, a demand, and a retort can all share one clip). Pacing is fast: each clip is an active micro-sequence with '
+            f'2 to 4 rapid narrative/visual shifts (e.g. entry -> discovery -> reaction -> confrontation). Short, hard lines land; '
+            f'never drag out a single line.'
+        )
+        abs_speech_rule = (
+            "   - For voiceover and dialogue clips, speech_budget must match the beat duration: 14 to 25 words for 10s, "
+            "up to 22 to 85 words for 15s. Each beat MUST specify integer 'duration' (10 to 15)."
+        )
+
     system_prompt = f"""You are a master showrunner and director for viral dramatic mini-series (ReelShort / DramaBox style).
-You are directing a {duration}-second narrative divided into exactly {total_clips} continuous 5-second video clips.
+{clip_desc_line}
 
 CORE ARCHITECTURE: HYBRID NARRATED DRAMA (FIRST-PERSON POV + LIVE DIALOGUE):
 1. SINGLE POV PROTAGONIST:
@@ -1240,13 +1335,15 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (FIRST-PERSON POV + LIVE DIALOGUE):
        NEVER invent a jolt to fill this slot. If nothing physically happens at this point in the story, SKIP Phase 3 and carry straight on with dialogue or voiceover. A manufactured shock is worse than no shock: it stops the scene dead and steals the moment from whoever it is really about.
    Alternate between the two as the STORY demands, never on a timer. Follow the story first; the rhythm serves it, never the other way round.
    - THE SHAPE COMES FIRST (CRITICAL): before the beats, write "sequences": an ORDERED list of stretches that together cover all {total_clips} clips exactly once. Each has a "kind" ("scene" or "bridge"), a "clip_count" (YOU decide: a scene takes as many clips as the moment needs, a bridge takes 1 or 2 and never more than {MAX_BRIDGE_CLIPS}; the counts add up to {total_clips}), a "location_id" (an id from scene_bible.locations; different stretches may be in different places) and a one-line "purpose" (what it is for and what is different after it). Then write the beats so that every beat follows its stretch: the stretch's place, and live dialogue for a scene, narration over strong visuals for a bridge.
-   - EVERY EVENT PLAYS (CRITICAL): each event of the story must have a scene of its own (or be the turn a bridge lands on). An event that has no stretch to play it will be squeezed into one line of narration, and then the story is REPORTED instead of SHOWN. If the premise holds more events than {total_clips} clips can play, play the earlier ones in full and leave the rest.
+   - EVERY EVENT PLAYS & FAST-PACED MULTI-SCENE CLIPS (CRITICAL):
+     If the story premise provides specific scenes, actions, or clip breakdowns (such as Penthouse confrontation -> street ejection in Clip 1, or Park bench -> Skyscraper office in Clip 2), you MUST include and execute ALL described events across the clips! Each 10-15s clip is an intense, fast-moving micro-sequence that can transition across up to 2 connected locations (e.g. setting location_id: 'blake_penthouse_and_penthouse_street') with hard cuts, camera switches, and rapid physical action. NEVER drop, truncate, or omit scenes, events, or confrontations from the user's premise!
 
 3. LOCATION CONTINUITY & CONFINEMENT (CRITICAL):
    - Confinement within a scene, progression between scenes.
-   - A scene must anchor in 1 to 2 core locations (e.g. the main reception desk, the office) across consecutive beats. Do NOT jump between random unestablished rooms or hallways every 5 seconds.
+   - A 10–15s clip can either play in a single continuous location OR transition between up to 2 connected locations when the dramatic story moves (e.g., Penthouse living room -> Street curb outside, or Park bench -> Blake Couture Tower).
+   - When a clip transitions across locations, set "location_id" to the compound ID (e.g. "blake_penthouse_and_penthouse_street" or "blake_penthouse, penthouse_street"). Both locations must be defined in scene_bible.locations.
+   - Every single location ID used MUST match one of the exact ids defined in scene_bible.locations.
    - A story this short ({total_clips} clips) uses {places_lo} to {places_hi} distinct places: a place for each scene, not the whole story in one room. The story MOVES when its scene changes.
-   - Every single beat's location_id MUST match one of the exact ids defined in scene_bible.locations.
    - A room is ONE location however many angles it is filmed from: never make separate locations for different angles of the same room. Places in the same building must match each other in architecture, era and materials.
    - SPACE FOR THE CAMERA (CRITICAL): every place must be roomy enough for three people to stand and walk and for a camera to stand several metres back, because the shots need real angles (over the shoulder, wide, tracking). Describe a corridor as a wide landing or hall (about 3 to 4 metres across, 8 or more metres long, doors well apart), a room as a large room, a staircase as a broad one. Never write narrow, cramped, tiny, tight or claustrophobic about a place; if the premise names a small place, keep it but give it room.
    - "description": its fixed look in one or two sentences (architecture, furniture, materials, colours, light), true for the WHOLE story.
@@ -1255,6 +1352,7 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (FIRST-PERSON POV + LIVE DIALOGUE):
    - "image_prompt": a text-to-image prompt for a wide view from the FIRST viewpoint, naming every permanent feature the story uses there (the video model can only use what the picture shows). It must contain NO PEOPLE and NONE of the story's props or payoffs: a reference plate showing a character standing in the doorway puts them in every clip filmed there, and one showing the story's final reveal shows it from the very first clip. The system adds the photorealism and empty-room wording for you.
 
 4. CASTING THE SCREEN (CRITICAL):
+   - CANONICAL CHARACTER NAMES (CRITICAL): Preserve the exact character names and surnames given in the premise (e.g. if the premise says "Chloe", keep "Chloe" or use the specific surname given in the premise like "Chloe Moss" - NEVER invent unprompted surnames like "Chloe Vale").
    - CASTING RULE: unless the premise asks for a specific ethnicity, default the cast to Western, European or British demographics.
    - STATIC BIBLE RULE: "appearance" and "voice" hold ONLY permanent, unchanging physical facts ('tall and lean', 'jet black hair', 'smoky alto with a faint Irish lilt'). NEVER put a mood, an emotion or a story event there ('anxious', 'determined', 'starts hopeful') - those belong to a clip's delivery and action.
    - "voice" IS THE INSTRUMENT, NOT THE PERFORMANCE (CRITICAL): give its pitch, grain and accent only. NEVER 'controlled', 'quiet', 'measured', 'calm', 'flat' or 'restrained' - those describe how someone is speaking in one moment, and written here they make EVERY line in the film inherit them. A character whose voice is 'low, controlled alto' will never be allowed to shout.
@@ -1267,19 +1365,22 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (FIRST-PERSON POV + LIVE DIALOGUE):
 
 5. THE SPOKEN WORD IS DECIDED HERE (CRITICAL):
    - You are the ONLY writer who sees the whole story, so YOU write every line, in "audio_lines": the exact words the audience hears in that clip, in order. The clip director downstream writes only what is SEEN, and will be forced to speak your lines verbatim.
-   - A DIALOGUE beat may hold ONE, TWO or THREE lines, by up to {MAX_VOICE_REFS} different speakers. Use more than one whenever the exchange is quick - a jab and its retort belong in the SAME clip, not split across a cut. Use one line when it is meant to hang.
+   - A DIALOGUE beat may hold 1 to 7 lines, by up to {MAX_VOICE_REFS} different speakers (scaling with duration: 14 to 25 words for 10s, up to 22 to 85 words for 15s). Use multiple lines whenever characters clash or react - a jab, a sneer, a reaction, a demand, and a retort can all share the SAME clip. Keep dialogue lines from ALL scene segments described in the premise for that clip.
+   - PREMISE DIALOGUE ENFORCEMENT (CRITICAL): If the story premise provides explicit quoted dialogue for a character (e.g. Vanessa: "Get her fired, darling", Damien: "Do you know what this suit costs? More than you earn in a year."), you MUST include those exact lines verbatim for those characters in audio_lines. Do NOT drop lines given in the premise, do NOT reassign them to other characters, and do NOT alter the speaker who delivered them. Every character who speaks in the premise must speak their line. If a character's quoted line in the premise is 4 words (e.g. 'Get her fired, darling'), that is completely acceptable - do not drop or change their line.
+   - CAUSE-AND-EFFECT CHRONOLOGY (CRITICAL): The spoken lines in "audio_lines" MUST strictly follow chronological narrative cause-and-effect order as events occur in the premise and clip summary. NEVER place a character's plea, apology, or reaction before the instigating line or confrontation that provoked it! When an altercation occurs (e.g. coffee spills -> Damien confronts Aria about his suit -> Vanessa demands she be fired -> Aria pleads for her job -> manager removes her), each line must naturally respond to what was just said or done. Cause always precedes effect.
+   - ZERO EXPOSITORY DIALOGUE & NO STATING VISUAL ACTIONS (CRITICAL): Visual actions, physical reveals, and props (e.g. dropping a cake box, throwing a divorce folder, touching a bare collarbone, seeing someone wear a stolen pendant on a balcony, writing initials in a hem, sliding a contract) are filmed by the camera in action_steps. Characters MUST NEVER speak visual actions aloud as dialogue! NEVER make a character say "My sapphire pendant is gone", "S.G. means Sophia Grant", "This divorce says you take my designs too", or "I will fight you for my work" unless explicitly quoted in the premise! Trust the camera to show the visual story. When the premise provides quoted lines for a scene or clip, audio_lines MUST contain ONLY those quoted dialogue exchanges and genuine dramatic reactions between characters. Do NOT invent filler expository lines to summarize the scene or explain the plot.
    - A VOICEOVER beat holds exactly ONE line, by the pov_protagonist. A shock_action beat holds an EMPTY array.
-   - VOICE SAMPLES: the FIRST line a character speaks in the whole video is cut out of that clip and reused as their voice everywhere after, so make it a clear, fully voiced line of at least {VOICE_SAMPLE_MIN_WORDS} words - never their short one- or two-word reply. Introduce a character's voice on a beat where they carry the line, then let them trade quick fire afterwards.
-   - The clip is only {CLIP_SECONDS} seconds long, so "speech_budget" - the TOTAL words across every line in the beat - must be {MIN_WORDS} to {MAX_WORDS}. Three speakers in one clip means roughly four words each: "Where is she?" / "Gone." / "You are lying." Short, hard lines land; long ones get cut off.{_delivery_note("quick_outline")}
+   - VOICE SAMPLES: the FIRST line a character speaks in the whole video is cut out of that clip and reused as their voice everywhere after, so make it a clear, fully voiced line of at least {VOICE_SAMPLE_MIN_WORDS} words (unless their line was explicitly quoted in the premise). Introduce a character's voice on a beat where they carry the line, then let them trade quick fire afterwards.
+{speech_budget_line}
 {_plain_language_rule()}
    - The narration is her thinking, not her writing. It says what the picture cannot - what she wants, what it costs her, what she has decided, what she is hiding from the others - in the plainest words that will carry it. It states; it never describes what the picture already shows.
    - REVEAL ORDER (CRITICAL): a line may only use facts the audience already knows. List in "reveals" the key terms each beat discloses for the FIRST time - names, places, room numbers, objects. NEVER let an earlier beat's lines speak a term that a later beat reveals: the protagonist cannot name Room 404 in clip 2 if a co-worker reveals it in clip 3.{_delivery_note("plant_outline")}
 
 6. ABSOLUTE RULES:
-   - NEVER have more than 3 consecutive voiceover clips, and 2 is the working length: past that the viewer is listening to someone think instead of watching something happen.
+   - NEVER have more than 2 consecutive voiceover clips: past that the viewer is listening to someone think instead of watching something happen.
    - Consecutive dialogue clips are NOT capped. A scene takes the clips it takes; never break one up just to insert narration.
    - For shock_action clips, speech_budget must be 0 and audio_lines must be an empty array.
-   - For voiceover and dialogue clips, speech_budget must be {MIN_WORDS} to {MAX_WORDS} words.
+{abs_speech_rule}
 {_ON_SCREEN_RULE}
    - This is a FIRST-PERSON story, so when a shock_action beat has ANY people in it, the camera stays with the pov_protagonist: they must be among its present_characters and be its speaker_or_actor. Everyone else present may still react in the clip - they simply are not who the shot is about. A shock_action beat with NOBODY on screen (an establishing or atmospheric shot) has empty present_characters and an empty speaker_or_actor.
 {_episode_one_rule(duration, total_clips)}
@@ -1520,10 +1621,14 @@ def _sanitize_sequence_places(acts: list[dict] | None, bible: dict) -> list[str]
     places = [l.get("id") for l in bible.get("locations", []) if l.get("id")]
     for a in acts or []:
         for s in a.get("sequences") or []:
-            if places and s.get("location_id") not in places:
-                new = next((p for p in (a.get("primary_locations") or []) if p in places), places[0])
-                notes.append(f"act {a.get('act_number', '?')}: a sequence was set in '{s.get('location_id')}', which is not in the bible; it now uses '{new}'")
-                s["location_id"] = new
+            loc_id = s.get("location_id")
+            loc_ids = s.get("location_ids") or ([lid.strip() for lid in re.split(r"[,+&]|_and_|_to_", str(loc_id))] if loc_id else [])
+            loc_ids = [lid for lid in loc_ids if lid]
+            if places and loc_id not in places:
+                if not (loc_ids and all(lid in places for lid in loc_ids)):
+                    new = next((p for p in (a.get("primary_locations") or []) if p in places), places[0])
+                    notes.append(f"act {a.get('act_number', '?')}: a sequence was set in '{s.get('location_id')}', which is not in the bible; it now uses '{new}'")
+                    s["location_id"] = new
     return notes
 
 
@@ -1551,8 +1656,14 @@ def _check_sequences(acts: list[dict], bible: dict, total_clips: int) -> list[st
                 continue
             if s.get("kind") not in SEQUENCE_KINDS:
                 problems.append(f"Act {num} sequence {i}: kind must be 'scene' or 'bridge', not {s.get('kind')!r}.")
-            if s.get("location_id") not in places:
-                problems.append(f"Act {num} sequence {i}: location '{s.get('location_id')}' is not in scene_bible locations ({sorted(places)}).")
+            loc_id = s.get("location_id")
+            loc_ids = s.get("location_ids") or ([lid.strip() for lid in re.split(r"[,+&]|_and_|_to_", str(loc_id))] if loc_id else [])
+            loc_ids = [lid for lid in loc_ids if lid]
+            if loc_id not in places:
+                if loc_ids and all(lid in places for lid in loc_ids):
+                    pass
+                else:
+                    problems.append(f"Act {num} sequence {i}: location '{s.get('location_id')}' is not in scene_bible locations ({sorted(places)}).")
             if s.get("kind") == "bridge" and cc > MAX_BRIDGE_CLIPS:
                 problems.append(f"Act {num} sequence {i}: a bridge skips time in 1 to {MAX_BRIDGE_CLIPS} clips, not {cc}. "
                                 f"Make it a scene that plays out, or shorten it.")
@@ -1603,7 +1714,13 @@ def _sequence_beat_notes(beats: list[dict] | None, acts: list[dict] | None) -> l
         if not clips:
             continue
         span = f"Clips {r['start']}-{r['end']}"
-        wrong_place = [n for n, b in clips if r["location_id"] and b.get("location_id") != r["location_id"]]
+        def _match_loc(r_loc, b_item):
+            if not r_loc:
+                return True
+            b_loc = b_item.get("location_id")
+            b_locs = b_item.get("location_ids") or ([lid.strip() for lid in re.split(r"[,+&]|_and_|_to_", str(b_loc))] if b_loc else [])
+            return (b_loc == r_loc) or (r_loc in b_locs)
+        wrong_place = [n for n, b in clips if not _match_loc(r["location_id"], b)]
         if wrong_place:
             notes.append(f"[SOFT] {span} are planned as a {r['kind']} in '{r['location_id']}', but clip(s) {', '.join(map(str, wrong_place[:5]))} "
                          f"{'are' if len(wrong_place) > 1 else 'is'} set elsewhere.")
@@ -1631,7 +1748,7 @@ def _narrated_act_breakdown_prompt(topic: str, duration: int, total_clips: int,
     )
 
     system_prompt = f"""You are a master showrunner and director for viral dramatic mini-series (ReelShort / DramaBox style).
-You are architecting the Scene Bible and multi-act structure for a {duration}-second narrative divided into exactly {total_clips} continuous 5-second video clips.
+You are architecting the Scene Bible and multi-act structure for a {duration}-second narrative divided into exactly {total_clips} continuous video clips (each 10 to 15 seconds long).
 
 CORE ARCHITECTURE: HYBRID NARRATED DRAMA (ACT BREAKDOWN & SCENE BIBLE)
 
@@ -1687,9 +1804,10 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (ACT BREAKDOWN & SCENE BIBLE)
          - "kind": "scene" or "bridge" (as defined above).
          - "clip_count": how many clips it takes. YOU decide: a scene takes as many as the moment needs, a bridge takes 1 or 2 and never more than {MAX_BRIDGE_CLIPS}. The counts of one act's sequences must add up to that act's length (end_clip - start_clip + 1).
          - "location_id": where it happens, an id from scene_bible.locations. The sequences of one act may use different places.
+         - "location_ids": optional list of up to 2 location IDs if this sequence spans across connected locations.
          - "purpose": one line: what this stretch is for and what is different after it.
    - Act spans must cover clips 1 to {total_clips} continuously without gaps.
-   - EVERY EVENT PLAYS (CRITICAL): each event that an act's "summary" names must have a scene of its own (or be the turn a bridge lands on). An event that is only mentioned in the summary, with no sequence to play it, will be squeezed into one line of narration: that is how a story ends up REPORTED instead of SHOWN. If an act holds more events than clips, move the surplus to the next act (or, in an episode, leave it for the next one) rather than packing it in.
+   - EVERY EVENT PLAYS (CRITICAL): each event that an act's "summary" names must have a scene of its own (or be the turn a bridge lands on). An event that is only mentioned in the summary, with no sequence to play it, will be squeezed into one line of narration: that is how a story ends up REPORTED instead of SHOWN. Pack fast-moving micro-sequences across the clips so all dramatic beats and confrontations in the premise are executed vividly, never dropping premise events.
 
 6. WHO LEARNS WHAT, AND WHEN (CRITICAL):
    - Each act's beats are written in a separate later pass that cannot see the acts after it. The "reveals" lists are how that pass knows what it is not allowed to say yet, so they have to be right here.
@@ -1705,7 +1823,7 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (ACT BREAKDOWN & SCENE BIBLE)
 
 def _narrated_act_beats_prompt(topic: str, batch: dict, all_acts: list[dict], bible: dict,
                                prior_beats: list[dict], total_clips: int,
-                               delivery: dict | None = None) -> tuple[str, str]:
+                               delivery: dict | None = None, is_finale: bool = False) -> tuple[str, str]:
     """Builds prompt for Act Beats Call 2..N: writing beats for one act/batch. `delivery` (the plan's must-understand
     facts) tells this batch which facts its spoken lines have to carry."""
     start_clip = batch["start_clip"]
@@ -1713,11 +1831,11 @@ def _narrated_act_beats_prompt(topic: str, batch: dict, all_acts: list[dict], bi
     clip_count = batch["clip_count"]
     facts_block = _facts_block(delivery, start_clip, end_clip)
     # Only the batch that holds the last clip of the episode is told to end on a cliffhanger; a continuation is
-    # one too, since it is the last batch of what exists so far.
-    final_rule = _cliffhanger_final_rule(total_clips * CLIP_SECONDS) if end_clip >= total_clips else ""
+    # one too, since it is the last batch of what exists so far (unless marked as finale).
+    final_rule = _cliffhanger_final_rule(total_clips * DEFAULT_CLIP_SECONDS, is_finale=is_finale) if end_clip >= total_clips else ""
 
     system_prompt = f"""You are a master showrunner and director for viral dramatic mini-series (ReelShort / DramaBox style).
-You are writing the beats for Clips {start_clip} to {end_clip} (exactly {clip_count} continuous 5-second video clips) within a {total_clips}-clip production.
+You are writing the beats for Clips {start_clip} to {end_clip} (exactly {clip_count} continuous video clips, each 10 to 15 seconds long) within a {total_clips}-clip production.
 
 CORE ARCHITECTURE: HYBRID NARRATED DRAMA (BEAT SCRIPTING):
 1. SINGLE POV PROTAGONIST:
@@ -1737,13 +1855,19 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (BEAT SCRIPTING):
 3. LOCATION CONTINUITY & CONFINEMENT:
    - Anchor in this act's primary locations: {batch.get('primary_locations', [])}.
    - Every beat's location_id MUST match one of the exact ids defined in scene_bible.locations.
+   - When a clip transitions across locations in a fast-paced micro-sequence, set "location_id" to the compound ID (e.g. "blake_penthouse_and_penthouse_street" or "blake_penthouse, penthouse_street").
 
 4. THE SPOKEN WORD DECIDED HERE:
    - You write the exact spoken words in "audio_lines".
-   - A DIALOGUE beat holds 1 to {MAX_VOICE_REFS} lines between characters in scene_bible.{_delivery_note("quick_beats")}
+   - In each beat, specify integer "duration" (10 to 15 seconds, default 15) chosen based on dramatic weight.
+   - PACING & NARRATIVE DENSITY: Each 10–15s clip is an active, cinematic micro-sequence with 2 to 4 rapid narrative/visual shifts (e.g. entry -> discovery -> reaction -> confrontational line or prompt). Fast-moving and packed with story events!
+   - A DIALOGUE beat holds 1 to 7 lines between up to {MAX_VOICE_REFS} characters in scene_bible.{_delivery_note("quick_beats")}. Keep dialogue from ALL scene segments described in the premise for this clip.
+   - PREMISE DIALOGUE ENFORCEMENT & CANONICAL NAMES (CRITICAL): If the story premise provides explicit quoted dialogue for a character (e.g. Vanessa: "Get her fired, darling", Damien: "Do you know what this suit costs? More than you earn in a year."), you MUST include those exact lines verbatim for those characters in audio_lines. Preserve character names exactly as written in the premise (e.g. "Chloe", "Chloe Moss" - never invent unprompted surnames like "Chloe Vale"). Do NOT drop lines given in the premise, do NOT reassign them to other characters, and do NOT alter the speaker who delivered them. Every character who speaks in the premise must speak their line.
+   - CAUSE-AND-EFFECT CHRONOLOGY (CRITICAL): Spoken lines in "audio_lines" MUST strictly follow chronological cause-and-effect order as events unfold. Never place a reaction or plea before the line that provoked it. Cause always precedes effect!
+   - ZERO EXPOSITORY DIALOGUE & NO STATING VISUAL ACTIONS (CRITICAL): Visual actions, physical reveals, and props (e.g. dropping a cake box, throwing a divorce folder, touching a bare collarbone, seeing someone wear a stolen pendant on a balcony, writing initials in a hem, sliding a contract) are filmed by the camera in action_steps. Characters MUST NEVER speak visual actions aloud as dialogue! NEVER make a character say "My sapphire pendant is gone", "S.G. means Sophia Grant", "This divorce says you take my designs too", or "I will fight you for my work" unless explicitly quoted in the premise! Trust the camera to show the visual story. When the premise provides quoted lines for a scene or clip, audio_lines MUST contain ONLY those quoted dialogue exchanges and genuine dramatic reactions between characters. Do NOT invent filler expository lines to summarize the scene or explain the plot.
    - A VOICEOVER beat holds exactly ONE line by '{bible.get("pov_protagonist")}'.
    - A SHOCK_ACTION beat has audio_lines = [] and speech_budget = 0.
-   - For dialogue/voiceover, "speech_budget" is the total words across all lines in that beat: {MIN_WORDS} to {MAX_WORDS} words.
+   - For dialogue/voiceover, "speech_budget" is the total words across all lines in that beat: 14 to 25 words for 10s, up to 22 to 85 words for 15s.
    - VOICE SAMPLES: The first line a character ever speaks in the whole series must be at least {VOICE_SAMPLE_MIN_WORDS} words.
 {_plain_language_rule()}
    - The narration is the protagonist THINKING, not writing. It says what the picture cannot - what she wants, what it cost, what she has decided, what she is hiding from the others - in the plainest words that carry it. It states; it never describes what the picture already shows.
@@ -1754,11 +1878,11 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (BEAT SCRIPTING):
    - NEVER mention a secret fact/term before the clip that reveals it!{_delivery_note("plant_beats")}
 
 6. ABSOLUTE RULES:
-   - NEVER have more than 3 consecutive voiceover clips, and 2 is the working length: past that the viewer is listening to someone think instead of watching something happen.
+   - NEVER have more than 2 consecutive voiceover clips: past that the viewer is listening to someone think instead of watching something happen.
    - Consecutive dialogue clips are NOT capped. A scene takes the clips it takes; never break one up just to insert narration.
 {_ON_SCREEN_RULE}
    - Output clip_number starting at {start_clip} and ending at {end_clip}. Exactly {clip_count} beats.
-{_episode_one_rule(total_clips * CLIP_SECONDS, total_clips, final=end_clip >= total_clips)}
+{_episode_one_rule(total_clips * DEFAULT_CLIP_SECONDS, total_clips, final=end_clip >= total_clips, is_finale=is_finale)}
 {final_rule}
 {_DELIVERY_WRITING_RULES if STORY_DELIVERY else ""}
 """
@@ -1844,6 +1968,15 @@ Act Goal / Summary: {batch.get('summary')}
 Return JSON with "beats" containing exactly {clip_count} items with clip_number from {start_clip} to {end_clip}.
 """
     system_prompt += reserved_text
+    if is_finale:
+        system_prompt += """
+7. STORY FINALE & RESOLUTION ENFORCEMENT (CRITICAL):
+   - This continuation is the definitive SERIES FINALE / GRAND FINALE.
+   - You MUST fully resolve the story: pay off all relationships, conflicts, and dramatic questions.
+   - If the premise contains a multi-location micro-sequence (e.g. Fashion Week runway transitioning to rooftop), you MUST cover BOTH locations across the beat summary and audio_lines!
+   - Set 'location_id' to the compound location (e.g. 'fashion_week_runway, blake_couture_rooftop').
+   - Include the requested final resolution, romantic payoff, final voiceover, and closing moment! Do NOT drop the ending!
+"""
     return system_prompt, user_prompt
 
 
@@ -2302,9 +2435,12 @@ def _fact_repair_prompt(beat: dict, prev_beat: dict | None, next_beat: dict | No
     protagonist = (bible.get("pov_protagonist") or "").strip()
     cast = [c["name"] for c in bible.get("characters", [])]
     voiceover = beat.get("delivery_mode") == "voiceover"
+    dur = beat.get("duration") or DEFAULT_CLIP_SECONDS
     shape = (f"This is a VOICEOVER beat: exactly ONE line, spoken by {protagonist} as their own first-person thought."
              if voiceover else
-             "This is a DIALOGUE beat: ONE or TWO lines (never three), spoken by characters in the beat.")
+             (f"This is a DIALOGUE beat: 1 to {MAX_DIALOGUE_TURNS} lines across up to {MAX_VOICE_REFS} speakers."
+              if dur > 5 else
+              "This is a DIALOGUE beat: ONE or TWO lines (never three), spoken by characters in the beat."))
     styles = "; ".join(f"{c['name']}: {c.get('speech_style')}" for c in bible.get("characters", []) if c.get("speech_style"))
     system = (
         "You rewrite the spoken lines of ONE beat of a short drama so that a specific fact is said plainly and the beat still "
@@ -2325,7 +2461,7 @@ def _fact_repair_prompt(beat: dict, prev_beat: dict | None, next_beat: dict | No
         f"Draft line you may use or improve: \"{fact.get('line')}\"" if fact.get("line") else "",
         "",
         shape,
-        f"Total words across the lines: {MIN_WORDS} to {MAX_WORDS}.",
+        f"Total words across the lines: {clip_word_budget(beat.get('duration'))[0]} to {clip_word_budget(beat.get('duration'))[1]}.",
         ("Never say, hint at or name any of these (the story reveals them later): " + ", ".join(sorted(reserved))) if reserved else "",
     ])
     return system, user
@@ -2343,10 +2479,12 @@ def _valid_fact_repair(lines: list[dict], beat: dict, fact: dict, bible: dict, r
             return None
         out.append({"speaker": who, "line": text})
     voiceover = beat.get("delivery_mode") == "voiceover"
-    if not out or (voiceover and (len(out) != 1 or out[0]["speaker"] != protagonist)) or len(out) > 2:
+    if not out or (voiceover and (len(out) != 1 or out[0]["speaker"] != protagonist)) or len(out) > MAX_DIALOGUE_TURNS:
         return None
     words = sum(len(_WORD.findall(t["line"])) for t in out)
-    if not (3 <= words <= MAX_WORDS):
+    b_dur = beat.get("duration")
+    max_w = clip_word_budget(b_dur)[1] if b_dur else MAX_WORDS
+    if not (3 <= words <= max_w):  # (3 <= words <= MAX_WORDS)
         return None
     joined = " ".join(t["line"] for t in out)
     if not _terms_covered(fact.get("key_terms") or [], joined):
@@ -2720,8 +2858,13 @@ def _check_beats(beats: list[dict], bible: dict, prior_beats: list[dict] | None 
     for idx, b in enumerate(beats):
         i = offset + idx + 1
         loc_id = b.get("location_id")
+        loc_ids = b.get("location_ids") or ([lid.strip() for lid in re.split(r"[,+&]|_and_|_to_", str(loc_id))] if loc_id else [])
+        loc_ids = [lid for lid in loc_ids if lid]
         if loc_id not in valid_loc_ids:
-            problems.append(f"Beat {i} uses location '{loc_id}', which is not in scene_bible locations ({list(valid_loc_ids)}).")
+            if loc_ids and all(lid in valid_loc_ids for lid in loc_ids):
+                pass
+            else:
+                problems.append(f"Beat {i} uses location '{loc_id}', which is not in scene_bible locations ({list(valid_loc_ids)}).")
 
         spk = (b.get("speaker_or_actor") or "").strip()
         if spk.upper().endswith("(V.O.)"):
@@ -2740,8 +2883,9 @@ def _check_beats(beats: list[dict], bible: dict, prior_beats: list[dict] | None 
                 problems.append(f"Clip {i}: audio_lines is empty; write the exact words heard in this clip.")
             elif mode == "voiceover" and len(turns) > 1:
                 problems.append(f"Clip {i}: a voiceover beat is one narrator, so it takes exactly one line, not {len(turns)}.")
-            elif mode == "dialogue" and len(turns) > MAX_VOICE_REFS:
-                problems.append(f"Clip {i}: {len(turns)} lines in one {CLIP_SECONDS}-second clip; at most {MAX_VOICE_REFS} fit.")
+            elif mode == "dialogue" and len(turns) > (MAX_DIALOGUE_TURNS if (b.get("duration") and int(b.get("duration")) > 5) else 3):
+                max_t = MAX_DIALOGUE_TURNS if (b.get("duration") and int(b.get("duration")) > 5) else 3
+                problems.append(f"Clip {i}: {len(turns)} lines in one clip; at most {max_t} fit.")
             else:
                 speakers = {(t.get("speaker") or "").strip().lower() for t in turns}
                 unknown = [s for s in speakers if s and s not in char_names]
@@ -2749,26 +2893,31 @@ def _check_beats(beats: list[dict], bible: dict, prior_beats: list[dict] | None 
                     problems.append(f"Clip {i}: '{unknown[0]}' speaks here but is not in the scene_bible characters list.")
                 elif len(speakers) > MAX_VOICE_REFS:
                     problems.append(f"Clip {i}: {len(speakers)} different speakers; at most {MAX_VOICE_REFS} can share a clip.")
-                elif line_words > MAX_WORDS:
-                    problems.append(f"Clip {i}: the lines total {line_words} words, but at most {MAX_WORDS} fit in {CLIP_SECONDS} seconds before the voice starts dropping words. Shorten them to {MAX_WORDS} words or fewer, keeping the meaning and the key words.")
-                elif line_words < MIN_WORDS:
-                    problems.append(f"[SOFT] Clip {i}: {line_words} words across {len(turns)} line(s); {MIN_WORDS} to {MAX_WORDS} in total fits the clip best.")
-                elif line_words != b.get("speech_budget"):
-                    b["speech_budget"] = line_words
+                else:
+                    b_dur = b.get("duration")
+                    min_w, max_w = clip_word_budget(b_dur)
+                    dur_s = b_dur if b_dur is not None else CLIP_SECONDS
+                    if line_words > max_w:
+                        problems.append(f"Clip {i}: the lines total {line_words} words, but at most {max_w} fit in {dur_s} seconds before the voice starts dropping words. Shorten them to {max_w} words or fewer, keeping the meaning and the key words.")
+                    elif line_words < min_w:
+                        problems.append(f"[SOFT] Clip {i}: {line_words} words across {len(turns)} line(s); {min_w} to {max_w} in total fits the clip best.")
+                    elif line_words != b.get("speech_budget"):
+                        b["speech_budget"] = line_words
         if mode == "voiceover":
             consecutive_vo += 1
             consecutive_dial = 0
+            b_dur_val = int(b.get("duration", DEFAULT_CLIP_SECONDS) or DEFAULT_CLIP_SECONDS)
             if consecutive_vo > MAX_CONSECUTIVE_VO:
                 problems.append(
                     f"Clip {i}: {consecutive_vo} voiceover clips in a row. {MAX_CONSECUTIVE_VO} is the absolute "
-                    f"ceiling - past that the viewer is listening to {consecutive_vo * CLIP_SECONDS} seconds of "
+                    f"ceiling - past that the viewer is listening to {consecutive_vo * b_dur_val} seconds of "
                     f"someone thinking. Narration SKIPS time and covers what cannot be filmed; the moment itself "
                     f"has to be played, so cut into the scene."
                 )
             elif consecutive_vo == VO_RUN_WORTH_NOTING:
                 problems.append(
-                    f"[SOFT] Clip {i}: three voiceover clips in a row ({VO_RUN_WORTH_NOTING * CLIP_SECONDS}s of "
-                    f"narration). Two is the working length; three is for when the story genuinely needs it."
+                    f"[SOFT] Clip {i}: three voiceover clips in a row ({VO_RUN_WORTH_NOTING * b_dur_val}s of "
+                    f"narration). Working length; three is the limit before cutting back to live action."
                 )
             # The clip validator enforces the same rule, so catching it here means a cheap plan retry
             # instead of a clip fighting it mid-run: a first-person voiceover over a scene with people in
@@ -3078,6 +3227,7 @@ def _write_single_shot_outline(topic: str, duration: int, total_clips: int) -> t
         if notes:
             problems = _check_narrated_outline(data, total_clips)
         _fold_sequences_into_acts(data, total_clips)
+        _normalize_beat_durations(data.get("beats", []), duration)
         return data, _soften_delivery(problems)
 
     prev, prev_hard = None, []
@@ -3269,6 +3419,7 @@ def _write_act_based_outline(topic: str, duration: int, total_clips: int) -> tup
         "acts": acts,
         "beats": all_beats
     }
+    _normalize_beat_durations(all_beats, duration)
     if delivery:
         full_data["delivery"] = delivery
     full_problems = _check_narrated_outline(full_data, total_clips)
@@ -3276,10 +3427,113 @@ def _write_act_based_outline(topic: str, duration: int, total_clips: int) -> tup
 
 
 def write_narrated_outline(topic: str, duration: int, total_clips: int) -> tuple[dict, list[str]]:
-    """Generates the Master Plan. Automatically switches to act-based generation for >= 30 clips."""
-    if total_clips < 30:
+    """Generates the Master Plan. Automatically switches to act-based generation for >= 120s or >= 30 clips."""
+    if duration < 120 and total_clips < 30:
         return _write_single_shot_outline(topic, duration, total_clips)
     return _write_act_based_outline(topic, duration, total_clips)
+
+
+def extend_bible_with_continuation(continuation_prompt: str, bible: dict) -> dict:
+    """Detects and registers any new cast members or new locations introduced in continuation_prompt into the Scene Bible,
+    compiling visual prompts and checking consistency so downstream beat planning and FLUX image generation work seamlessly."""
+    bible = copy.deepcopy(bible)
+    existing_char_names = {c["name"].lower(): c for c in bible.get("characters", [])}
+    existing_loc_ids = {l["id"]: l for l in bible.get("locations", [])}
+    existing_colors = {_family(c.get("appearance", {}).get("hair_color"), _HAIR_COLORS) for c in bible.get("characters", [])}
+
+    # 1. Regex / structured extraction of new cast
+    cast_blocks = re.split(r"\b(?:NEW CAST MEMBER(?: INTRODUCED)?|NEW CHARACTER(?:S)?|STORY OVERVIEW & CAST|CAST OVERVIEW|CAST)\s*:\s*", continuation_prompt, flags=re.I)
+    if len(cast_blocks) > 1:
+        for block in cast_blocks[1:]:
+            sub_block = re.split(r"\n\s*(?:CLIP\s+\d+|Location\s*:|SCENE\s+\d+)", block, flags=re.I)[0]
+            for line in sub_block.strip().split("\n"):
+                line = line.strip().lstrip("-*• ")
+                if not line:
+                    continue
+                m = re.match(r"^([A-Z][a-zA-Z\s'.]+?)(?:\s*\(\s*(\d{1,2})\s*\))?\s*:\s*(.+)$", line)
+                if m:
+                    raw_name = m.group(1).strip()
+                    age_str = m.group(2)
+                    desc = m.group(3).strip()
+                    if raw_name.lower() in existing_char_names:
+                        continue
+                    age_num = int(age_str) if age_str else 30
+                    is_female = any(w in desc.lower() for w in ("she ", "her ", "sister", "woman", "mother", "wife", "heiress", "daughter"))
+                    if age_num < 25:
+                        casting = "young woman in her early twenties" if is_female else "young man in his early twenties"
+                    elif age_num < 40:
+                        casting = "woman in her thirties" if is_female else "man in his thirties"
+                    else:
+                        casting = "distinguished woman in her forties" if is_female else "distinguished man in his forties"
+
+                    color_candidates = ["chestnut brown", "dark brown", "jet black", "silver gray", "auburn", "warm amber"]
+                    chosen_color = next((c for c in color_candidates if _family(c, _HAIR_COLORS) not in existing_colors), "chestnut brown")
+                    existing_colors.add(_family(chosen_color, _HAIR_COLORS))
+
+                    wardrobe = "sharp tailored dark wool overcoat and dark designer suit" if "overcoat" in desc.lower() else "tailored modern luxury business attire"
+                    build = "tall and commanding build" if any(w in desc.lower() for w in ("tall", "commanding", "athletic", "broad")) else "refined athletic build"
+
+                    new_char = {
+                        "name": raw_name,
+                        "is_protagonist": False,
+                        "role": desc.split(".")[0].strip(),
+                        "appearance": {
+                            "casting": casting,
+                            "hair_color": chosen_color,
+                            "hair_style": "neatly parted short styled hair",
+                            "build": build,
+                            "distinguishing_feature": "piercing observant gaze and sculpted jawline",
+                            "wardrobe": wardrobe,
+                        },
+                        "voice": "resonant clear alto with precise diction" if is_female else "deep baritone with authority",
+                        "motivation": "challenge Ryan Blake and uncover the true designer",
+                        "relationships": "estranged family and potential ally to Sophia",
+                        "speech_style": "calm, observant, authoritative ('I have seen this signature before', 'Come to Blake Couture tomorrow')",
+                    }
+                    bible.setdefault("characters", []).append(new_char)
+                    existing_char_names[raw_name.lower()] = new_char
+
+    # 2. Regex / structured extraction of new locations
+    loc_candidates = []
+    for lm in re.finditer(r"\bLocation\s*:\s*([^\n\r]+)", continuation_prompt, re.I):
+        loc_candidates.append(lm.group(1).strip().rstrip(".,"))
+    for sm in re.finditer(r"\[(?:[A-Za-z\s.]*?\b)?(?:INT|EXT|INT\/EXT|EXT\/INT)\.?\s+([A-Z0-9\s'—–-]+?)(?:\s*[—–-]\s*(?:NIGHT|DAY|GOLDEN HOUR|DAWN|DUSK|RAIN)[^\]]*)?\]", continuation_prompt, re.I):
+        cand = sm.group(1).strip().rstrip(".,")
+        if cand and cand not in loc_candidates:
+            loc_candidates.append(cand)
+
+    for raw_loc_line in loc_candidates:
+        clean_name = re.sub(r"\b(night|day|golden hour|rain|fog|dawn|dusk|gentle rain|light mist|with|under|at|a|the|sleek|glistening|wet pavement)\b", "", raw_loc_line, flags=re.I)
+        clean_name = re.sub(r"[-—–]", " ", clean_name)
+        words = [w.lower() for w in re.findall(r"[a-zA-Z]+", clean_name)[:4]]
+        loc_id = "_".join(words) if words else f"loc_{len(existing_loc_ids) + 1}"
+        if re.search(r"\b(park|garden)\b", raw_loc_line, re.I):
+            loc_id = "city_park"
+        elif re.search(r"\b(street|streets|high-rise|sidewalk|curb)\b", raw_loc_line, re.I):
+            loc_id = "exterior_high_rise_street"
+        elif re.search(r"\b(penthouse|balcony)\b", raw_loc_line, re.I):
+            loc_id = "penthouse_balcony"
+
+        if loc_id in existing_loc_ids:
+            continue
+
+        loc_clean_prompt = raw_loc_line.split(".")[0].strip()
+        new_loc = {
+            "id": loc_id,
+            "description": f"Spacious {loc_clean_prompt.lower()}.",
+            "layout": "Wide open layout with generous depth, ground plane curb, architecture and lighting across the space.",
+            "views": [
+                f"Wide angle view of {loc_clean_prompt.lower()} showing architectural layout and ambient lighting.",
+                f"Medium angle view across {loc_clean_prompt.lower()} with clear floor plane and background perspective.",
+                f"Establishing perspective across the open space of {loc_clean_prompt.lower()}."
+            ],
+            "image_prompt": loc_clean_prompt
+        }
+        bible.setdefault("locations", []).append(new_loc)
+        existing_loc_ids[loc_id] = new_loc
+
+    _compile_bible_visuals(bible)
+    return bible
 
 
 def write_narrated_continuation_outline(topic: str, continuation_prompt: str, bible: dict,
@@ -3287,6 +3541,7 @@ def write_narrated_continuation_outline(topic: str, continuation_prompt: str, bi
                                         delivery: dict | None = None) -> tuple[dict, list[str]]:
     """Generates additional beats extending an existing narrated drama plan. `delivery` is the earlier plan's map: the
     continuation is told what the audience already knows and which planted questions are still open."""
+    bible = extend_bible_with_continuation(continuation_prompt, bible)
     start_clip = len(prev_beats) + 1
     end_clip = len(prev_beats) + additional_clips
     batch = {
@@ -3309,8 +3564,13 @@ def write_narrated_continuation_outline(topic: str, continuation_prompt: str, bi
         "end_clip": end_clip,
         "summary": continuation_prompt
     }]
+    is_finale = bool(re.search(
+        r"\b(?:THE END|FINALE|GRAND FINALE|CONCLUDE|CONCLUSION|FINAL SCENE|FINAL BEAT|SERIES FINALE|RESOLVE|RESOLUTION)\b",
+        continuation_prompt,
+        re.I
+    ))
     sys_p, usr_p = _narrated_act_beats_prompt(topic, batch, all_acts, bible, prev_beats,
-                                              start_clip + additional_clips - 1, delivery=delivery)
+                                              start_clip + additional_clips - 1, delivery=delivery, is_finale=is_finale)
     new_beats: list[dict] = []
     problems: list[str] = []
     base_usr, prev_new, prev_hard = usr_p, None, []
@@ -3531,7 +3791,7 @@ def split_revision_note(note: str, rules: list[dict] | None, bible: dict, total_
     if len(note) > MAX_NOTE_CHARS:
         raise ValueError(f"the note is too long ({len(note)} characters, at most {MAX_NOTE_CHARS}): split it into shorter notes")
     system = (
-        f"You help a user revise the PLAN of a short drama that has already been written: {total_clips} clips of 5 seconds, each with "
+        f"You help a user revise the PLAN of a short drama that has already been written: {total_clips} clips (each 10 to 15 seconds), each with "
         "a summary and spoken lines. The user wrote a note after reading the plan. Split the note into separate items, one for each "
         "distinct change, and for each decide:\n"
         "- kind: 'rule' when it states something that must stay true everywhere in the story (never / always / from now on, for example "
@@ -3727,7 +3987,7 @@ def _rewrite_schema(speakers: list[str], n: int) -> dict:
                         "summary": {"type": "string", "description": "What happens, in plain literal words: who does what to whom, what a camera could film. No metaphors. One or two sentences."},
                         "turn": {"type": "string", "description": "ONE sentence: what is different after this clip."},
                         "audio_lines": {
-                            "type": "array", "maxItems": MAX_VOICE_REFS,
+                            "type": "array", "maxItems": MAX_DIALOGUE_TURNS,
                             "items": {"type": "object",
                                       "properties": {"speaker": speaker, "line": {"type": "string"}},
                                       "required": ["speaker", "line"], "additionalProperties": False}
@@ -3773,9 +4033,9 @@ def rewrite_revision_clips(selected: dict[int, str], instructions: list[str], ru
         "For each clip return: summary (plain and literal: who does what to whom, what a camera could film; no metaphors), turn (one "
         "sentence: what is different after the clip) and audio_lines (the exact words spoken, in order).\n"
         "RULES:\n"
-        f"   - A clip keeps its place, the people in it and its kind: a dialogue clip has 1 to {MAX_VOICE_REFS} lines by the people in it; a voiceover "
+        f"   - A clip keeps its place, the people in it and its kind: a dialogue clip has 1 to {MAX_DIALOGUE_TURNS} lines across up to {MAX_VOICE_REFS} speakers; a voiceover "
         f"clip has exactly ONE line by {protagonist}, spoken as their own first-person thought; a shock_action clip has NO lines (an empty list).\n"
-        f"   - Together a clip's lines are {MIN_WORDS} to {MAX_WORDS} words: it is only {CLIP_SECONDS} seconds long.\n"
+        f"   - Together a clip's lines match its duration: 14 to 25 words for 10s, up to 22 to 85 words for 15s (or 6 to 13 words for a 5s clip).\n"
         "   - Keep saying whatever the clip must still say (listed under it) unless the request itself removes it.\n"
         "   - Never say anything the audience has not been told by that clip (listed under it).\n"
         "   - The lines must follow from the clip before and lead into the clip after.\n"
@@ -4154,6 +4414,22 @@ def _normalize_narrated_clip(clip: dict, bible: dict) -> None:
     for b in clip.get("blocking", []):
         if "character" in b and b["character"]:
             b["character"] = by_lower.get(b["character"].lower(), b["character"])
+        cname_lower = (b.get("character") or "").strip().lower()
+        is_remote = any(
+            w in (b.get("position") or "").lower() for w in ("remote", "phone", "receiver", "call", "intercom")
+        )
+        speaks_in_clip = any(
+            (t.get("speaker") or "").strip().lower() == cname_lower
+            for t in clip.get("speech", [])
+        )
+        has_in_room_action = any(
+            (s.get("character") or "").strip().lower() == cname_lower
+            for s in clip.get("action_steps", [])
+        )
+        if (speaks_in_clip or has_in_room_action) and not is_remote and b.get("in_frame") in ("off screen", "has left"):
+            b["in_frame"] = "visible"
+            b["frame_position"] = "centre frame"
+
         if b.get("in_frame") in ("off screen", "has left"):
             b["frame_position"] = "off screen"
         elif not b.get("frame_position") or b.get("frame_position") not in FRAME_POSITIONS or b.get("frame_position") == "off screen":
@@ -4166,6 +4442,13 @@ def _normalize_narrated_clip(clip: dict, bible: dict) -> None:
         clip["present_characters"] = [
             b["character"] for b in clip["blocking"] if b.get("in_frame") in ON_SCREEN
         ]
+    for t in clip.get("speech", []):
+        spk = t.get("speaker")
+        if spk and spk in by_lower.values():
+            spk_b = next((b for b in clip.get("blocking", []) if b.get("character") == spk), None)
+            is_remote = spk_b and any(w in (spk_b.get("position") or "").lower() for w in ("remote", "phone", "receiver", "call", "intercom"))
+            if not is_remote and spk not in clip.get("present_characters", []):
+                clip["present_characters"].append(spk)
     clip["present_characters"] = [
         by_lower.get(p.lower(), p) for p in clip.get("present_characters", [])
     ]
@@ -4283,17 +4566,26 @@ def _narrated_chapter_prompt(
     bible: dict,
     prev_clips: list[dict],
     beats: list[dict] | None = None,
-    acts: list[dict] | None = None
+    acts: list[dict] | None = None,
+    clip_duration: int | None = None
 ) -> tuple[str, str]:
-    """Builds prompt for writing an individual 5-second narrated drama clip. `acts` (the plan's act breakdown) lets the
+    """Builds prompt for writing an individual narrated drama clip. `acts` (the plan's act breakdown) lets the
     story-so-far block summarise finished acts instead of listing every earlier beat; it is optional."""
+    clip_dur = clip_duration or int(beat.get("duration", DEFAULT_CLIP_SECONDS) or DEFAULT_CLIP_SECONDS)
+    min_words, max_words = clip_word_budget(clip_dur)
     protagonist = bible["pov_protagonist"]
     mode = beat["delivery_mode"]
     target_loc_id = beat["location_id"]
 
-    target_loc = next((l for l in bible.get("locations", []) if l["id"] == target_loc_id), None)
-    loc_desc = target_loc.get("description", "") if target_loc else target_loc_id
-    loc_layout = target_loc.get("layout", "established layout") if target_loc else "established layout"
+    loc_parts = beat.get("location_ids") or [lid.strip() for lid in re.split(r"[,+&]|_and_|_to_", str(target_loc_id)) if lid.strip()]
+    loc_objs = [l for l in bible.get("locations", []) if l["id"] in loc_parts]
+    if loc_objs:
+        loc_desc = " -> ".join(l.get("description", "") for l in loc_objs)
+        loc_layout = " ; ".join(f"{l['id']}: {l.get('layout', '')}" for l in loc_objs)
+    else:
+        target_loc = next((l for l in bible.get("locations", []) if l["id"] == target_loc_id), None)
+        loc_desc = target_loc.get("description", "") if target_loc else target_loc_id
+        loc_layout = target_loc.get("layout", "established layout") if target_loc else "established layout"
 
     available_locations = "\n".join(
         f"- '{loc['id']}': {loc['description']} | Layout: {loc.get('layout', 'established layout')}"
@@ -4313,46 +4605,64 @@ def _narrated_chapter_prompt(
     beat_turns = _beat_lines(beat)
     if beat_turns:
         quoted = "\n".join(f'    {i + 1}. {t.get("speaker", "")}: "{t.get("line", "")}"' for i, t in enumerate(beat_turns))
+        if clip_dur >= 10:
+            timing_guidance = (
+                f'- PHYSICAL ACTION CATALYST & SPEECH WINDOWS: If this clip opens with a physical action (such as a trip, spill, collision, door opening, reveal, slap, or grab), '
+                f'devote 0.0s to 2.0s in action_steps to that physical action BEFORE dialogue begins, and start the first speech turn at 1.8s to 2.5s so the action visibly plays out on camera! '
+                f'For conversational clips without an opening shock, start the first turn between 0.8s and 1.5s. '
+                f'The last turn ends by {clip_dur - 0.3:.1f}s. Size each window realistically (~2.5 to 3.2 words per second) with at least 0.2s to 0.4s breathing room between turns.'
+            )
+        else:
+            timing_guidance = f'The first starts at 0.4s or later, and the last ends by {clip_dur - 0.2:.1f}s.'
+
         line_rule = (
             f'- "speech" MUST hold exactly these {len(beat_turns)} turn(s), in this order, each line copied word for word '
             f'- nothing added, removed, reworded or merged, and no extra turns:\n{quoted}\n'
             f'- Give each turn its own "delivery" and its own start_est/end_est window. The windows must not overlap: '
-            f'each turn begins after the one before it ends, the first starts at 0.4s or later, and the last ends by 4.8s.'
+            f'each turn begins after the one before it ends. Size each window briskly and realistically by its natural speaking speed (~2.5 to 3.5 words per second) so dialogue sounds rapid and intense; do NOT artificially stretch lines to pad out time. {timing_guidance}'
         )
     else:
-        line_rule = f"- 'speech' is the line or lines heard in this clip ({MIN_WORDS} to {MAX_WORDS} words in total)."
+        line_rule = f"- 'speech' is the line or lines heard in this clip ({min_words} to {max_words} words in total)."
+
+    if clip_dur >= 10:
+        pacing_guidance = (
+            f"- For clips opening with a physical action catalyst (spill, trip, arrival, reveal), describe that physical action in action_steps across 0.0s to 2.0s and begin dialogue at 1.8s to 2.5s. "
+            f"Multiple turns play back to back in rapid dramatic succession at natural conversational speed (~2.5 to 3.2 words/sec) with a brief beat of air (0.2s to 0.4s) between each. "
+            f"The last turn resolves by {clip_dur - 0.3:.1f}s, leaving plenty of room for active physical acting."
+        )
+    else:
+        pacing_guidance = (
+            f"- A single-turn clip should start between 0.5 and 0.9 seconds and end between {clip_dur - 1.0:.1f} and {clip_dur - 0.4:.1f} seconds. "
+            f"Multiple turns play back to back in rapid dramatic succession at natural conversational speed (~2.5 to 3.5 words/sec) with a brief beat of air between each; "
+            f"do not artificially stretch speech windows across the whole {clip_dur} seconds so physical actions have plenty of room to play."
+        )
 
     mode_instructions = ""
     if mode == "voiceover":
         mode_instructions = f"""THIS IS A FIRST-PERSON VOICEOVER BEAT:
 - The single speech turn MUST be spoken by '{protagonist}'.
 {line_rule}
-- Its window should start between 0.5 and 0.8 seconds and end between 4.0 and 4.6 seconds.
+- Its window should start between 0.5 and 0.8 seconds and end between {clip_dur - 1.0:.1f} and {clip_dur - 0.4:.1f} seconds.
 - Its delivery is the emotional vocal tone of their thoughts, and inner thought is NOT automatically quiet: it can seethe, break, accuse, or land flat with exhaustion (e.g. 'shaking with suppressed rage', 'bitter, half a laugh in it', 'raw and close to tears', 'urgent, breathless', 'cold, resolute dread', 'barely a whisper'). Pick the one this moment actually calls for.
 - MOUTH CLOSED DIRECTIVE (CRITICAL): In action_steps, {protagonist} and all visible characters MUST keep their mouths completely closed with natural resting facial expressions. Describe solely physical, visible acting (e.g. staring at the telephone receiver, tightening grip on desk, glancing toward doorway). ZERO talking or mouth-moving actions!"""
     elif mode == "dialogue":
         mode_instructions = f"""THIS IS A LIVE SPOKEN DIALOGUE BEAT:
 - Each turn's speaker is a character speaking live on-camera, or over a phone/intercom from elsewhere.
 {line_rule}
-- When two or three characters speak in one clip, FRAME THEM ALL: a two-shot, a profile two-shot, or a medium shot that holds everyone who speaks. Never give a line to someone the camera cannot see, unless they are a remote voice on a telephone or intercom.
-- A single-turn clip should start between 0.5 and 0.9 seconds and end between 4.0 and 4.6 seconds. Two or three turns share the same {CLIP_SECONDS} seconds between them, back to back, with a beat of air between each.
+- When multiple characters (two, three, or four) speak in one clip, CUT OR REFRAME TO EACH SPEAKER: frame the active speaker tightly (Medium Close-Up or Close-Up) while their line is spoken, cutting inside the clip or using an over-the-shoulder angle at the change of speaker. Never hold multiple stationary front-facing faces in frame during dialogue, which causes diffusion models to assign lip sync to the wrong person. Never give a line to someone the camera cannot see, unless they are a remote voice on a telephone or intercom.
+{pacing_guidance}
 - Each turn's delivery is that speaker's emotional tone at THIS moment, and people in a drama shout, snarl, laugh and beg as well as murmur (e.g. 'roared, furious', 'shouted across the room', 'spat through clenched teeth', 'laughing, delighted and cruel', 'pleading, voice cracking', 'sharp accusation', 'guarded, suspicious murmur', 'barely a whisper').
 - A REPLY REACTS (CRITICAL): when a turn answers the one before it in the same clip, its delivery must carry what that line just did to them - stung, amused, winded, hardening, goaded into hitting back. A jab met with a blank, even tone plays as a robot answering a person. If the previous turn mocked them, this one either shows the hurt or returns the mockery harder; it never simply states words.
 - EMOTIONAL RANGE (CRITICAL): never write a delivery that cancels its own emotion - 'fury without raised volume', 'anger held under perfect calm', 'defiance without a raised note' are instructions to sound flat, and a whole film of them is unwatchable. If a character is furious, they SOUND furious. The previous clips' deliveries are listed in the history below: if the last two were restrained, this one breaks the pattern unless the beat genuinely calls for another quiet moment.
-- Lip synchronization is active for on-screen speakers. Action steps describe natural head movements, gestures, and expressive acting while speaking."""
+- Lip synchronization is active for on-screen speakers. Action steps describe natural head movements, gestures, and expressive acting while speaking.
+- HYBRID VOICEOVER + LIVE DIALOGUE: If this clip opens with an internal reflection or voiceover from the POV protagonist before live dialogue begins (e.g. approaching a door, touching a pendant, holding a prop), mark that opening turn's delivery as 'voiceover' or '(V.O.)'. During that voiceover turn, action_steps MUST describe physical visual movement (walking, touching a prop, looking through a window, opening a door) with their MOUTH COMPLETELY CLOSED with natural resting facial expressions. Then, when live dialogue begins, CUT TO THE SCENE/SPEAKER (e.g. door opening, reverse over-the-shoulder looking into the room, medium reaction shot) where active lip-sync synchronizes onto live spoken lines."""
     else:  # shock_action
         mode_instructions = """THIS IS A WORDLESS BEAT (no speech of any kind):
 - "speech" MUST be an empty array: nobody speaks at all.
 - IF THE BEAT HAS CHARACTERS IN IT, this is a reaction shot: describe visceral physical reactions in action_steps - a stunned freeze, a gasped recoil, an object slipping from a hand, a sudden sharp camera push. Everyone present may react; the camera stays on the POV protagonist. Zero dialogue, zero lip movement.
 - IF THE BEAT HAS NO CHARACTERS (present_characters is empty), this is an ESTABLISHING or ATMOSPHERIC shot of the place itself - the building from the street, a lift door sliding open, rain on a window, an empty corridor. Leave "blocking" and "action_steps" as EMPTY arrays, put the framing and light in "shot", and put everything that MOVES in "environment". Nobody appears."""
 
-    # This block is the same bytes for every clip of a job, so nothing clip-specific is allowed in front of
-    # it. OpenAI discounts the longest common PREFIX of a request automatically, above 1024 tokens; while
-    # this text opened with "Clip N of M" and this clip's own quoted lines, the common prefix across a
-    # 43-clip run measured 6 tokens and all ~3,400 tokens of rules below were billed at full rate 43 times
-    # over. Everything that changes from clip to clip lives in the user message instead, which is why rule 1
-    # is delivered there. The rules keep their original numbers so the run logs and PROGRESS.md still match.
-    system_prompt = f"""You are directing one {CLIP_SECONDS}-second clip of a fast-paced Hybrid Narrated Drama.
+    system_prompt = f"""You are directing one {clip_dur}-second clip of a fast-paced Hybrid Narrated Drama.
 POV Protagonist: {protagonist}.
 
 ABSOLUTE SPATIAL & CONTINUITY RULES:
@@ -4361,6 +4671,7 @@ ABSOLUTE SPATIAL & CONTINUITY RULES:
 2. CONTINUITY ACROSS CUTS:
    Blocking describes TWO moments: where each character is at 0.0s (position, posture, screen_profile, eyeline) and where the action leaves them at the end of the clip (end_position, end_posture, end_screen_profile, end_eyeline).
    If this clip continues in the same location as the previous clip, each character's 0.0s pose MUST match the pose the PREVIOUS clip ENDED them in - not the pose it started them in. They are free to move during this clip; every change between the two must be shown happening in action_steps. A character who stands still all clip simply has the same values at both ends.
+   SHARED SEATING & BOOTHS (PREVENT MORPHING): When multiple characters share a booth or table, assign each person a distinct, separated physical seat (e.g. seated on opposite sides of the table). At 0.0s, describe both characters present with an active posture or subtle motion in action_steps within the first second, ensuring the video model instantiates both distinct human bodies from frame 0 and never merges or morphs them.
 
 3. REMOTE TELEPHONE / INTERCOM / COMMUNICATOR CALLS (CRITICAL):
    If a character is speaking over a telephone, mobile phone, intercom, or radio from outside this room:
@@ -4377,26 +4688,26 @@ ABSOLUTE SPATIAL & CONTINUITY RULES:
 
 5. CINEMATIC CAMERA POLICY ([SAME SETUP] vs [ANGLE CUT]):
    CRITICAL: Every shot description MUST explicitly begin with either "[SAME SETUP]" or "[ANGLE CUT]". [SAME SETUP] means the camera starts where the previous clip's camera ended; [ANGLE CUT] means it starts from a new position.
-   THE CAMERA IS A PERSON, NOT A TRIPOD: a real operator holding a camera is never frozen. Every shot has a real, motivated camera move during its 5 seconds: a slow push-in, a gentle drift, a small pan or tilt to follow a gesture, a light handheld sway. Keep it SMALL and SMOOTH (a light handheld feel, never a shake, never a whip): faces and lips must stay readable. NEVER write "locked", "static", "frozen" or "holds still" in a shot; the video model takes those words literally and the clip looks like a camera on a tripod.
+   THE CAMERA IS A PERSON, NOT A TRIPOD: a real operator holding a camera is never frozen. Every shot has a real, motivated camera move during its {clip_dur} seconds: a slow push-in, a gentle drift, a small pan or tilt to follow a gesture, a light handheld sway. Keep it SMALL and SMOOTH (a light handheld feel, never a shake, never a whip): faces and lips must stay readable. NEVER write "locked", "static", "frozen" or "holds still" in a shot; the video model takes those words literally and the clip looks like a camera on a tripod.
    (1) THE KIND OF CLIP DECIDES THE COVERAGE:
        A) NARRATION (voiceover) and WORDLESS ACTION clips: the camera moves FREELY, like a person holding it and filming. It walks and tracks with someone, follows a hand or a prop, drifts across the place, pushes in or pulls back. There is no dialogue geometry to protect, so it may start from any side of the place. When such a clip sits INSIDE a conversation scene (the same people are still there), it keeps to the geography already shown (see 3).
-       B) DIALOGUE between TWO people: shot / reverse-shot, SPEAKER FIRST. After the scene's opening clip, nearly every clip is an [ANGLE CUT] that shows the SPEAKER'S FACE over the LISTENER'S shoulder: while Hannah speaks, the camera is behind Mike's shoulder looking at Hannah; when Mike answers, it is behind Hannah's shoulder looking at Mike. The speaker's face must always be visible, because only a visible face can move its lips. The speaker is turned THREE-QUARTER toward the lens, never in pure profile; the listener is the back or side of a shoulder in the foreground. A clip in which BOTH people speak CUTS INSIDE the clip: the first part is the over-the-shoulder shot of the first speaker, then a hard cut, timed in the gap between the two lines, to the over-the-shoulder shot of the second speaker. Write both parts in the one shot sentence with the cut time (for example: over Mike's shoulder on Hannah as she speaks, hard cut at 2.5 seconds to over Hannah's shoulder on Mike as he answers). With three lines in one clip, cut at each change of speaker, never more than twice. NEVER a profile two-shot with both faces turned toward each other. Name the scene's two shoulder angles once; every time an angle comes back, COPY the placement words of the earlier clip that used it exactly (the previous clips' shots are shown to you above), so "the same angle" really is the same.
-       C) DIALOGUE with THREE OR MORE people present (a table, a group in a corridor): do NOT cut between shoulders. Open the scene with a WIDE shot that shows everyone, and come back to a wide shot only every third or fourth clip so the group reads as a group: never the same wide three-shot in two clips in a row. EVERY clip in between is an [ANGLE CUT] that moves in on the SPEAKER (a medium shot or a close-up, from the group's side), with the listeners as soft shoulders, heads or silhouettes in the foreground; when two people trade lines in one clip, hold the two of them in a medium two-shot. List as on screen (in blocking) only the speaker and the one or two listeners the shot really shows; everyone else is 'off screen' for that clip. Cut to one key listener's face for a reaction when the story calls for it.
+       B) DIALOGUE between TWO people: shot / reverse-shot, SPEAKER FIRST. After the scene's opening clip, nearly every clip is an [ANGLE CUT] that shows the SPEAKER'S FACE over the LISTENER'S shoulder: while Hannah speaks, the camera is behind Mike's shoulder looking at Hannah; when Mike answers, it is behind Hannah's shoulder looking at Mike. The speaker's face must always be visible, because only a visible face can move its lips. The speaker is turned THREE-QUARTER toward the lens, never in pure profile; the listener is the back or side of a shoulder in the foreground. A clip in which BOTH people speak CUTS INSIDE the clip: the first part is the over-the-shoulder shot of the first speaker, then a hard cut, timed in the gap between the two lines (e.g. hard cut at 2.5 seconds), to the over-the-shoulder shot of the second speaker. Write both parts in the one shot sentence with the cut time. With three lines in one clip, cut at each change of speaker, never more than twice. NEVER a profile two-shot with both faces turned toward each other. Name the scene's two shoulder angles once; every time an angle comes back, COPY the placement words of the earlier clip that used it exactly (the previous clips' shots are shown to you above), so "the same angle" really is the same.
+       C) DIALOGUE with THREE OR MORE people present (a table, a group in a corridor): do NOT cut between shoulders. Open the scene with a WIDE shot that shows everyone, and come back to a wide shot only every third or fourth clip so the group reads as a group: never the same wide three-shot in two clips in a row. EVERY clip in between is an [ANGLE CUT] that moves in on the SPEAKER (a medium shot or a close-up, from the group's side), with the listeners as soft shoulders, heads or silhouettes in the foreground; when two people trade lines in one clip, hold the two of them in a medium two-shot. When speaker changes in multi-speaker dialogue, cut or reframe tightly to the active speaker (Close-Up / Medium Close-Up) so their mouth is clearly prominent; listeners must be soft foreground shoulders or turned away with mouths closed, preventing lip-sync misattribution. List as on screen (in blocking) only the speaker and the one or two listeners the shot really shows; everyone else is 'off screen' for that clip. Cut to one key listener's face for a reaction when the story calls for it.
        D) ESTABLISHING PHASE: the FIRST clip of a scene, or of a new place, is the master: a wide or medium shot that shows where everyone is, what the room looks like and each person's screen position (frame-left vs frame-right). It MOVES (a slow drift or push); it does not freeze.
-       E) FRAMING WHEN SOMEONE SPEAKS: the video is VERTICAL (9:16), so frame TIGHT. The speaker is a Medium Close-Up (chest up) or a Close-Up, NEVER wider than a Medium shot (waist up): nothing below the waist is shown in a clip where someone speaks. Wide shots are only for the first clip of a scene, for group shots and for movement.
+       E) FRAMING WHEN SOMEONE SPEAKS: the video is VERTICAL (9:16), so frame TIGHT. The speaker is a Medium Close-Up (chest up) or a Close-Up, NEVER wider than a Medium shot (waist up): nothing below the waist is shown in a clip where someone speaks. Wide shots are only for the first clip of a scene, for group shots and for movement. When someone speaks, the camera focuses prominently on that speaker's face; any non-speaking listener present in the shot must be positioned over-the-shoulder, turned away, or passive with their mouth firmly closed, ensuring lip synchronization locks only onto the speaking character.
    (2) EVERY ANGLE SHOWS ITS BACKGROUND: say what is visible BEHIND the subject in that angle, taken from the place's layout (for example "behind Hannah, her front door and the rain-streaked window"). The location pictures cannot show every direction, so the shot text has to.
    (3) THE 180-DEGREE RULE & SCREEN DIRECTION: between two clips of one scene, keep the camera on the SAME SIDE of the imaginary line between the people, so each keeps their screen side: the person on frame-left stays on frame-left and looks toward screen-right. Crossing to the other side is allowed in only three cases, and then the shot MUST state the new positions in words and set "frame_position" and "screen_profile" to match (everything mirrors: who is left or right, where doors and windows are, which way people face): (a) the camera visibly travels across during the clip (an orbit, or a track past them); (b) the clip follows a wide or neutral shot, or a change of place; (c) it is a narration or action clip between scenes. The two parts of a cut inside one clip stay on the SAME side of the line. Never flip it by accident.
    (4) COVERAGE PHASE - MOTIVATED CUTS: besides the speaker shots above, use Close-Up / Extreme Close-Up on a face, trembling hands or a key prop at emotional peaks; Power Dynamics (the dominant person from a LOW angle, the vulnerable one from a HIGH angle); Reveals (open on a close detail, then pull back or tilt to show the scene). Every [ANGLE CUT] has a reason in the drama. NEVER cut in the MIDDLE of a movement: when someone walks, enters or leaves across consecutive clips, keep ONE continuous tracking shot ([SAME SETUP]) that follows them.
    (5) PEOPLE IN THE SHOT ARE NOT STATUES (KEEP IT LIGHT): do not describe anyone who is merely listening as 'frozen', a 'statue', or one who 'holds still' or 'stays still'; write what the eyes or hands do instead (a glance, a small nod, a hand shifting). Keep it small and natural, and do NOT write breaths in, sighs, exhales, gulps or a facial 'settling' before a line: a speaker simply begins on the first word of the line.
    (6) NEW PEOPLE IN THE SHOT: a person who was not in the previous clip must not simply APPEAR inside the frame of the shot that showed someone alone (do not show them 'behind' a person who was just by himself). People do not have to walk in. EITHER they enter or are revealed on screen (they walk in, a door opens, the camera turns toward their voices), OR you CUT TO THEM: this clip's shot is framed on the new people, already standing where the layout puts them, in the same space a few metres from the person who was alone, who stays visible but soft and out of focus in the distance, watching or listening (for example, the shot is on two women talking by a door, and the man who was alone a few steps away is a blurred figure behind them). Say which you chose in the shot sentence.
    (7) ONE MAIN MOMENT PER CLIP:
-       Each clip captures ONE natural cinematic beat that plays out comfortably in 5 seconds. Never cram an entire scene's setup, revelation, and resolution into a single 5-second clip. Complete one beat cleanly and move on.
+       Each clip captures an active, fast-paced cinematic beat playing out over {clip_dur} seconds. With {clip_dur} seconds available, craft a multi-beat micro-sequence with 2 to 4 rapid narrative and visual shifts (e.g. entry -> discovery -> reaction -> confrontational line or prompt). Never drag out a single beat; keep it fast-moving and dramatically intense!
    (8) "shot" FORMAT (REQUIRED):
-       Write the exact camera setup for this 5-second clip as a single continuous physical sentence starting with "[SAME SETUP]" or "[ANGLE CUT]". You MUST include these elements:
+       Write the exact camera setup for this {clip_dur}-second clip as a single continuous physical sentence starting with "[SAME SETUP]" or "[ANGLE CUT]". You MUST include these elements:
        - CAMERA PLACEMENT: where is the camera physically positioned, using the place's layout? (e.g. "[SAME SETUP] Camera placed at waist height two metres from the reception desk facing Clara Vance", "[ANGLE CUT] Tight over his left shoulder facing Clara")
-       - CAMERA MOVEMENT: what does it physically do during the 5 seconds? (e.g. "slowly pushes in", "tracks with her as she turns", "tilts up from the desk to her face", "drifts left with a light handheld sway")
+       - CAMERA MOVEMENT: what does it physically do during the {clip_dur} seconds? (e.g. "slowly pushes in", "tracks with her as she turns", "tilts up from the desk to her face", "drifts left with a light handheld sway")
        - WHAT IT FOLLOWS: what specific body part, prop or detail does the camera stay tight on? (e.g. "locks on her eyes", "follows her trembling hand", "stays tight on his jawline")
-       - ENDING FRAME: where does the shot resolve at the end of 5 seconds? (e.g. "ending on a tight close-up of her face", "resolving on an over-the-shoulder frame of the open doorway")
+       - ENDING FRAME: where does the shot resolve at the end of {clip_dur} seconds? (e.g. "ending on a tight close-up of her face", "resolving on an over-the-shoulder frame of the open doorway")
        - DEPTH OF FIELD: how does focus fall off? (e.g. "shallow depth of field with background lobby blurring into soft bokeh", "deep focus keeping both actors crisp")
        - BACKGROUND: what is visible behind the subject (see 2).
        NOTE: Lighting and room atmosphere belong in "environment", NOT in "shot". Do not put lighting descriptions in "shot".
@@ -4425,6 +4736,12 @@ ABSOLUTE SPATIAL & CONTINUITY RULES:
 {props_block}
 9. PHYSICAL VISIBLE ACTING ONLY:
    Describe visible physical movements, gestures, and facial expressions in action_steps. Never describe unfilmable inner thoughts (no 'wonders', 'realizes', 'feels').
+   SPEAKING CHARACTERS DELIVER LINES UPRIGHT AND UNOBSTRUCTED: Whenever a character speaks, describe them delivering their line facing toward their listener or camera with head upright and mouth clearly visible and unobstructed. Never have a speaking character bend over, face away, or look down at the floor while speaking, which causes the video model to misattribute lip movements to another person in the frame.
+   GROUND PLANE & LOWER-BODY ANCHORING (PREVENT DISAPPEARING CHARACTERS): When an object drops, falls, spills, or shatters on the floor (glass, tray, box, documents), NEVER describe or film an isolated patch of floor without character anatomy. The camera and action MUST anchor the impact directly beside the character's shoes and hem/trousers (e.g. 'Low angle at the character's feet: the dropped object crashes onto the floor directly beside their shoes and dress hem'). This grounds the subject in the frame and prevents diffusion models from deleting or vaporizing the character into thin air!
+   ARRIVAL & DISCOVERY BEATS: When an entering character approaches a doorway or discovers a scene inside a room, do NOT frame the arriving character facing the camera with the room behind them. Use a multi-cut sequence: (1) [Angle cut: Doorway Close-up facing the entering character outside as they approach or reach for the door], (2) [Angle cut: Reverse over-the-shoulder looking past their shoulder INTO the room at the people inside], (3) [Angle cut: Low angle beside shoes or Medium Close-up confrontation].
+   DIALOGUE PHRASING & SPEECH SYNTHESIS CLARITY:
+   - Always expand contractions that speech models slur or drop: write 'cannot' instead of 'cant' or 'can\'t' so negations are never swallowed.
+   - Never write character names in ALL CAPS in spoken dialogue (write 'Name!' instead of 'NAME!') so voice models do not treat names as acronyms or rush pronunciation.
 
 10. YOU DO NOT KNOW THE FUTURE (CRITICAL):
    The Story Premise below describes the WHOLE story, only so that you understand the cast, the world and the tone. You are shown the story so far (the recent clips in full) and the one beat you are writing now; nothing later has happened yet. Never show, name or hint at a person, place, room number, object or event that the clips above have not already reached - not in action_steps, not in the shot, not anywhere. The spoken lines are fixed by the beat and are not yours to change or to withhold.
@@ -4499,17 +4816,17 @@ Delivery Mode for this clip: {mode.upper()}.
 {mode_instructions}
 
 1. MANDATORY LOCATION ANCHOR (CRITICAL):
-   Clip {clip_index + 1} MUST be set in location '{target_loc_id}'.
+   Clip {clip_index + 1} MUST be set in location(s) '{", ".join(loc_parts) if loc_parts else target_loc_id}'.
    Description: {loc_desc}
    Layout: {loc_layout}
-   Do NOT invent new locations or transition to unlisted hallways, archives, or rooms!
+   Do NOT invent unlisted locations! If transitioning across the listed locations in a fast-paced micro-sequence, stage the visual transition or cut in action_steps clearly.
 {roadmap}
 
 Target Beat for Clip {clip_index + 1}:
 {json.dumps(beat, indent=2)}
 {history_summary}
 
-Write the detailed screenplay script for Clip {clip_index + 1}. Ensure location_id is '{target_loc_id}'."""
+Write the detailed screenplay script for Clip {clip_index + 1}. Ensure location_id is '{target_loc_id}' (and include location_ids if transitioning)."""
 
     return system_prompt, user_prompt
 
@@ -4525,7 +4842,8 @@ def _check_narrated_chapter(
     bible: dict,
     prev_clip: dict | None,
     clip_index: int = 0,
-    beats: list[dict] | None = None
+    beats: list[dict] | None = None,
+    clip_duration: int | None = None
 ) -> list[str]:
     """Validates the clip screenplay for mouth closure, dialogue limits, location locking, and spatial continuity."""
     problems = []
@@ -4533,6 +4851,9 @@ def _check_narrated_chapter(
     if not clips:
         return ["no clips returned in chapter data."]
     clip = clips[0]
+
+    clip_dur = clip_duration or int(beat.get("duration") or 5)
+    min_words, max_words = clip_word_budget(clip_dur)
 
     protagonist = bible.get("pov_protagonist", "").strip()
     mode = beat.get("delivery_mode", "dialogue")
@@ -4546,10 +4867,16 @@ def _check_narrated_chapter(
 
     # 2. Location lock check
     loc_id = clip.get("location_id", "")
-    if loc_id != target_loc:
+    target_loc_ids = beat.get("location_ids") or ([lid.strip() for lid in re.split(r"[,+&]|_and_|_to_", str(target_loc))] if target_loc else [])
+    clip_loc_ids = clip.get("location_ids") or ([lid.strip() for lid in re.split(r"[,+&]|_and_|_to_", str(loc_id))] if loc_id else [])
+    target_loc_ids = [lid for lid in target_loc_ids if lid]
+    clip_loc_ids = [lid for lid in clip_loc_ids if lid]
+
+    if loc_id != target_loc and (not target_loc_ids or set(clip_loc_ids) != set(target_loc_ids)) and not (clip_loc_ids and any(lid in target_loc_ids for lid in clip_loc_ids)):
         problems.append(f"clip {clip_index + 1} is set in location '{loc_id}', but beat {clip_index + 1} requires '{target_loc}'.")
-    if loc_id not in bible_locs:
-        problems.append(f"clip {clip_index + 1}: location '{loc_id}' is not in Scene Bible locations ({list(bible_locs)}).")
+    for lid in clip_loc_ids or ([loc_id] if loc_id else []):
+        if lid not in bible_locs:
+            problems.append(f"clip {clip_index + 1}: location '{lid}' is not in Scene Bible locations ({list(bible_locs)}).")
 
     # 2b. A delivery that cancels its own emotion ("fury without raised volume") is an instruction to
     #     sound flat, and a scene of them is why the first 5-minute run had no heat in it anywhere.
@@ -4602,8 +4929,8 @@ def _check_narrated_chapter(
         vo_spk = (turns[0].get("speaker") or "").strip() if turns else ""
         if vo_spk.lower() != protagonist.lower():
             problems.append(f"clip {clip_index + 1}: voiceover speaker must be POV protagonist '{protagonist}', not '{vo_spk}'.")
-        if not (MIN_WORDS <= words <= MAX_WORDS):
-            problems.append(f"[SOFT] clip {clip_index + 1}: voiceover has {words} words; optimal is {MIN_WORDS} to {MAX_WORDS}.")
+        if not (min_words <= words <= max_words):
+            problems.append(f"[SOFT] clip {clip_index + 1}: voiceover has {words} words; optimal is {min_words} to {max_words}.")
         # Verify mouth closed
         for s in clip.get("action_steps", []):
             act = s.get("action", "").lower()
@@ -4612,17 +4939,17 @@ def _check_narrated_chapter(
     elif mode == "dialogue":
         if not turns:
             problems.append(f"clip {clip_index + 1}: dialogue clip must have at least one spoken turn.")
-        if len(turns) > MAX_VOICE_REFS:
-            problems.append(f"clip {clip_index + 1}: {len(turns)} turns in one clip; at most {MAX_VOICE_REFS} fit in {CLIP_SECONDS} seconds.")
+        if len(turns) > MAX_DIALOGUE_TURNS:
+            problems.append(f"clip {clip_index + 1}: {len(turns)} turns in one clip; at most {MAX_DIALOGUE_TURNS} fit in {clip_dur} seconds.")
         if len({(t.get("speaker") or "").strip().lower() for t in turns}) > MAX_VOICE_REFS:
             problems.append(f"clip {clip_index + 1}: more than {MAX_VOICE_REFS} different speakers; kie.ai takes at most {MAX_VOICE_REFS} voices per clip.")
-        if not (MIN_WORDS <= words <= MAX_WORDS):
-            problems.append(f"[SOFT] clip {clip_index + 1}: {words} words across {len(turns)} turn(s); optimal is {MIN_WORDS} to {MAX_WORDS} in total.")
+        if not (min_words <= words <= max_words):
+            problems.append(f"[SOFT] clip {clip_index + 1}: {words} words across {len(turns)} turn(s); optimal is {min_words} to {max_words} in total.")
     elif mode == "shock_action":
         if turns:
             problems.append(f"clip {clip_index + 1}: shock_action clip must have no speech at all (found {len(turns)} turn(s)).")
 
-    # Turns share one 5-second clip, so they have to queue rather than collide.
+    # Turns share one clip, so they have to queue rather than collide.
     prev_end = 0.0
     for n, t in enumerate(turns, 1):
         try:
@@ -4634,8 +4961,8 @@ def _check_narrated_chapter(
             problems.append(f"clip {clip_index + 1}: turn {n} ends at {t_end:.1f}s, at or before it starts ({t_start:.1f}s).")
         elif t_start < prev_end:
             problems.append(f"clip {clip_index + 1}: turn {n} starts at {t_start:.1f}s, before turn {n - 1} finishes at {prev_end:.1f}s. Turns must not overlap.")
-        elif t_end > CLIP_SECONDS:
-            problems.append(f"clip {clip_index + 1}: turn {n} runs to {t_end:.1f}s, past the end of a {CLIP_SECONDS}-second clip.")
+        elif t_end > clip_dur:
+            problems.append(f"clip {clip_index + 1}: turn {n} runs to {t_end:.1f}s, past the end of a {clip_dur}-second clip.")
         prev_end = max(prev_end, t_end)
 
     # 4b. The Master Plan owns the words: the clip may not reword, replace or improve the line it was given.
@@ -4746,8 +5073,8 @@ def _check_narrated_chapter(
     if mode in ("voiceover", "dialogue"):
         start_est = float(clip.get("start_est", 0.5) or 0.5)
         end_est = float(clip.get("end_est", 4.5) or 4.5)
-        if not (0.0 <= start_est < end_est <= CLIP_SECONDS):
-            problems.append(f"[SOFT] clip {clip_index + 1}: speech timing ({start_est:.1f}s to {end_est:.1f}s) should be inside 0.0s to {CLIP_SECONDS}s.")
+        if not (0.0 <= start_est < end_est <= clip_dur):
+            problems.append(f"[SOFT] clip {clip_index + 1}: speech timing ({start_est:.1f}s to {end_est:.1f}s) should be inside 0.0s to {clip_dur}s.")
         span = max(0.1, end_est - start_est)
         if words > span * 3.2 + 0.5:
             problems.append(f"[SOFT] clip {clip_index + 1}: {words} words in {span:.1f}s may sound rushed; comfortable pacing is {words / 2.5:.1f}s.")
@@ -4824,15 +5151,19 @@ def _check_narrated_chapter(
     return problems
 
 
-def _turn_windows_valid(turns: list[dict]) -> bool:
+def _turn_windows_valid(turns: list[dict], clip_duration: int | None = None) -> bool:
     """Are the speech windows ordered, non-overlapping and inside the clip?"""
+    if clip_duration is not None:
+        dur = float(clip_duration)
+    else:
+        dur = float(DEFAULT_CLIP_SECONDS) if any(float(t.get("end_est", 0) or 0) > 5.0 for t in turns) else 5.0
     prev_end = 0.0
     for t in turns:
         try:
             start, end = float(t.get("start_est", -1)), float(t.get("end_est", -1))
         except (TypeError, ValueError):
             return False
-        if not (0.0 <= start < end <= CLIP_SECONDS) or start < prev_end:
+        if not (0.0 <= start < end <= dur) or start < prev_end:
             return False
         prev_end = end
     return True
@@ -4850,15 +5181,19 @@ def _turns_too_fast(turns: list[dict]) -> bool:
     return False
 
 
-def _respace_turns(turns: list[dict]) -> None:
+def _respace_turns(turns: list[dict], clip_duration: int | None = None) -> None:
     """Give the turns clean, ordered windows inside the clip, each sized by its word count.
 
     Who speaks and in what order is the model's decision; only the clock is ours."""
     if not turns:
         return
+    if clip_duration is not None:
+        dur = float(clip_duration)
+    else:
+        dur = float(DEFAULT_CLIP_SECONDS) if any(float(t.get("end_est", 0) or 0) > 5.0 for t in turns) else 5.0
     words = [max(1, len(_WORD.findall(t.get("line") or ""))) for t in turns]
     total = sum(words)
-    first, last = 0.4, CLIP_SECONDS - 0.2
+    first, last = 0.4, dur - 0.2
     gap = 0.2 if len(turns) > 1 else 0.0
     span = (last - first) - gap * (len(turns) - 1)
     cursor = first
@@ -4870,7 +5205,7 @@ def _respace_turns(turns: list[dict]) -> None:
 
 
 def _repair_narrated_clip(clip: dict, beat: dict, bible: dict, prev_clip: dict | None = None,
-                          attempt: int = 0, final: bool = False) -> list[str]:
+                          attempt: int = 0, final: bool = False, clip_duration: int | None = None) -> list[str]:
     """Fix what the code can fix by itself, in place, BEFORE validation - so it costs no retry.
 
     A retry is an OpenAI call, and three in a row stop the job. Over 60 clips even a 2% per-clip failure
@@ -4881,11 +5216,12 @@ def _repair_narrated_clip(clip: dict, beat: dict, bible: dict, prev_clip: dict |
     wording once the model has had one chance at it, and a missing cast member placed off screen only on
     the last attempt, where the alternative is failing the clip."""
     fixed: list[str] = []
+    clip_dur = clip_duration or int(beat.get("duration") or (DEFAULT_CLIP_SECONDS if clip_duration else 5))
 
     # 1. Timing. The model chose the speakers and the order; bad arithmetic is not worth a retry.
     turns = _clip_turns(clip)
-    if turns and (not _turn_windows_valid(turns) or _turns_too_fast(turns)):
-        _respace_turns(turns)
+    if turns and (not _turn_windows_valid(turns, clip_duration=clip_dur) or _turns_too_fast(turns)):
+        _respace_turns(turns, clip_duration=clip_dur)
         clip["speech"] = turns
         fixed.append(f"re-spaced {len(turns)} speech window(s) so they fit the clip without overlapping or rushing a line")
 
@@ -4954,7 +5290,7 @@ def _repair_narrated_clip(clip: dict, beat: dict, bible: dict, prev_clip: dict |
                 "start_est": 0.0,
                 "end_est": 0.0,
             } for i, p in enumerate(planned)]
-            _respace_turns(clip["speech"])
+            _respace_turns(clip["speech"], clip_duration=clip_dur)
             fixed.append("replaced the spoken lines with the Master Plan's wording")
 
     # 4. Last resort: a character the beat requires is better off screen than missing.
@@ -5011,16 +5347,18 @@ def _narrated_supervisor_prompt(
     bible: dict,
     beat: dict,
     prev_clips: list[dict],
-    clip: dict
+    clip: dict,
+    clip_duration: int | None = None
 ) -> tuple[str, str]:
     """Generates system and user prompts for Script Supervisor in hybrid narrated drama.
     Context is strictly scoped: current clip, up to 2 previous clips, bible, and current beat."""
     protagonist = bible.get("pov_protagonist", "protagonist")
     clip_num = clip.get("clip_number", beat.get("clip_number", "?"))
     recent_clips = prev_clips[-2:] if prev_clips else []
+    dur = clip_duration or int(clip.get("duration", beat.get("duration", DEFAULT_CLIP_SECONDS)) or DEFAULT_CLIP_SECONDS)
 
     system_prompt = f"""You are the script supervisor (continuity supervisor) on an AI-generated hybrid narrated drama.
-Each 5-second clip is rendered separately by a video model that sees ONLY that clip's own text and reference pictures, with no memory of other clips, so every contradiction or missing detail becomes a visible mistake.
+Each {dur}-second clip is rendered separately by a video model that sees ONLY that clip's own text and reference pictures, with no memory of other clips, so every contradiction or missing detail becomes a visible mistake.
 
 The story is told from the FIRST-PERSON perspective of the protagonist: {protagonist}.
 
@@ -5046,8 +5384,8 @@ Critique these 7 critical areas:
    - Do character positions and movements agree with the location's fixed layout (doors, counters, furniture)?
    - Entrances, exits, and walking distances must make physical sense. Nobody teleports.
 7. PACKING & PACING:
-   - Is too much crammed into a single 5-second clip?
-   - Do dialogue lines and physical actions have sufficient time to play out naturally?
+   - High-intensity fast-paced micro-sequences with rapid camera moves, dynamic actions, and hard cuts between up to 2 connected locations within {dur} seconds are intentional for viral drama directing.
+   - Do NOT report high density or rapid pacing as a problem if the physical actions, dialogue windows, and blocking are legible.
 
 BEFORE reporting anything:
 - Check it against the location's layout and blocking.
@@ -5081,12 +5419,13 @@ def supervise_narrated_chapter(
     bible: dict,
     beat: dict,
     prev_clips: list[dict],
-    clip: dict
+    clip: dict,
+    clip_duration: int | None = None
 ) -> list[str]:
     """A secondary OpenAI critique of a clip screenplay against story continuity."""
     c_num = clip.get("clip_number", beat.get("clip_number", "?"))
     print(f"  Script supervisor is checking continuity for clip {c_num}...", flush=True)
-    sys_p, usr_p = _narrated_supervisor_prompt(topic, bible, beat, prev_clips, clip)
+    sys_p, usr_p = _narrated_supervisor_prompt(topic, bible, beat, prev_clips, clip, clip_duration=clip_duration)
     try:
         answer = _ask_openai_json(sys_p, usr_p, "narrated_supervisor", SUPERVISOR_SCHEMA, model=app.OPENAI_CLIP_MODEL,
                                   max_completion_tokens=SUPERVISOR_MAX_OUTPUT)
@@ -5106,11 +5445,16 @@ def write_narrated_chapter(
     bible: dict,
     prev_clips: list[dict],
     supervise: bool = False,
-    acts: list[dict] | None = None
+    acts: list[dict] | None = None,
+    clip_duration: int | None = None
 ) -> tuple[dict, list[str]]:
     """Writes an individual clip script with validation. `acts` is the plan's act breakdown (optional)."""
     beat = beats[clip_index]
-    sys_p, usr_p = _narrated_chapter_prompt(topic, clip_index, total_clips, beat, bible, prev_clips, beats=beats, acts=acts)
+    clip_dur = clip_duration or int(beat.get("duration", DEFAULT_CLIP_SECONDS) or DEFAULT_CLIP_SECONDS)
+    sys_p, usr_p = _narrated_chapter_prompt(topic, clip_index, total_clips, beat, bible, prev_clips, beats=beats, acts=acts, clip_duration=clip_dur)
+    loc_parts = beat.get("location_ids") or [lid.strip() for lid in re.split(r"[,+&]|_and_|_to_", str(beat.get("location_id", "")))]
+    loc_parts = [lid for lid in loc_parts if lid]
+    loc_target_label = ", ".join(loc_parts) if loc_parts else beat.get("location_id", "")
     # A retry adds to this rather than replacing it: the beat, the roadmap and the clip history are what the
     # model needs in order to fix anything, and keeping the message's head unchanged keeps the cached prefix.
     base_usr = usr_p
@@ -5143,12 +5487,12 @@ def write_narrated_chapter(
         clip = data["clips"][0]
         _normalize_narrated_clip(clip, bible)  # settle names and the turn shape before repairing
         last_attempt = attempt == CHAPTER_RETRIES
-        changes = _repair_narrated_clip(clip, beat, bible, prev_clip, attempt=attempt, final=last_attempt)
+        changes = _repair_narrated_clip(clip, beat, bible, prev_clip, attempt=attempt, final=last_attempt, clip_duration=clip_dur)
         if changes:
             _normalize_narrated_clip(clip, bible)  # a repair may have changed the cast
             for c in changes:
                 print(f"  Clip {clip_index+1} repaired: {c}")
-        problems = _check_narrated_chapter(data, beat, bible, prev_clip, clip_index=clip_index, beats=beats)
+        problems = _check_narrated_chapter(data, beat, bible, prev_clip, clip_index=clip_index, beats=beats, clip_duration=clip_dur)
         problems += [f"[SOFT] clip {clip_index+1}: auto-repaired - {c}" for c in changes]
         hard = _hard_problems(problems)
 
@@ -5156,7 +5500,7 @@ def write_narrated_chapter(
         if not hard:
             if supervise:
                 if not supervisor_retried and not last_attempt:
-                    sup_problems = supervise_narrated_chapter(topic, bible, beat, prev_clips, clip)
+                    sup_problems = supervise_narrated_chapter(topic, bible, beat, prev_clips, clip, clip_duration=clip_dur)
                     if sup_problems:
                         supervisor_retried = True
                         print(f"  Clip {clip_index+1} supervisor note(s), retrying (1 rewrite allowed):")
@@ -5167,13 +5511,13 @@ def write_narrated_chapter(
                             + "\n\nHere is the clip you wrote:\n" + json.dumps(clip, indent=2, ensure_ascii=False)
                             + "\n\nThe script supervisor raised these continuity notes:\n- " + "\n- ".join(sup_problems)
                             + "\n\nCRITICAL INSTRUCTION: You must strictly maintain visual, location, and character continuity. "
-                            f"Clip {clip_index+1} MUST stay in location '{beat['location_id']}'. "
+                            f"Clip {clip_index+1} MUST stay in location(s) '{loc_target_label}'. "
                             "Fix the specific continuity violations while keeping the narrative consistent. Return valid JSON."
                         )
                         continue
                 else:
                     # Either rewrite already happened, or this is last_attempt: check supervisor and downgrade any notes to [SOFT]
-                    sup_problems = supervise_narrated_chapter(topic, bible, beat, prev_clips, clip)
+                    sup_problems = supervise_narrated_chapter(topic, bible, beat, prev_clips, clip, clip_duration=clip_dur)
                     if sup_problems:
                         print(f"  Clip {clip_index+1} supervisor note(s) downgraded to [SOFT]:")
                         for sp in sup_problems:
@@ -5190,7 +5534,7 @@ def write_narrated_chapter(
                 + "\n\nHere is your previous answer:\n" + json.dumps(clip, indent=2, ensure_ascii=False)
                 + "\n\nIt broke these rules:\n- " + "\n- ".join(hard)
                 + "\n\nCRITICAL INSTRUCTION: You must strictly maintain visual, location, and character continuity. "
-                f"Clip {clip_index+1} MUST stay in location '{beat['location_id']}'. "
+                f"Clip {clip_index+1} MUST stay in location(s) '{loc_target_label}'. "
                 "Fix the specific continuity violations while keeping the narrative consistent. Return valid JSON."
             )
     # Retries are spent. The lines were already replaced with the Master Plan's by repair 3, and the beat's
@@ -5201,7 +5545,7 @@ def write_narrated_chapter(
 # ---------------------------------------------------------------------------
 # Prompt Builder for Seedance (Kie.ai)
 # ---------------------------------------------------------------------------
-def _timed_actions(steps: list[dict] | None, plain=lambda text: text) -> str:
+def _timed_actions(steps: list[dict] | None, plain=lambda text: text, clip_duration: int = CLIP_SECONDS) -> str:
     """The clip's action steps as a timeline in whole seconds, contiguous from 0 to the end of the clip.
 
     Seedance is prompted best with timecoded beats ("0-2s: wide shot ... 2-5s: ..."), in whole seconds with no
@@ -5209,12 +5553,13 @@ def _timed_actions(steps: list[dict] | None, plain=lambda text: text) -> str:
     the clip starts in holds until the first step). Returns "" when there is no timeline to give - no steps,
     or every step in the same second - so the caller falls back to the plain untimed list."""
     rows = []
+    dur = max(5, int(clip_duration))
     for s in steps or []:
         try:
             t = float(s.get("start_time", 0) or 0)
         except (TypeError, ValueError):
             t = 0.0
-        second = min(max(int(t + 0.5), 0), CLIP_SECONDS - 1)
+        second = min(max(int(t + 0.5), 0), dur - 1)
         text = plain(s.get("action", "")).strip().rstrip(". ")
         if text:
             rows.append((second, f"{s.get('character')}: {text}"))
@@ -5223,10 +5568,386 @@ def _timed_actions(steps: list[dict] | None, plain=lambda text: text) -> str:
         return ""
     ranges = []
     for i, sec in enumerate(starts):
-        end = starts[i + 1] if i + 1 < len(starts) else CLIP_SECONDS
+        end = starts[i + 1] if i + 1 < len(starts) else dur
         begin = 0 if i == 0 else sec
         ranges.append(f"{begin}-{end}s: " + "; ".join(txt for s2, txt in rows if s2 == sec) + ".")
     return "Action timeline (seconds into the clip): " + " ".join(ranges)
+
+
+
+
+_META_DELIVERY = re.compile(
+    r",?\s*(?:and\s+)?delivers\s+(?:his|her|their)\s+[^,.]*(?:with\s+[^,.]*)?",
+    re.IGNORECASE
+)
+_MOUTH_VISIBLE = re.compile(
+    r",?\s*(?:with|keeping)\s+(?:his|her|their)\s+mouth\s+(?:clearly\s+visible|unobstructed)[^,.]*",
+    re.IGNORECASE
+)
+
+
+def _clean_speech_text(text: str) -> str:
+    """Normalizes dialogue text for Seedance / voice synthesis:
+    - Replaces easily-slurred 'cant' / 'can't' with emphatic 'cannot' to prevent dropped negations.
+    - Fixes missing apostrophes on common contractions (dont -> don't, wont -> won't, etc.).
+    - Converts shouting ALL-CAPS words (e.g. 'STOP!' -> 'Stop!') to Title Case to prevent acronym spelling.
+    """
+    if not text:
+        return ""
+    text = re.sub(r"\bcan'?t\b", "cannot", text, flags=re.IGNORECASE)
+    replacements = {
+        r"\bdont\b": "don't",
+        r"\bwont\b": "won't",
+        r"\bdidnt\b": "didn't",
+        r"\bcouldnt\b": "couldn't",
+        r"\bwouldnt\b": "wouldn't",
+        r"\bshouldnt\b": "shouldn't",
+        r"\bisnt\b": "isn't",
+        r"\barent\b": "aren't",
+        r"\bwasnt\b": "wasn't",
+        r"\bwerent\b": "weren't",
+        r"\bhasnt\b": "hasn't",
+        r"\bhavent\b": "haven't",
+        r"\byoure\b": "you're",
+        r"\btheyre\b": "they're",
+        r"\bweve\b": "we've",
+        r"\bive\b": "I've",
+        r"\bim\b": "I'm",
+    }
+    for pat, rep in replacements.items():
+        text = re.sub(pat, rep, text, flags=re.IGNORECASE)
+
+    def _de_shout(m):
+        w = m.group(0)
+        if w in ("CEO", "FBI", "TV", "VIP", "UK", "US", "V.O.", "VO", "SG"):
+            return w
+        return w.capitalize()
+    text = re.sub(r"\b[A-Z]{2,}\b", _de_shout, text)
+    return text.strip()
+
+
+def _build_screenplay_prompt(
+    clip: dict,
+    bible: dict,
+    cast_bank: dict[str, str],
+    location_bank: dict[str, list[str]],
+    voice_bank: dict[str, str],
+    clip_duration: int = 15
+) -> tuple[str, list[str], list[str]]:
+    """Compiles Seedance prompt in pure screenplay format for 10-15s clips,
+    interleaving scene setup, reference bindings, physical action beats,
+    speaker-first angle cuts / close-ups, and dialogue lines without numerical timestamps."""
+    mode = clip.get("delivery_mode", "dialogue")
+    protagonist = bible.get("pov_protagonist", "").strip()
+    # Multi-location extraction
+    loc_ids = clip.get("location_ids")
+    if not loc_ids:
+        raw_loc = clip.get("location_id", "")
+        parts = [p.strip() for p in re.split(r"[,+&]|_and_|_to_", str(raw_loc)) if p.strip()]
+        known_ids = {l["id"] for l in bible.get("locations", [])}
+        matched = [p for p in parts if p in known_ids]
+        loc_ids = matched if matched else ([raw_loc] if raw_loc else [])
+
+    dur_val = int(clip_duration or clip.get("duration") or 15)
+
+    on_screen = clip.get("present_characters", [])[:MAX_ON_SCREEN]
+    faces = [n for n in on_screen if cast_bank.get(n)]
+    avail_loc_slots = max(1, MAX_REF_IMAGES - len(faces))
+
+    num_locs = max(1, len(loc_ids))
+    max_views_per_loc = max(1, min(3, avail_loc_slots // num_locs))
+
+    ref_images = []
+    loc_image_tags: dict[str, list[str]] = {}
+    for lid in loc_ids:
+        views = location_bank.get(lid, [])
+        slots_left = avail_loc_slots - len(ref_images)
+        allocated = views[:max(1, min(len(views), max_views_per_loc, slots_left))] if views else []
+        tags = []
+        for url in allocated:
+            ref_images.append(url)
+            tags.append(f"@Image{len(ref_images)}")
+        loc_image_tags[lid] = tags
+
+    char_tags = []
+    for name in on_screen:
+        cinfo = next((c for c in bible.get("characters", []) if c["name"].lower() == name.lower()), None)
+        look = (cinfo.get("look") or (_compile_look(cinfo["appearance"]) if cinfo and cinfo.get("appearance") else "")) if cinfo else ""
+        if cast_bank.get(name) and len(ref_images) < MAX_REF_IMAGES:
+            ref_images.append(cast_bank[name])
+            char_tags.append(f"{name} is @Image{len(ref_images)}")
+        else:
+            char_tags.append(f"{name} ({look})")
+
+    ref_audios: list[str] = []
+    def _voice_tag(name: str) -> str:
+        url = voice_bank.get(name)
+        if not url:
+            return ""
+        if url not in ref_audios:
+            if len(ref_audios) >= MAX_VOICE_REFS:
+                return ""
+            ref_audios.append(url)
+        return f"@Audio{ref_audios.index(url) + 1}"
+
+    prop_desc = {p["id"]: p["description"] for p in bible.get("props", [])}
+    def _plain(text: str) -> str:
+        for pid in prop_desc:
+            text = re.sub(rf"\b{re.escape(pid)}\b", pid.replace("_", " "), text)
+        return text
+
+    def _clean_action(step: dict) -> str:
+        cname = (step.get("character") or "").strip()
+        raw = (step.get("action") or "").strip()
+        cleaned = _META_DELIVERY.sub("", raw)
+        cleaned = _MOUTH_VISIBLE.sub("", cleaned)
+        cleaned = _plain(cleaned).strip().rstrip(";, .")
+        cleaned = cleaned.lstrip(";, ")
+        if not cleaned:
+            return ""
+        if cleaned.startswith("[") and cleaned.endswith("]"):
+            cleaned = cleaned[1:-1].strip()
+        if re.match(r"^(angle cut|camera|close-up|reverse|low angle|wide shot|medium shot|hard cut|cut to|scene \d)\b", cleaned, re.IGNORECASE):
+            return cleaned
+        if cname:
+            if cleaned.lower().startswith("her "):
+                cleaned = f"{cname}'s {cleaned[4:]}"
+            elif cleaned.lower().startswith("his "):
+                cleaned = f"{cname}'s {cleaned[4:]}"
+            elif cleaned.lower().startswith("their "):
+                cleaned = f"{cname}'s {cleaned[6:]}"
+            elif not cleaned.lower().startswith(cname.lower()):
+                cleaned = f"{cname} {cleaned[0].lower() + cleaned[1:] if len(cleaned) > 1 else cleaned}"
+        return cleaned
+
+    environment = (clip.get("environment") or "").strip().rstrip(". ")
+
+    blocking = [b for b in clip.get("blocking", []) if b.get("in_frame") in ON_SCREEN]
+    staging_parts = []
+    for b in blocking:
+        cname = b.get("character", "")
+        posture = b.get("posture", "standing")
+        pos = (b.get("position") or "").rstrip(". ")
+        fp = b.get("frame_position", "")
+        desc = f"{cname} is {posture}"
+        if pos:
+            if pos.lower().startswith(("at ", "in ", "on ", "near ", "beside ", "by ", "across ")):
+                desc += f" {pos}"
+            else:
+                desc += f" at {pos}"
+        if fp and fp != "off screen":
+            desc += f" ({fp})"
+        staging_parts.append(desc)
+
+    staging_note = f" Staging: {'; '.join(staging_parts)}." if staging_parts else ""
+    env_note = f" {environment}." if environment else ""
+
+    shown_props = [p for p in clip.get("prop_state", []) or [] if p.get("in_frame")]
+    prop_note = ""
+    if shown_props:
+        prop_parts = []
+        for p in shown_props:
+            desc = prop_desc.get(p.get("prop_id"), (p.get("prop_id") or "").replace("_", " ")).rstrip(". ")
+            holder = p.get("holder", "scene")
+            holder_str = f"held by {holder}" if holder != "scene" else "in scene"
+            prop_parts.append(f"{desc} ({holder_str})")
+        prop_note = f" Props: {', '.join(prop_parts)}."
+
+    if len(loc_ids) > 1:
+        scene_headers = []
+        for idx, lid in enumerate(loc_ids, 1):
+            loc_obj = next((l for l in bible.get("locations", []) if l["id"] == lid), None)
+            loc_desc = loc_obj["description"].rstrip(". ") if loc_obj else lid
+            tags = ", ".join(loc_image_tags.get(lid, []))
+            if tags:
+                scene_headers.append(f"[SCENE {idx}: Location matches {tags}: {loc_desc}]")
+            else:
+                scene_headers.append(f"[SCENE {idx}: Location: {loc_desc}]")
+        scene_lines = scene_headers
+    else:
+        lid = loc_ids[0] if loc_ids else ""
+        loc_obj = next((l for l in bible.get("locations", []) if l["id"] == lid), None)
+        loc_name = loc_obj["description"].rstrip(". ") if loc_obj else lid
+        tags = ", ".join(loc_image_tags.get(lid, []))
+        if tags:
+            loc_setting = f"Location matches {tags}: {loc_name}"
+        else:
+            loc_setting = f"Location: {loc_name}"
+        scene_lines = [f"[SCENE: {loc_setting}.{env_note}{staging_note}{prop_note}]"]
+
+    if char_tags:
+        cast_line = f"[CAST: {'. '.join(char_tags)}. Each named character's face, hair, and clothing match their reference image exactly: do not restyle or re-cast.]"
+    else:
+        cast_line = "[CAST: Cinematic environmental shot, no visible characters.]"
+
+    screenplay_lines = list(scene_lines)
+    screenplay_lines.append(cast_line)
+
+    turns = _clip_turns(clip)
+    action_steps = clip.get("action_steps", []) or []
+
+    if mode == "dialogue" and turns:
+        first_speech_time = float(turns[0].get("start_est", 1.0) or 1.0)
+        used_actions = set()
+
+        # 1. Opening actions before speech
+        for idx, s in enumerate(action_steps):
+            t = float(s.get("start_time", 0.0) or 0.0)
+            if t < first_speech_time - 0.15:
+                cleaned = _clean_action(s)
+                if cleaned:
+                    screenplay_lines.append(f"[{cleaned}.]")
+                used_actions.add(idx)
+
+        # 2. Interleave speech turns and camera cuts
+        def _check_vo(turn_item: dict, turn_idx: int) -> bool:
+            deliv_raw = (turn_item.get("delivery") or "").strip()
+            spk_raw = (turn_item.get("speaker") or "").strip()
+            line_raw = (turn_item.get("line") or "").strip()
+            if turn_item.get("is_voiceover"):
+                return True
+            if re.search(r"\b(v\.o\.|voiceover|voice-over|internal monologue|inner voice|narration)\b", deliv_raw, re.IGNORECASE):
+                return True
+            if re.search(r"\(v\.o\.?\)", spk_raw, re.IGNORECASE) or re.search(r"\(voiceover\)", spk_raw, re.IGNORECASE):
+                return True
+            if re.search(r"^\s*\(v\.o\.?\)", line_raw, re.IGNORECASE) or re.search(r"^\s*\(voiceover\)", line_raw, re.IGNORECASE):
+                return True
+            if turn_idx == 0 and len(turns) > 1 and turns[1].get("speaker", "").strip().lower() == spk_raw.lower():
+                if re.search(r"\b(spent|five years|remind|tonight was supposed|looking back|remember|thought|wished|hoped|backstory)\b", line_raw, re.IGNORECASE):
+                    return True
+                if re.search(r"\b(reflective|internal|whisper|melancholy|pensive|thoughtful)\b", deliv_raw, re.IGNORECASE):
+                    return True
+            return False
+
+        prev_speaker = ""
+        prev_was_vo = False
+        has_vo = False
+        on_screen_chars = {b.get("character", "").lower() for b in blocking}
+
+        for i, turn in enumerate(turns):
+            spk = (turn.get("speaker") or "").strip()
+            line = _clean_speech_text((turn.get("line") or "").strip())
+            deliv = (turn.get("delivery") or "").strip()
+            t_start = float(turn.get("start_est", 0.0) or 0.0)
+            t_end = float(turn.get("end_est", t_start + 2.0) or (t_start + 2.0))
+
+            is_vo = _check_vo(turn, i)
+            if is_vo:
+                has_vo = True
+
+            # Mid-actions occurring up to this turn
+            mid_actions_added = 0
+            for idx, s in enumerate(action_steps):
+                if idx not in used_actions:
+                    t = float(s.get("start_time", 0.0) or 0.0)
+                    if t <= t_start + 0.1:
+                        cleaned = _clean_action(s)
+                        if cleaned:
+                            c_text = cleaned if cleaned.endswith(".") else f"{cleaned}."
+                            screenplay_lines.append(f"[{c_text}]")
+                            mid_actions_added += 1
+                        used_actions.add(idx)
+
+            tag = _voice_tag(spk)
+            cinfo = next((c for c in bible.get("characters", []) if c["name"].lower() == spk.lower()), None)
+            written_voice = (cinfo.get("voice") or "").strip() if cinfo else ""
+            clean_deliv = movie._delivery_only(deliv, written_voice)
+            deliv_str = f"({clean_deliv}) " if clean_deliv else ""
+
+            is_on_screen = spk.lower() in on_screen_chars
+
+            if is_vo:
+                # Voiceover turn: do NOT cut to a talking-head close-up. Let physical visual movement play with mouth closed.
+                voice_note = f" in {tag}'s voice" if tag else (f", in {written_voice.rstrip('. ')}" if written_voice else "")
+                screenplay_lines.append(f'{spk.upper()} (V.O.{voice_note}): {deliv_str}"{line}"')
+                screenplay_lines.append("[Characters on screen engage in natural physical movement with mouths strictly closed and resting facial expressions.]")
+                prev_was_vo = True
+                prev_speaker = spk
+            else:
+                voice_note = f" (matching {tag})" if tag else (f" (in {written_voice.rstrip('. ')})" if written_voice else "")
+                if is_on_screen:
+                    if prev_was_vo:
+                        # Motivated transition from voiceover movement to live scene confrontation
+                        if mid_actions_added == 0:
+                            screenplay_lines.append(f"[Angle cut: Reaction shot on {spk} facing into the room, camera establishes their face before speaking:]")
+                        else:
+                            screenplay_lines.append(f"[Angle cut: Medium Close-up on {spk} facing into the room, camera establishes their face before speaking:]")
+                    elif spk.lower() != prev_speaker.lower() or mid_actions_added > 0:
+                        screenplay_lines.append(f"[Angle cut: Close-up on {spk}, camera establishes their face before speaking:]")
+                    screenplay_lines.append(f'{spk.upper()}{voice_note}: {deliv_str}"{line}"')
+                else:
+                    is_remote = any(
+                        b.get("character", "").strip().lower() == spk.lower() and
+                        any(w in (b.get("position") or "").lower() for w in ("remote", "phone", "receiver", "call", "intercom"))
+                        for b in clip.get("blocking", [])
+                    )
+                    if is_remote:
+                        screenplay_lines.append("[Camera holds on active listener holding telephone receiver with mouth closed]")
+                        off_voice = f" in {tag}'s voice" if tag else (f", in {written_voice.rstrip('. ')}" if written_voice else "")
+                        screenplay_lines.append(f'{spk.upper()} (over telephone receiver{off_voice}): {deliv_str}"{line}"')
+                    else:
+                        if spk.lower() != prev_speaker.lower() or mid_actions_added > 0:
+                            screenplay_lines.append(f"[Angle cut: Close-up on {spk}, camera establishes their face before speaking:]")
+                        screenplay_lines.append(f'{spk.upper()}{voice_note}: {deliv_str}"{line}"')
+                prev_was_vo = False
+                prev_speaker = spk
+
+        # 3. Closing actions
+        for idx, s in enumerate(action_steps):
+            if idx not in used_actions:
+                cleaned = _clean_action(s)
+                if cleaned:
+                    c_text = cleaned if cleaned.endswith(".") else f"{cleaned}."
+                    screenplay_lines.append(f"[{c_text}]")
+                used_actions.add(idx)
+
+        if has_vo:
+            screenplay_lines.append(
+                "LIP-SYNC DIRECTIVE: Synchronize lip movement exclusively onto characters speaking live on-camera dialogue; during (V.O.) lines, characters keep mouths strictly closed with natural resting facial expressions. Non-speaking characters keep mouths strictly closed. Fluid natural physical acting throughout. No background music."
+            )
+        else:
+            screenplay_lines.append(
+                "LIP-SYNC DIRECTIVE: The camera establishes each speaker in Close-up before their line begins. Synchronize lip movement exclusively onto the active speaker of each line; non-speaking characters keep mouths strictly closed and do not animate lips. Fluid natural physical acting throughout. No background music."
+            )
+
+    elif mode == "voiceover" and turns:
+        turn = turns[0]
+        spk = (turn.get("speaker") or protagonist).strip()
+        line = _clean_speech_text((turn.get("line") or "").strip())
+        deliv = (turn.get("delivery") or "reflective, intense").strip()
+        tag = _voice_tag(protagonist)
+        cinfo = next((c for c in bible.get("characters", []) if c["name"].lower() == protagonist.lower()), None)
+        written_voice = (cinfo.get("voice") or "").strip() if cinfo else ""
+        clean_deliv = movie._delivery_only(deliv, written_voice)
+        voice_binding = f" in {tag}'s voice" if tag else (f" in {written_voice.rstrip('. ')}" if written_voice else "")
+
+        shot_desc = clip.get("shot", "").rstrip(". ")
+        if shot_desc:
+            screenplay_lines.append(f"[CAMERA: {shot_desc}.]")
+        for s in action_steps:
+            cleaned = _clean_action(s)
+            if cleaned:
+                screenplay_lines.append(f"[{cleaned}.]")
+
+        screenplay_lines.append(f'{spk.upper()} (V.O.{voice_binding}): ({clean_deliv}) "{line}"')
+        screenplay_lines.append(
+            "MOUTH CLOSED DIRECTIVE (CRITICAL): The characters on screen DO NOT speak or move their mouths. Keep lips closed with natural resting facial expression. Characters engage solely in physical cinematic acting. No on-screen lip movement. No background music."
+        )
+    else:
+        shot_desc = clip.get("shot", "").rstrip(". ")
+        if shot_desc:
+            screenplay_lines.append(f"[CAMERA: {shot_desc}.]")
+        for s in action_steps:
+            cleaned = _clean_action(s)
+            if cleaned:
+                screenplay_lines.append(f"[{cleaned}.]")
+
+        screenplay_lines.append(
+            "REACTION DIRECTIVE: Cinematic non-verbal shot. No dialogue, no voices, no lip movement, and absolutely no musical score or background music."
+        )
+
+    prompt = "\n".join(screenplay_lines)
+    return prompt, ref_images, ref_audios
 
 
 def build_narrated_prompt(
@@ -5235,13 +5956,27 @@ def build_narrated_prompt(
     cast_bank: dict[str, str],
     location_bank: dict[str, list[str]],
     voice_bank: dict[str, str],
-    prev_clip: dict | None = None
+    prev_clip: dict | None = None,
+    clip_duration: int | None = None
 ) -> tuple[str, list[str], list[str]]:
     """Compiles Seedance prompt and references tailored to delivery_mode."""
+    dur = clip_duration or clip.get("duration")
+    dur_val = int(dur) if dur is not None else 5
+    if dur_val >= 10:
+        return _build_screenplay_prompt(
+            clip=clip,
+            bible=bible,
+            cast_bank=cast_bank,
+            location_bank=location_bank,
+            voice_bank=voice_bank,
+            clip_duration=dur_val
+        )
+
     mode = clip.get("delivery_mode", "dialogue")
     protagonist = bible["pov_protagonist"]
     loc_id = clip["location_id"]
     loc = next((l for l in bible["locations"] if l["id"] == loc_id), None)
+    dur_prefix = f"{dur_val}-second" if dur_val != 5 else "Five-second"
 
     on_screen = clip["present_characters"][:MAX_ON_SCREEN]
     faces = [n for n in on_screen if cast_bank.get(n)]
@@ -5269,7 +6004,7 @@ def build_narrated_prompt(
         tags = ", ".join([f"@Image{i+1}" for i in range(len(place_urls))])
         setting_note = f"Location matches {tags}: maintain architectural layout, palette, and lighting"
 
-    parts = [f"Five-second {shot}, {setting_note}."]
+    parts = [f"{dur_prefix} {shot}, {setting_note}."]
     parts.append(f"Characters: {'. '.join(char_tags)}." if on_screen else "Cinematic environmental shot.")
     if any("@Image" in t for t in char_tags):
         parts.append("Each named character's face, hair colour, hairstyle and clothing match their reference image exactly: do not restyle, recolour or re-cast anyone.")
@@ -5295,7 +6030,7 @@ def build_narrated_prompt(
             text = re.sub(rf"\b{re.escape(pid)}\b", pid.replace("_", " "), text)
         return text
 
-    timeline = _timed_actions(clip.get("action_steps"), _plain) if TIMED_ACTIONS else ""
+    timeline = _timed_actions(clip.get("action_steps"), _plain, clip_duration=dur_val) if TIMED_ACTIONS else ""
     action_descs = [f"{s['character']}: {_plain(s['action'])}" for s in clip.get("action_steps", [])]
     if timeline:
         parts.append(timeline)
@@ -5320,14 +6055,24 @@ def build_narrated_prompt(
             ref_audios.append(url)
         return f"@Audio{ref_audios.index(url) + 1}"
 
+    prev_end = 0.4
+
     def _window(turn: dict, index: int, total: int) -> tuple[float, float]:
-        """This turn's slot inside the clip, falling back to an even share when the script gave none."""
-        share = (CLIP_SECONDS - 0.8) / max(1, total)
+        """This turn's slot inside the clip, ensuring clean separation and sufficient duration to prevent word cutoff."""
+        nonlocal prev_end
+        share = (dur_val - 0.8) / max(1, total)
         default_start = 0.4 + index * share
         start = max(0.4, float(turn.get("start_est", default_start) or default_start))
-        end = min(CLIP_SECONDS - 0.2, float(turn.get("end_est", start + share) or (start + share)))
+        if index > 0 and start < prev_end + 0.1:
+            start = round(prev_end + 0.1, 2)
+        end = min(dur_val - 0.2, float(turn.get("end_est", start + share) or (start + share)))
+        w_count = len(_WORD.findall(turn.get("line") or ""))
+        min_needed = max(0.8, w_count / 3.8)
+        if end - start < min_needed and start + min_needed <= dur_val - 0.2:
+            end = round(start + min_needed, 2)
         if end <= start:
-            end = min(CLIP_SECONDS - 0.2, start + share)
+            end = min(dur_val - 0.2, start + share)
+        prev_end = end
         return start, end
 
     def _spoken(turn: dict) -> tuple[str, str, str, str]:
@@ -5339,7 +6084,7 @@ def build_narrated_prompt(
         char = next((c for c in bible.get("characters", []) if c["name"].lower() == name.lower()), None)
         delivery = (turn.get("delivery") or "").strip() or "natural conversational tone"
         voice = (char.get("voice") or "").strip() if char else ""
-        return name, movie._delivery_only(delivery, voice), (turn.get("line") or ""), voice
+        return name, movie._delivery_only(delivery, voice), _clean_speech_text(turn.get("line") or ""), voice
 
     if mode == "voiceover" and turns:
         start_est, end_est = _window(turns[0], 0, 1)
@@ -5375,8 +6120,15 @@ def build_narrated_prompt(
             parts.append(
                 f"The lines run back to back in one continuous take, in that order, with a natural beat between them - "
                 f"never at the same time and never repeated. Only the speaker of each line moves their lips during it; "
-                f"everyone else listens with their mouth closed. Keep {movie._join(speaking)} in the shot (at least as a shoulder), and show each speaker's face while their line is spoken; the camera may cut between them at the change of speaker."
+                f"everyone else listens with their mouth closed. Keep {movie._join(speaking)} in the shot (at least as a shoulder), and show each speaker's face while their line is spoken; the camera may cut between them at the change of speaker. "
+                f"LIP-SYNC DIRECTIVE: Synchronize lip movement exclusively onto the specific character speaking each line; keep non-speaking characters' mouths strictly closed and do not animate any other face."
             )
+        else:
+            speaking = [n for n in dict.fromkeys((t.get("speaker") or "").strip() for t in turns) if n]
+            if speaking and any(n.lower() in on_screen_now for n in speaking):
+                parts.append(
+                    f"LIP-SYNC DIRECTIVE: Synchronize lip movement exclusively onto {movie._join(speaking)}; keep non-speaking characters' mouths strictly closed and do not animate any other face."
+                )
     else:  # shock_action
         parts.append(
             "REACTION DIRECTIVE: Cinematic non-verbal shot. The ONLY audio is diegetic sound that belongs to this place - room tone, footsteps, a door, rain, a telephone, a caught breath. "
@@ -5422,7 +6174,8 @@ def build_narrated_prompt(
 # Clip Render & Voice Banking
 # ---------------------------------------------------------------------------
 def trim_windowed_voice(video_path: Path, speaker_name: str, start_est: float, end_est: float,
-                        turn_idx: int, dialogue_list: list, out_dir: Path | None = None) -> Path | None:
+                        turn_idx: int, dialogue_list: list, out_dir: Path | None = None,
+                        clip_duration: int = DEFAULT_CLIP_SECONDS) -> Path | None:
     """Extracts a high-quality voice reference sample for speaker_name using NumPy RMS energy detection.
     Writes to the job's own voices/ directory with a sanitized, space-free filename."""
     import numpy as np
@@ -5431,7 +6184,7 @@ def trim_windowed_voice(video_path: Path, speaker_name: str, start_est: float, e
     voice_path = voices_dir / f"{safe_name}_{uuid.uuid4().hex[:8]}.wav"
 
     prev_end = float(dialogue_list[turn_idx - 1].get("end_est", 0.0) or 0.0) if turn_idx > 0 else 0.0
-    next_start = float(dialogue_list[turn_idx + 1].get("start_est", CLIP_SECONDS) or CLIP_SECONDS) if turn_idx < len(dialogue_list) - 1 else float(CLIP_SECONDS)
+    next_start = float(dialogue_list[turn_idx + 1].get("start_est", clip_duration) or clip_duration) if turn_idx < len(dialogue_list) - 1 else float(clip_duration)
     search_start, search_end = max(prev_end, start_est - 1.0), min(next_start, end_est + 1.0)
 
     raw = subprocess.run(
@@ -5473,7 +6226,7 @@ def trim_windowed_voice(video_path: Path, speaker_name: str, start_est: float, e
 
 
 def render_narrated_clip(n: int, prompt: str, image_urls: list[str], audio_urls: list[str], interactive: bool = False,
-                         out_dir: Path | None = None):
+                         out_dir: Path | None = None, duration: int = DEFAULT_CLIP_SECONDS):
     """Executes Kie.ai generation with request logging and error retry ladder.
 
     - Catch KieError audio copyright filter triggers and retry once with AUDIO_RETRY_NOTE.
@@ -5486,20 +6239,21 @@ def render_narrated_clip(n: int, prompt: str, image_urls: list[str], audio_urls:
     record = {"attempts": old.get("attempts", [])}
     auto_retried_copyright = False
     retries_left = CLIP_RETRIES
+    dur = int(duration or DEFAULT_CLIP_SECONDS)
 
     while True:
         record["sent_to_kie"] = {
             "model": app.KIE_MODEL,
-            "input": _clip_input(prompt, RESOLUTION, CLIP_SECONDS, True, None, audio_urls or None, image_urls or None)
+            "input": _clip_input(prompt, RESOLUTION, dur, True, None, audio_urls or None, image_urls or None)
         }
         record_path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
         t0 = time.time()
-        print(f"    rendering clip {n} on kie.ai...", flush=True)
+        print(f"    rendering clip {n} ({dur}s) on kie.ai...", flush=True)
         try:
             result = generate_clip(
                 prompt=prompt,
                 resolution=RESOLUTION,
-                duration=CLIP_SECONDS,
+                duration=dur,
                 reference_image_urls=image_urls or None,
                 reference_audio_urls=audio_urls or None,
                 generate_audio=True
@@ -5550,7 +6304,8 @@ def render_narrated_clip(n: int, prompt: str, image_urls: list[str], audio_urls:
 
 
 def bank_voice(clip_path: Path, speaker: str, voice_bank: dict, start_est: float = 0.5, end_est: float = 4.5,
-               turn_index: int = 0, turns: list[dict] | None = None, out_dir: Path | None = None) -> None:
+               turn_index: int = 0, turns: list[dict] | None = None, out_dir: Path | None = None,
+               clip_duration: int = DEFAULT_CLIP_SECONDS) -> None:
     """Extracts a high-quality voice sample from a rendered clip using NumPy RMS energy detection.
 
     `turns` is the clip's full turn list, so the energy search for one speaker stays inside their own window
@@ -5561,7 +6316,7 @@ def bank_voice(clip_path: Path, speaker: str, voice_bank: dict, start_est: float
     try:
         # Use intelligent RMS energy waveform voice trimming
         wav_path = trim_windowed_voice(
-            clip_path, speaker, start_est, end_est, turn_index, window, out_dir=out_dir
+            clip_path, speaker, start_est, end_est, turn_index, window, out_dir=out_dir, clip_duration=clip_duration
         )
         if not wav_path or not wav_path.exists():
             # Fallback to precise ffmpeg window if waveform energy detector didn't find clear burst
@@ -5622,7 +6377,7 @@ def assemble_narrated_video(run_dir: Path, total_clips: int) -> Path:
 # ---------------------------------------------------------------------------
 def run_hybrid_drama(topic: str, duration: int = 75, interactive: bool = False, script_only: bool = False, supervise: bool = False):
     """Full end-to-end execution of Hybrid Narrated Drama."""
-    total_clips = duration // CLIP_SECONDS
+    total_clips = max(1, round(duration / DEFAULT_CLIP_SECONDS))
     print(f"\n--- HYBRID NARRATED DRAMA: {duration}s ({total_clips} clips) ---")
     print(f"Topic: {topic[:80]}...\n")
 
@@ -5680,12 +6435,13 @@ def run_hybrid_drama(topic: str, duration: int = 75, interactive: bool = False, 
 
     for i in range(total_clips):
         beat = beats[i]
+        clip_dur = int(beat.get("duration", DEFAULT_CLIP_SECONDS) or DEFAULT_CLIP_SECONDS)
         mode = beat["delivery_mode"]
-        print(f"\n--- Clip {i+1}/{total_clips} [{mode.upper()}] (Cycle {beat.get('cycle_number', '?')}) ---")
+        print(f"\n--- Clip {i+1}/{total_clips} [{mode.upper()}] ({clip_dur}s, Cycle {beat.get('cycle_number', '?')}) ---")
 
         # Scripting
         ch_data, clip_problems = write_narrated_chapter(topic, i, total_clips, beats, bible, prev_clips, supervise=supervise,
-                                                        acts=outline.get("acts"))
+                                                        acts=outline.get("acts"), clip_duration=clip_dur)
         clip_hard = _hard_problems(clip_problems)
         if clip_hard:
             print(f"\n  Clip {i+1}'s script still breaks these rules after retries. Stopping before it is rendered:")
@@ -5697,11 +6453,11 @@ def run_hybrid_drama(topic: str, duration: int = 75, interactive: bool = False, 
         # Prompt Compilation
         prev_script = prev_clips[-1] if prev_clips else None
         prompt, img_urls, aud_urls = build_narrated_prompt(
-            clip_script, bible, cast_bank, location_bank, voice_bank, prev_clip=prev_script
+            clip_script, bible, cast_bank, location_bank, voice_bank, prev_clip=prev_script, clip_duration=clip_dur
         )
 
         # Video Render
-        res = render_narrated_clip(i + 1, prompt, img_urls, aud_urls, interactive=interactive)
+        res = render_narrated_clip(i + 1, prompt, img_urls, aud_urls, interactive=interactive, duration=clip_dur)
         if res == "quit":
             print(f"Halting execution at clip {i+1}.")
             return
@@ -5717,9 +6473,9 @@ def run_hybrid_drama(topic: str, duration: int = 75, interactive: bool = False, 
             if not spk or not should_bank_voice(turn, spk, beats, i):
                 continue
             s_est = float(turn.get("start_est", 0.5) or 0.5)
-            e_est = float(turn.get("end_est", 4.5) or 4.5)
+            e_est = float(turn.get("end_est", clip_dur - 0.5) or (clip_dur - 0.5))
             bank_voice(clip_file, spk, voice_bank, start_est=s_est, end_est=e_est,
-                       turn_index=t_idx, turns=clip_turns)
+                       turn_index=t_idx, turns=clip_turns, clip_duration=clip_dur)
 
         prev_clips.append(clip_script)
 

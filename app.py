@@ -90,13 +90,13 @@ celery_app.conf.broker_connection_retry_on_startup = True
 # --- Models ---
 Resolution = Literal["480p", "720p"]
 Mode = Literal["talking_head", "story_time", "story_videos", "narrated_drama"]
-ClipDuration = Literal[5, 10]  # production is always 10; 5 exists only to save credits while testing
+ClipDuration = Literal[5, 10, 15]  # 15s is the default for narrated drama; 10s for talking head; 5s exists for testing
 Status = Literal["pending", "generating", "plan_ready", "done", "failed"]  # shared by clips and jobs
 
 
 class ClipRequest(BaseModel):
     topic: str = Field(min_length=1)
-    duration: int = Field(gt=0)  # total seconds; must be a multiple of clip_duration
+    duration: int = Field(gt=0)  # total seconds; must be a multiple of clip_duration (or multiple of 5 for narrated_drama)
     resolution: Resolution = "480p"
     mode: Mode = "talking_head"
     clip_duration: ClipDuration = CLIP_DURATION
@@ -104,13 +104,19 @@ class ClipRequest(BaseModel):
 
     @model_validator(mode="after")
     def duration_is_whole_clips(self):
+        if self.mode == "narrated_drama":
+            if self.duration % 5:
+                raise ValueError("narrated_drama duration must be a multiple of 5 seconds")
+            if self.clip_duration not in (5, 10, 15):
+                self.clip_duration = 15
+            return self
         if self.duration % self.clip_duration:
             raise ValueError(f"duration must be a multiple of the clip length ({self.clip_duration} seconds)")
         return self
 
     @model_validator(mode="after")
     def story_videos_uses_5s_clips(self):
-        if self.mode in ("story_videos", "narrated_drama") and self.clip_duration != 5:
+        if self.mode == "story_videos" and self.clip_duration != 5:
             self.clip_duration = 5
             if self.duration % 5:
                 raise ValueError(f"{self.mode} duration must be a multiple of 5 seconds")
@@ -118,6 +124,9 @@ class ClipRequest(BaseModel):
 
     @property
     def num_clips(self) -> int:
+        if self.mode == "narrated_drama":
+            cd = self.clip_duration if self.clip_duration in (5, 10, 15) else 15
+            return max(1, round(self.duration / cd))
         return self.duration // self.clip_duration
 
 
@@ -153,6 +162,7 @@ class Clip(BaseModel):
     movie_script: dict | None = None  # Story Videos: the full clip script (location_id, shot, blocking, dialogue, etc.)
     custom_edited: bool = False       # True if the user manually edited this clip's text/prompt
     custom_prompt: str | None = None  # Direct user-edited Seedance prompt override
+    duration: int | None = None       # clip duration in seconds (10 to 15s for narrated_drama)
     status: Status = "pending"
     error: str | None = None  # why this clip failed
 
@@ -165,6 +175,7 @@ class ClipUpdate(BaseModel):
     movie_script: dict | None = None
     custom_edited: bool | None = None
     custom_prompt: str | None = None
+    duration: int | None = None
 
 
 class PlanApprovalRequest(BaseModel):
@@ -1309,6 +1320,8 @@ def _generate_narrated_plan(job_id: str) -> None:
         task_log.warning("job %s: plan note: %s", job_id, p)
     bible = outline["scene_bible"]
     beats = outline["beats"]
+    # Ensure beats have normalized durations (10 to 15s) summing to job.request.duration
+    hnd._normalize_beat_durations(beats, job.request.duration)
     # Every spoken line, not only the key facts, must be plain language a viewer with basic English understands at first
     # hearing: one cheap review per ~15 beats rewrites the ones that are not (and never raises).
     plain = hnd.plain_pass_plan(outline)
@@ -1323,7 +1336,11 @@ def _generate_narrated_plan(job_id: str) -> None:
     if reviewable:   # shown first in the plan review, before the soft notes
         report = report or {"problems": []}
         report["problems"] = [f"[REVIEW] {p}" for p in reviewable] + list(report.get("problems") or [])
-    update_job(job_id, movie_bible=bible, beats=beats, acts=outline.get("acts"),
+    clips = [
+        Clip(index=i, duration=int(b.get("duration", 15)))
+        for i, b in enumerate(beats)
+    ]
+    update_job(job_id, movie_bible=bible, beats=beats, clips=clips, acts=outline.get("acts"),
                delivery=outline.get("delivery"), plan_report=report,
                scene_bible=json.dumps(bible, ensure_ascii=False),
                status="plan_ready")
@@ -1359,22 +1376,25 @@ def _continue_narrated_drama_job(job_id: str) -> None:
     prev_clips = []
     for i in range(total_clips):
         clip_obj = job.clips[i] if i < len(job.clips) else None
+        beat = beats[i] if beats and i < len(beats) else {}
+        clip_dur = int(beat.get("duration") or getattr(clip_obj, "duration", 15) or 15)
         if clip_obj and clip_obj.status == "done" and clip_obj.video_url and clip_obj.movie_script:
             hnd._normalize_narrated_clip(clip_obj.movie_script, bible)
             prev_clips.append(clip_obj.movie_script)
             continue
 
-        update_clip(job_id, i, status="generating")
+        update_clip(job_id, i, status="generating", duration=clip_dur)
 
         if clip_obj and clip_obj.movie_script and isinstance(clip_obj.movie_script, dict) and clip_obj.movie_script.get("delivery_mode"):
             task_log.info("job %s: clip %d script already exists, skipping OpenAI script generation", job_id, i + 1)
             clip_script = clip_obj.movie_script
             hnd._normalize_narrated_clip(clip_script, bible)
         else:
-            task_log.info("job %s: scripting narrated clip %d of %d", job_id, i + 1, total_clips)
+            task_log.info("job %s: scripting narrated clip %d of %d (%ds)", job_id, i + 1, total_clips, clip_dur)
             is_supervise = getattr(job.request, "supervise", False)
             ch_data, clip_problems = hnd.write_narrated_chapter(
-                topic, i, total_clips, beats, bible, prev_clips, supervise=is_supervise, acts=job.acts
+                topic, i, total_clips, beats, bible, prev_clips, supervise=is_supervise, acts=job.acts,
+                clip_duration=clip_dur
             )
             clip_hard = hnd._hard_problems(clip_problems)
             if clip_hard:
@@ -1388,22 +1408,23 @@ def _continue_narrated_drama_job(job_id: str) -> None:
                 task_log.warning("job %s: clip %d note: %s", job_id, i + 1, p)
             clip_script = ch_data["clips"][0]
             hnd._normalize_narrated_clip(clip_script, bible)
-            update_clip(job_id, i, movie_script=clip_script)
+            update_clip(job_id, i, movie_script=clip_script, duration=clip_dur)
 
         # Build prompt & render
         prev_script = prev_clips[-1] if prev_clips else None
         prompt, img_urls, aud_urls = hnd.build_narrated_prompt(
-            clip_script, bible, cast_bank, location_bank, voice_bank, prev_clip=prev_script
+            clip_script, bible, cast_bank, location_bank, voice_bank, prev_clip=prev_script,
+            clip_duration=clip_dur
         )
-        task_log.info("job %s: rendering narrated clip %d of %d [%s] (%d images, %d audios)",
-                      job_id, i + 1, total_clips, clip_script.get("delivery_mode"), len(img_urls), len(aud_urls))
+        task_log.info("job %s: rendering narrated clip %d of %d [%s, %ds] (%d images, %d audios)",
+                      job_id, i + 1, total_clips, clip_script.get("delivery_mode"), clip_dur, len(img_urls), len(aud_urls))
         res = hnd.render_narrated_clip(i + 1, prompt, img_urls, aud_urls, interactive=False,
-                                       out_dir=job_media_dir(job_id))
+                                       out_dir=job_media_dir(job_id), duration=clip_dur)
         if res == "quit":
             raise RuntimeError(f"narrated clip {i + 1} failed after retries")
 
         video_url = res["video_url"]
-        update_clip(job_id, i, video_url=video_url, status="done", resolution="480p")
+        update_clip(job_id, i, video_url=video_url, status="done", resolution="480p", duration=clip_dur)
 
         # Bank voice if speaker present
         clip_file = _local_clip_movie(job_id, i, video_url)
@@ -1418,7 +1439,7 @@ def _continue_narrated_drama_job(job_id: str) -> None:
                               job_id, i + 1, spk)
                 continue
             s_est = float(turn.get("start_est", 0.5) or 0.5)
-            e_est = float(turn.get("end_est", 4.5) or 4.5)
+            e_est = float(turn.get("end_est", clip_dur - 0.4) or (clip_dur - 0.4))
             hnd.bank_voice(clip_file, spk, voice_bank, start_est=s_est, end_est=e_est,
                            turn_index=t_idx, turns=clip_turns)
             banked = True
@@ -1426,7 +1447,7 @@ def _continue_narrated_drama_job(job_id: str) -> None:
             update_job(job_id, voice_bank=voice_bank)
 
         prev_clips.append(clip_script)
-        task_log.info("job %s: clip %d done", job_id, i + 1)
+        task_log.info("job %s: clip %d done (%ds)", job_id, i + 1, clip_dur)
 
 
 # --- Celery Task ---
@@ -1687,7 +1708,11 @@ def _extend_movie_plan_task_traced(job_id: str, continuation_prompt: str, additi
     job = get_job(job_id)
     if job is None or job.mode not in ("story_videos", "narrated_drama"):
         return
-    additional_clips = additional_duration // (job.request.clip_duration or 5)
+    if job.mode == "narrated_drama":
+        cd = job.request.clip_duration if job.request.clip_duration in (5, 10, 15) else 15
+        additional_clips = max(1, round(additional_duration / cd))
+    else:
+        additional_clips = additional_duration // (job.request.clip_duration or 5)
     bible = job.movie_bible or (json.loads(job.scene_bible) if job.scene_bible else {})
 
     task_log.info("job %s: generating continuation outline for %d new clips", job_id, additional_clips)
@@ -1698,6 +1723,7 @@ def _extend_movie_plan_task_traced(job_id: str, continuation_prompt: str, additi
             outline, problems = hybrid.write_narrated_continuation_outline(
                 hybrid.topic_with_rules(job.request.topic, job.plan_rules), continuation_prompt, bible, prev_beats, additional_clips, delivery=job.delivery
             )
+            hybrid._normalize_beat_durations(outline.get("beats", []), additional_duration)
             try:  # the new lines get the same plain-language review as the first plan's (never raises)
                 hybrid.plain_pass_beats(outline.get("beats", []), bible, job.delivery, start_clip=len(prev_beats) + 1,
                                         prior_beats=prev_beats)
@@ -1722,7 +1748,8 @@ def _extend_movie_plan_task_traced(job_id: str, continuation_prompt: str, additi
     existing_count = len(job.clips)
     clips = list(job.clips)
     for idx in range(len(new_beats)):
-        clips.append(Clip(index=existing_count + idx, status="pending"))
+        beat_dur = int(new_beats[idx].get("duration", 15)) if job.mode == "narrated_drama" else None
+        clips.append(Clip(index=existing_count + idx, duration=beat_dur, status="pending"))
 
     update_job(
         job_id,
@@ -2676,8 +2703,8 @@ def extend_story(job_id: str, req: ExtendStoryRequest) -> dict:
     job = get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
-    if job.mode != "story_videos":
-        raise HTTPException(status_code=400, detail="continuation is only supported for Story Videos mode")
+    if job.mode not in ("story_videos", "narrated_drama"):
+        raise HTTPException(status_code=400, detail="continuation is only supported for Story Videos and Narrated Drama modes")
     if job.status not in ("done", "plan_ready"):
         raise HTTPException(status_code=409, detail=f"cannot extend story while job status is '{job.status}'")
     if req.duration % 5 != 0:

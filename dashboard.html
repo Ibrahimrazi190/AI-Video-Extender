@@ -281,7 +281,8 @@
         <fieldset>
           <legend>Clip length</legend>
           <div class="choices">
-            <label class="choice"><input type="radio" name="clip_duration" value="10" checked><span>10 seconds</span></label>
+            <label class="choice"><input type="radio" name="clip_duration" value="15" checked><span>15 seconds<small>cinematic multi-beat</small></span></label>
+            <label class="choice"><input type="radio" name="clip_duration" value="10"><span>10 seconds</span></label>
             <label class="choice"><input type="radio" name="clip_duration" value="5"><span>5 seconds<small>testing — cheaper</small></span></label>
           </div>
         </fieldset>
@@ -557,8 +558,10 @@
     const seg = el("article", `seg ${isPlanReady ? "plan_ready" : clip.status}`);
     seg.dataset.index = String(clip.index);
     seg.tabIndex = 0; // selectable from the keyboard (Enter or Space), like a click
+    const durLabel = clip.duration || (job.beats && job.beats[clip.index] && job.beats[clip.index].duration) || (job.request && job.request.clip_duration) || "";
+    const durSuffix = durLabel ? ` (${durLabel}s)` : "";
     const head = el("div", "seg-head");
-    head.append(el("span", null, `Clip ${clip.index + 1}`));
+    head.append(el("span", null, `Clip ${clip.index + 1}${durSuffix}`));
     const right = el("span");
     if (clip.resolution) right.append(el("span", "res", `${clip.resolution} `));
     right.append(el("span", `badge ${isPlanReady ? "plan_ready" : clip.status}`, isPlanReady ? "plan ready" : clip.status));
@@ -1226,12 +1229,13 @@
         const dMode = (b.delivery_mode || (b.speech === false ? "silent" : "dialogue")).toUpperCase();
         const tag = dMode === "VOICEOVER" ? "V.O." : dMode === "SHOCK_ACTION" ? "SHOCK" : dMode === "SILENT" ? "SILENT" : "SYNC";
         const tagColor = dMode === "VOICEOVER" ? "#6f42c1" : dMode === "SHOCK_ACTION" ? "#d73a49" : "var(--accent)";
+        const beatDur = b.duration || (clip && clip.duration) || job.request.clip_duration || 5;
         if (isClipDone) {
-          titleSpan.innerHTML = `<span class="beat-badge" style="background: var(--done);">Clip ${idx + 1} · Generated</span> <strong>Clip ${idx + 1}</strong> (${job.request.clip_duration || 5}s)`;
+          titleSpan.innerHTML = `<span class="beat-badge" style="background: var(--done);">Clip ${idx + 1} · Generated</span> <strong>Clip ${idx + 1}</strong> (${beatDur}s)`;
         } else if (isContinuation) {
-          titleSpan.innerHTML = `<span class="beat-badge" style="background: #8b5cf6;">[${tag}] Beat ${idx + 1} · Continuation</span> <strong>Clip ${idx + 1}</strong> (${job.request.clip_duration || 5}s)`;
+          titleSpan.innerHTML = `<span class="beat-badge" style="background: #8b5cf6;">[${tag}] Beat ${idx + 1} · Continuation</span> <strong>Clip ${idx + 1}</strong> (${beatDur}s)`;
         } else {
-          titleSpan.innerHTML = `<span class="beat-badge" style="background: ${tagColor};">[${tag}] Beat ${idx + 1}</span> <strong>Clip ${idx + 1}</strong> (${job.request.clip_duration || 5}s)`;
+          titleSpan.innerHTML = `<span class="beat-badge" style="background: ${tagColor};">[${tag}] Beat ${idx + 1}</span> <strong>Clip ${idx + 1}</strong> (${beatDur}s)`;
         }
         head.appendChild(titleSpan);
 
@@ -1484,6 +1488,23 @@
     box.hidden = !canExtend;
     if (!canExtend) return;
     $("extend-submit-btn").disabled = extendBusy;
+
+    const clipDur = (job.request && job.request.clip_duration) || 5;
+    const durSelect = $("extend-duration");
+    if (durSelect) {
+      const currentVal = Number(durSelect.value) || (clipDur === 15 ? 30 : 30);
+      durSelect.innerHTML = "";
+      const durations = clipDur === 15 ? [15, 30, 45, 60] : [15, 20, 30, 40, 60];
+      durations.forEach(d => {
+        const numClips = Math.round(d / clipDur);
+        const opt = document.createElement("option");
+        opt.value = d;
+        opt.textContent = `${d} s · ${numClips} clip${numClips === 1 ? '' : 's'}`;
+        if (d === currentVal) opt.selected = true;
+        durSelect.appendChild(opt);
+      });
+      if (!durSelect.value && durSelect.options.length) durSelect.selectedIndex = (durations.includes(30) ? durations.indexOf(30) : 0);
+    }
   }
 
   $("extend-submit-btn")?.addEventListener("click", async () => {
@@ -1559,7 +1580,9 @@
     const clip = job && selected != null ? job.clips[selected] : null;
     detail.hidden = !clip;
     if (!clip) return;
-    $("detail-title").innerHTML = `Clip ${clip.index + 1} of ${job.clips.length}` + (clip.custom_edited ? ` <span class="badge" style="background: var(--accent); margin-left: 6px; font-size: 11px;">✏️ Custom Edited</span>` : "");
+    const durLabel = clip.duration || (job.beats && job.beats[clip.index] && job.beats[clip.index].duration) || (job.request && job.request.clip_duration) || "";
+    const durSuffix = durLabel ? ` (${durLabel}s)` : "";
+    $("detail-title").innerHTML = `Clip ${clip.index + 1} of ${job.clips.length}${durSuffix}` + (clip.custom_edited ? ` <span class="badge" style="background: var(--accent); margin-left: 6px; font-size: 11px;">✏️ Custom Edited</span>` : "");
     const text = [];
     const hasScript = (job.mode === "story_videos" || job.mode === "narrated_drama") ? Boolean(clip.movie_script) : job.mode === "story_time" ? Boolean(clip.narration) : Boolean(clip.dialogue);
     if (!hasScript) {
@@ -1660,7 +1683,7 @@
   function getScriptPromptData(job, index) {
     const clip = job.clips[index];
     const prevClip = index > 0 ? job.clips[index - 1] : null;
-    const dur = job.request.clip_duration || 5;
+    const dur = clip.duration || (job.beats && job.beats[index] && job.beats[index].duration) || job.request.clip_duration || 5;
 
     let modeLabel = "Talking Head Speech";
     let targetWords = `~${Math.round(dur * 2.2)} words`;
@@ -1671,7 +1694,7 @@
       targetWords = "8 – 16 words";
     } else if (job.mode === "narrated_drama") {
       modeLabel = "Narrated Drama (Micro-Cycle)";
-      targetWords = "7 – 10 words";
+      targetWords = dur >= 15 ? "22 – 36 words" : dur >= 12 ? "17 – 30 words" : dur >= 10 ? "14 – 25 words" : "7 – 10 words";
     }
 
     const sections = [
@@ -1725,7 +1748,7 @@
   function getScenePromptData(job, index) {
     const clip = job.clips[index];
     const isFirst = index === 0;
-    const dur = job.request.clip_duration || 5;
+    const dur = clip.duration || (job.beats && job.beats[index] && job.beats[index].duration) || job.request.clip_duration || 5;
 
     const sections = [];
     let compiledPrompt = "";
@@ -1811,7 +1834,8 @@
         sections.push({ title: "Audio & Delivery", content: "— Non-verbal shock beat / pure foley and action —" });
       }
       refs.push("@Image1..N (Location Angles + Cast Portraits)", "@Audio1 (Protagonist Voice Bank)");
-      compiledPrompt = ms.compiled_prompt || (ms.shot ? `Five-second ${ms.shot}. Location: ${ms.location_id || ''}. Action: ${(ms.action_steps || []).map(a => a.action).join('. ')}. Audio: ${clipSpeech(ms, true) || 'None'}.` : 'Clip script pending generation...');
+      const durPrefix = dur === 5 ? "Five-second" : `${dur}-second`;
+      compiledPrompt = ms.compiled_prompt || (ms.shot ? `${durPrefix} ${ms.shot}. Location: ${ms.location_id || ''}. Action: ${(ms.action_steps || []).map(a => a.action).join('. ')}. Audio: ${clipSpeech(ms, true) || 'None'}.` : 'Clip script pending generation...');
     }
 
     sections.push({ title: "Reference Inputs Sent", content: refs.map((r) => `<span class="ref-tag">${r}</span>`).join(" ") });
@@ -2313,9 +2337,12 @@
     if (event.target.name === "clip_duration") fillDurations();
     if (event.target.name === "mode") {
       updateHint();
-      if (radio("mode") === "story_videos" || radio("mode") === "narrated_drama") {
+      if (radio("mode") === "story_videos") {
         const r5 = form.querySelector('input[name="clip_duration"][value="5"]');
         if (r5 && !r5.checked) { r5.checked = true; fillDurations(); }
+      } else if (radio("mode") === "narrated_drama") {
+        const r15 = form.querySelector('input[name="clip_duration"][value="15"]');
+        if (r15 && !r15.checked) { r15.checked = true; fillDurations(); }
       }
     }
     updateCostEstimate();
