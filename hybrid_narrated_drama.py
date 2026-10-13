@@ -163,6 +163,20 @@ _ON_SCREEN_RULE = (
     'VERTICAL 9:16 FRAME DENSITY (CRITICAL): The vertical frame is narrow; list up to 4 characters in "present_characters" for any single beat '
     '(the active speaker(s) and their immediate listener(s)). For fast-paced micro-sequences or multi-location transitions across a beat, up to 4 characters across the clip are fully supported (e.g. 2 to 3 in sequence 1, and 1 to 2 in sequence 2). Never crowd more than 3 characters into the exact same camera angle simultaneously to prevent visual morphing.'
 )
+
+# Told to the planners for 10-15 second clips (never the 5-second prompt): how dense a confrontation clip is, and the optional inner thought.
+_DENSITY_RULE = (
+    '   - RAPID-FIRE CONFRONTATIONS (CRITICAL, 15-second DIALOGUE clips): when a scene is a clash (an accusation, a threat, an ultimatum, '
+    'a reveal, a quarrel), write its 15-second clips as rapid-fire exchanges: 4 to 7 lines, about 45 to 65 words in total and never more '
+    'than 70, every line short and answering the one before it, so that no second of the clip is empty. Quiet, tender or establishing '
+    'scenes use fewer words; never pad a quiet moment to reach the count.'
+)
+_INNER_THOUGHT_RULE = (
+    '   - INNER THOUGHTS INSIDE A DIALOGUE CLIP (optional): in a confrontation clip the pov_protagonist may have ONE inner-thought line '
+    'between live lines, when what they think adds something the live lines and the picture do not (a realization, a fear, a decision). '
+    'Write it as one more entry in audio_lines with speaker = the pov_protagonist and "is_voiceover": true, in first person, under 15 words. '
+    'Every live, spoken line keeps "is_voiceover": false. At most one such line per clip; most clips have none. It counts toward the clip\'s word total.'
+)
 PLACE_VIEWS = (2, 3)
 MIN_STEP_SECONDS = 1.0
 SCRIPT_RETRIES = 2
@@ -192,6 +206,21 @@ STORY_SO_FAR_ACTS = 3   # how many of the most recent finished acts get a one-li
 # Every step already carries a start_time, which used to be thrown away at the last moment, so the video model
 # had to guess WHEN someone walks in, turns or leaves. False restores the old untimed "Actions:" sentence.
 TIMED_ACTIONS = True
+# The clip writer plans each shot (including the L-cuts: speaker first, a listener's closed-mouth reaction while the voice carries on,
+# back to the speaker). For 10 to 15 second DIALOGUE clips that plan used to be thrown away: the prompt builder made up its own cuts from
+# the order of the speakers. True sends the plan to the video model as a "CAMERA PLAN" line; False restores the old prompt exactly.
+DIALOGUE_CAMERA_PLAN = False   # off since the builder cuts to the listener itself (LINE_SPLIT_LCUT); the plan would contradict those cuts
+# L-cuts built into the prompt. A long live line is rendered as: the speaker on camera with lip-sync for its first words, a cut to the
+# LISTENER (mouth closed) while the speaker's voice carries on, and, for a very long line, a cut back to the speaker for the last words.
+# The words are never changed, only where the camera is. Consecutive lines by one speaker (a premise that already splits them) are
+# honoured as the split points. False renders every line as one on-camera line.
+LINE_SPLIT_LCUT = True
+LCUT_MIN_WORDS = 8             # a line shorter than this is never split (8 words: a clip of about 40 words in 4 or 5 lines still gets its cutaways)
+LCUT_HEAD_MIN_WORDS = 4        # the speaker is on camera for at least this many words (about a second) before the cut away
+LCUT_SEGMENT_MIN_WORDS = 3     # no piece is shorter than this
+LCUT_RETURN_MIN_WORDS = 20     # only a line this long also cuts back to the speaker for its last sentence
+LCUT_MAX_SPLITS = 3            # most lines in one clip that get a cutaway; also never more than half the clip's live lines (min 1), and the longest lines are chosen
+                               # (a premise's own splits are always honoured and count toward that)
 FADE_SECONDS = 0.05
 LEAD_IN_FADE = 0.08
 AUDIO_RETRY_NOTE = "No background music, no singing, no humming: only the spoken dialogue and natural room sound."
@@ -710,9 +739,10 @@ OUTLINE_SCHEMA = {
                             "type": "object",
                             "properties": {
                                 "speaker": {"type": "string", "description": "Who says this line. For a voiceover beat this is the pov_protagonist."},
-                                "line": {"type": "string", "description": "The exact words spoken."}
+                                "line": {"type": "string", "description": "The exact words spoken."},
+                                "is_voiceover": {"type": "boolean", "description": "Set to true if this line is an internal monologue, inner thought, or voiceover (character mouth stays strictly closed); false for live spoken dialogue."}
                             },
-                            "required": ["speaker", "line"],
+                            "required": ["speaker", "line", "is_voiceover"],
                             "additionalProperties": False
                         }
                     },
@@ -849,11 +879,12 @@ def _narrated_chapter_schema(location_ids: list[str], character_names: list[str]
                                 "properties": {
                                     "speaker": char_prop,
                                     "line": {"type": "string", "description": "The Master Plan's words for this turn, copied exactly."},
-                                    "delivery": {"type": "string", "description": "How this turn is delivered, matching the heat of THIS moment. The full range is available and the film needs all of it: 'roared, furious, voice breaking', 'shouted over the rain', 'spat out through clenched teeth', 'laughing, delighted and cruel', 'pleading, close to tears', 'sharp accusation', 'cold, resolute warning', 'barely a whisper'. Never write a delivery that cancels its own emotion ('fury without raised volume')."},
+                                    "delivery": {"type": "string", "description": "How this turn is delivered, matching the heat of THIS moment. The full range is available and the film needs all of it: 'roared, furious, voice breaking', 'shouted over the rain', 'spat out through clenched teeth', 'laughing, delighted and cruel', 'pleading, close to tears', 'sharp accusation', 'cold, resolute warning', 'barely a whisper'. For inner thoughts use '(V.O. - inner thought, [emotion])'. Never write a delivery that cancels its own emotion ('fury without raised volume')."},
                                     "start_est": {"type": "number", "description": "When this turn starts, in seconds inside the clip (0.0 to 15.0). The first turn starts at 0.4s or later so the picture settles first."},
-                                    "end_est": {"type": "number", "description": "When this turn ends, in seconds inside the clip (at most the clip duration, e.g. 14.8). Turns must not overlap: each one starts after the previous one ends."}
+                                    "end_est": {"type": "number", "description": "When this turn ends, in seconds inside the clip (at most the clip duration, e.g. 14.8). Turns must not overlap: each one starts after the previous one ends."},
+                                    "is_voiceover": {"type": "boolean", "description": "Set to true if this line is an internal monologue, inner thought, or voiceover (character mouth stays strictly closed); false for live spoken dialogue."}
                                 },
-                                "required": ["speaker", "line", "delivery", "start_est", "end_est"],
+                                "required": ["speaker", "line", "delivery", "start_est", "end_est", "is_voiceover"],
                                 "additionalProperties": False
                             }
                         },
@@ -1308,7 +1339,7 @@ def _narrated_outline_prompt(topic: str, duration: int, total_clips: int) -> tup
             f'the TOTAL words across every line in the beat - scales with duration: 14 to 25 words for 10s, up to 22 to 85 words for 15s. '
             f'A dialogue beat holds 1 to 5 punchy lines between up to 5 speakers (e.g. a jab, a sneer, a reaction, a demand, and a retort can all share one clip). Pacing is fast: each clip is an active micro-sequence with '
             f'2 to 4 rapid narrative/visual shifts (e.g. entry -> discovery -> reaction -> confrontation). Short, hard lines land; '
-            f'never drag out a single line.'
+            f'never drag out a single line.\n{_DENSITY_RULE}\n{_INNER_THOUGHT_RULE}'
         )
         abs_speech_rule = (
             "   - For voiceover and dialogue clips, speech_budget must match the beat duration: 14 to 25 words for 10s, "
@@ -1369,6 +1400,7 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (FIRST-PERSON POV + LIVE DIALOGUE):
    - PREMISE DIALOGUE ENFORCEMENT (CRITICAL): If the story premise provides explicit quoted dialogue for a character (e.g. Vanessa: "Get her fired, darling", Damien: "Do you know what this suit costs? More than you earn in a year."), you MUST include those exact lines verbatim for those characters in audio_lines. Do NOT drop lines given in the premise, do NOT reassign them to other characters, and do NOT alter the speaker who delivered them. Every character who speaks in the premise must speak their line. If a character's quoted line in the premise is 4 words (e.g. 'Get her fired, darling'), that is completely acceptable - do not drop or change their line.
    - CAUSE-AND-EFFECT CHRONOLOGY (CRITICAL): The spoken lines in "audio_lines" MUST strictly follow chronological narrative cause-and-effect order as events occur in the premise and clip summary. NEVER place a character's plea, apology, or reaction before the instigating line or confrontation that provoked it! When an altercation occurs (e.g. coffee spills -> Damien confronts Aria about his suit -> Vanessa demands she be fired -> Aria pleads for her job -> manager removes her), each line must naturally respond to what was just said or done. Cause always precedes effect.
    - ZERO EXPOSITORY DIALOGUE & NO STATING VISUAL ACTIONS (CRITICAL): Visual actions, physical reveals, and props (e.g. dropping a cake box, throwing a divorce folder, touching a bare collarbone, seeing someone wear a stolen pendant on a balcony, writing initials in a hem, sliding a contract) are filmed by the camera in action_steps. Characters MUST NEVER speak visual actions aloud as dialogue! NEVER make a character say "My sapphire pendant is gone", "S.G. means Sophia Grant", "This divorce says you take my designs too", or "I will fight you for my work" unless explicitly quoted in the premise! Trust the camera to show the visual story. When the premise provides quoted lines for a scene or clip, audio_lines MUST contain ONLY those quoted dialogue exchanges and genuine dramatic reactions between characters. Do NOT invent filler expository lines to summarize the scene or explain the plot.
+   - INTERNAL MONOLOGUE & V.O. PRESERVATION (CRITICAL): If the story premise, script, or continuation prompt designates any line as an internal thought, inner voice, or voiceover (e.g. 'VIVIAN (V.O.)', '(V.O.)', 'inner thought', 'internal monologue'), you MUST set 'is_voiceover: true' on that line in audio_lines! Never convert a character's inner thoughts into live spoken dialogue!
    - A VOICEOVER beat holds exactly ONE line, by the pov_protagonist. A shock_action beat holds an EMPTY array.
    - VOICE SAMPLES: the FIRST line a character speaks in the whole video is cut out of that clip and reused as their voice everywhere after, so make it a clear, fully voiced line of at least {VOICE_SAMPLE_MIN_WORDS} words (unless their line was explicitly quoted in the premise). Introduce a character's voice on a beat where they carry the line, then let them trade quick fire afterwards.
 {speech_budget_line}
@@ -1862,9 +1894,12 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (BEAT SCRIPTING):
    - In each beat, specify integer "duration" (10 to 15 seconds, default 15) chosen based on dramatic weight.
    - PACING & NARRATIVE DENSITY: Each 10–15s clip is an active, cinematic micro-sequence with 2 to 4 rapid narrative/visual shifts (e.g. entry -> discovery -> reaction -> confrontational line or prompt). Fast-moving and packed with story events!
    - A DIALOGUE beat holds 1 to 7 lines between up to {MAX_VOICE_REFS} characters in scene_bible.{_delivery_note("quick_beats")}. Keep dialogue from ALL scene segments described in the premise for this clip.
+{_DENSITY_RULE}
+{_INNER_THOUGHT_RULE}
    - PREMISE DIALOGUE ENFORCEMENT & CANONICAL NAMES (CRITICAL): If the story premise provides explicit quoted dialogue for a character (e.g. Vanessa: "Get her fired, darling", Damien: "Do you know what this suit costs? More than you earn in a year."), you MUST include those exact lines verbatim for those characters in audio_lines. Preserve character names exactly as written in the premise (e.g. "Chloe", "Chloe Moss" - never invent unprompted surnames like "Chloe Vale"). Do NOT drop lines given in the premise, do NOT reassign them to other characters, and do NOT alter the speaker who delivered them. Every character who speaks in the premise must speak their line.
    - CAUSE-AND-EFFECT CHRONOLOGY (CRITICAL): Spoken lines in "audio_lines" MUST strictly follow chronological cause-and-effect order as events unfold. Never place a reaction or plea before the line that provoked it. Cause always precedes effect!
    - ZERO EXPOSITORY DIALOGUE & NO STATING VISUAL ACTIONS (CRITICAL): Visual actions, physical reveals, and props (e.g. dropping a cake box, throwing a divorce folder, touching a bare collarbone, seeing someone wear a stolen pendant on a balcony, writing initials in a hem, sliding a contract) are filmed by the camera in action_steps. Characters MUST NEVER speak visual actions aloud as dialogue! NEVER make a character say "My sapphire pendant is gone", "S.G. means Sophia Grant", "This divorce says you take my designs too", or "I will fight you for my work" unless explicitly quoted in the premise! Trust the camera to show the visual story. When the premise provides quoted lines for a scene or clip, audio_lines MUST contain ONLY those quoted dialogue exchanges and genuine dramatic reactions between characters. Do NOT invent filler expository lines to summarize the scene or explain the plot.
+   - INTERNAL MONOLOGUE & V.O. PRESERVATION (CRITICAL): If the story premise, script, or continuation prompt designates any line as an internal thought, inner voice, or voiceover (e.g. 'VIVIAN (V.O.)', '(V.O.)', 'inner thought', 'internal monologue'), you MUST set 'is_voiceover: true' on that line in audio_lines! Never convert a character's inner thoughts into live spoken dialogue!
    - A VOICEOVER beat holds exactly ONE line by '{bible.get("pov_protagonist")}'.
    - A SHOCK_ACTION beat has audio_lines = [] and speech_budget = 0.
    - For dialogue/voiceover, "speech_budget" is the total words across all lines in that beat: 14 to 25 words for 10s, up to 22 to 85 words for 15s.
@@ -4604,14 +4639,28 @@ def _narrated_chapter_prompt(
     # can therefore place a revelation in the right clip. Here it is quoted and locked.
     beat_turns = _beat_lines(beat)
     if beat_turns:
-        quoted = "\n".join(f'    {i + 1}. {t.get("speaker", "")}: "{t.get("line", "")}"' for i, t in enumerate(beat_turns))
+        quoted_lines = []
+        for i, t in enumerate(beat_turns):
+            vo_tag = " (V.O. - inner thought, mouth closed)" if t.get("is_voiceover") else ""
+            quoted_lines.append(f'    {i + 1}. {t.get("speaker", "")}{vo_tag}: "{t.get("line", "")}"')
+        quoted = "\n".join(quoted_lines)
+        total_beat_words = sum(len(_WORD.findall(t.get("line") or "")) for t in beat_turns) if beat_turns else 0
+        is_high_density = total_beat_words >= 45 and clip_dur >= 10
         if clip_dur >= 10:
-            timing_guidance = (
-                f'- PHYSICAL ACTION CATALYST & SPEECH WINDOWS: If this clip opens with a physical action (such as a trip, spill, collision, door opening, reveal, slap, or grab), '
-                f'devote 0.0s to 2.0s in action_steps to that physical action BEFORE dialogue begins, and start the first speech turn at 1.8s to 2.5s so the action visibly plays out on camera! '
-                f'For conversational clips without an opening shock, start the first turn between 0.8s and 1.5s. '
-                f'The last turn ends by {clip_dur - 0.3:.1f}s. Size each window realistically (~2.5 to 3.2 words per second) with at least 0.2s to 0.4s breathing room between turns.'
-            )
+            if is_high_density:
+                timing_guidance = (
+                    f'- HIGH DIALOGUE DENSITY & RAPID-FIRE PACING (CRITICAL - {total_beat_words} words): Because this clip carries 45+ spoken words, '
+                    f'dialogue MUST begin immediately between 0.2s and 0.4s into the clip! Do NOT wait or devote 1 to 2 seconds to silent physical staging before speaking. '
+                    f'Dialogue and camera moves (whip pans) play concurrently from frame 0. '
+                    f'Size each speech window by its word count at about 4 to 5 words per second (the voice speaks briskly and has been shown to deliver this whole), with tight 0.1s handoffs between turns. The final turn ends by {clip_dur - 0.2:.1f}s.'
+                )
+            else:
+                timing_guidance = (
+                    f'- PHYSICAL ACTION CATALYST & SPEECH WINDOWS: If this clip opens with a physical action (such as a trip, spill, collision, door opening, reveal, slap, or grab), '
+                    f'devote 0.0s to 2.0s in action_steps to that physical action BEFORE dialogue begins, and start the first speech turn at 1.8s to 2.5s so the action visibly plays out on camera! '
+                    f'For conversational clips without an opening shock, start the first turn between 0.8s and 1.5s. '
+                    f'The last turn ends by {clip_dur - 0.3:.1f}s. Size each window realistically (~2.5 to 3.2 words per second) with at least 0.2s to 0.4s breathing room between turns.'
+                )
         else:
             timing_guidance = f'The first starts at 0.4s or later, and the last ends by {clip_dur - 0.2:.1f}s.'
 
@@ -4619,17 +4668,27 @@ def _narrated_chapter_prompt(
             f'- "speech" MUST hold exactly these {len(beat_turns)} turn(s), in this order, each line copied word for word '
             f'- nothing added, removed, reworded or merged, and no extra turns:\n{quoted}\n'
             f'- Give each turn its own "delivery" and its own start_est/end_est window. The windows must not overlap: '
-            f'each turn begins after the one before it ends. Size each window briskly and realistically by its natural speaking speed (~2.5 to 3.5 words per second) so dialogue sounds rapid and intense; do NOT artificially stretch lines to pad out time. {timing_guidance}'
+            f'each turn begins after the one before it ends. Size each window briskly and realistically by its natural speaking speed ({"about 4 to 5" if is_high_density else "~2.5 to 3.5"} words per second) so dialogue sounds rapid and intense; do NOT artificially stretch lines to pad out time. {timing_guidance}'
         )
     else:
         line_rule = f"- 'speech' is the line or lines heard in this clip ({min_words} to {max_words} words in total)."
 
     if clip_dur >= 10:
-        pacing_guidance = (
-            f"- For clips opening with a physical action catalyst (spill, trip, arrival, reveal), describe that physical action in action_steps across 0.0s to 2.0s and begin dialogue at 1.8s to 2.5s. "
-            f"Multiple turns play back to back in rapid dramatic succession at natural conversational speed (~2.5 to 3.2 words/sec) with a brief beat of air (0.2s to 0.4s) between each. "
-            f"The last turn resolves by {clip_dur - 0.3:.1f}s, leaving plenty of room for active physical acting."
-        )
+        total_words_check = sum(len(_WORD.findall(t.get("line") or "")) for t in beat_turns) if beat_turns else 0
+        if total_words_check >= 45:
+            pacing_guidance = (
+                f"- RAPID-FIRE PACING & DEEP-FOCUS STAGING ({total_words_check} words): Dialogue begins immediately at 0.2s–0.4s mid-camera motion. "
+                f"Multiple turns hand off with rapid syllable precision (about 4 to 5 words/sec) with minimal 0.1s gaps between speakers. "
+                f"Stage listeners and active speakers simultaneously in depth (foreground speaker, background listener in the same frame) so reactions occur live without eating extra seconds on cutaways. "
+                f"Camera moves (whip pans, tracking) occur concurrently with dialogue delivery. "
+                f"CLOSE-UP CONFRONTATION FOCUS: In vertical format, do NOT stage all characters together in a distant wide shot. Frame the active confrontation tightly in Close-Up / Medium Close-Up cuts and snap zooms between speaking characters and characters reacting internally with closed mouths. Background onlookers who do not speak remain off-screen or soft background silhouettes."
+            )
+        else:
+            pacing_guidance = (
+                f"- For clips opening with a physical action catalyst (spill, trip, arrival, reveal), describe that physical action in action_steps across 0.0s to 2.0s and begin dialogue at 1.8s to 2.5s. "
+                f"Multiple turns play back to back in rapid dramatic succession at natural conversational speed (~2.5 to 3.2 words/sec) with a brief beat of air (0.2s to 0.4s) between each. "
+                f"The last turn resolves by {clip_dur - 0.3:.1f}s, leaving plenty of room for active physical acting."
+            )
     else:
         pacing_guidance = (
             f"- A single-turn clip should start between 0.5 and 0.9 seconds and end between {clip_dur - 1.0:.1f} and {clip_dur - 0.4:.1f} seconds. "
@@ -4649,13 +4708,24 @@ def _narrated_chapter_prompt(
         mode_instructions = f"""THIS IS A LIVE SPOKEN DIALOGUE BEAT:
 - Each turn's speaker is a character speaking live on-camera, or over a phone/intercom from elsewhere.
 {line_rule}
-- When multiple characters (two, three, or four) speak in one clip, CUT OR REFRAME TO EACH SPEAKER: frame the active speaker tightly (Medium Close-Up or Close-Up) while their line is spoken, cutting inside the clip or using an over-the-shoulder angle at the change of speaker. Never hold multiple stationary front-facing faces in frame during dialogue, which causes diffusion models to assign lip sync to the wrong person. Never give a line to someone the camera cannot see, unless they are a remote voice on a telephone or intercom.
+- When multiple characters (two, three, or four) speak in one clip, CUT OR REFRAME TO EACH SPEAKER: frame the active speaker tightly (Medium Close-Up or Close-Up) as their line begins, cutting inside the clip or using an over-the-shoulder angle at the change of speaker. Never hold multiple stationary front-facing faces in frame during dialogue, which causes diffusion models to assign lip sync to the wrong person. Never give a line to someone the camera cannot see, unless they are a remote voice on a telephone or intercom.
 {pacing_guidance}
 - Each turn's delivery is that speaker's emotional tone at THIS moment, and people in a drama shout, snarl, laugh and beg as well as murmur (e.g. 'roared, furious', 'shouted across the room', 'spat through clenched teeth', 'laughing, delighted and cruel', 'pleading, voice cracking', 'sharp accusation', 'guarded, suspicious murmur', 'barely a whisper').
 - A REPLY REACTS (CRITICAL): when a turn answers the one before it in the same clip, its delivery must carry what that line just did to them - stung, amused, winded, hardening, goaded into hitting back. A jab met with a blank, even tone plays as a robot answering a person. If the previous turn mocked them, this one either shows the hurt or returns the mockery harder; it never simply states words.
 - EMOTIONAL RANGE (CRITICAL): never write a delivery that cancels its own emotion - 'fury without raised volume', 'anger held under perfect calm', 'defiance without a raised note' are instructions to sound flat, and a whole film of them is unwatchable. If a character is furious, they SOUND furious. The previous clips' deliveries are listed in the history below: if the last two were restrained, this one breaks the pattern unless the beat genuinely calls for another quiet moment.
-- Lip synchronization is active for on-screen speakers. Action steps describe natural head movements, gestures, and expressive acting while speaking.
-- HYBRID VOICEOVER + LIVE DIALOGUE: If this clip opens with an internal reflection or voiceover from the POV protagonist before live dialogue begins (e.g. approaching a door, touching a pendant, holding a prop), mark that opening turn's delivery as 'voiceover' or '(V.O.)'. During that voiceover turn, action_steps MUST describe physical visual movement (walking, touching a prop, looking through a window, opening a door) with their MOUTH COMPLETELY CLOSED with natural resting facial expressions. Then, when live dialogue begins, CUT TO THE SCENE/SPEAKER (e.g. door opening, reverse over-the-shoulder looking into the room, medium reaction shot) where active lip-sync synchronizes onto live spoken lines."""
+- Lip synchronization is active ONLY for characters speaking live on-camera dialogue aloud. Action steps describe natural head movements, gestures, and expressive acting while speaking.
+- L-CUTS & REACTION REFRAMES (CRITICAL):
+  * Every live line BEGINS on its speaker's face with the lips moving (about a second or more). Only then may the camera leave for a listener's reaction while the voice carries on, and it may return to the speaker later in the line or for the next line. A line is never spoken wholly over a listener unless the camera has just shown that same speaker talking.
+  * When a camera cut, whip pan, or reframing reveals a reacting listener while dialogue is still concluding or spoken from off-camera (an L-Cut reaction shot):
+    - The speaker speaking the dialogue remains the sole attributed speaker. NEVER split or attribute their words onto the reacting listener.
+    - In action_steps, the on-screen reacting character MUST keep their mouth strictly closed with lips completely motionless (e.g. eyes widening, jaw tense, lips firmly sealed), reacting solely through physical facial acting.
+    - When an action step cuts or tracks to a listener mid-line, explicitly state: "[Camera cuts to <Listener> reacting in stunned silence with mouth strictly closed and lips motionless while <Speaker>'s voice concludes off-screen.]"
+    - NEVER allow any on-screen character to move their lips to another character's voice.
+- HYBRID VOICEOVER & INNER THOUGHTS (CRITICAL): If any turn in this clip is marked as an internal reflection, voiceover, or inner thought (whether opening the clip or midway between dialogues, e.g. marked with '(V.O.)' or 'is_voiceover: true'):
+  * In 'speech', you MUST set 'is_voiceover: true' on that turn and write its delivery as '(V.O. - inner thought, [emotion])'.
+  * The camera is LOCKED on the thinker for the whole inner thought: one unbroken close shot, no cut away to anyone else until the thought ends. In 'shot', write that the camera goes in on them and stays.
+  * In 'action_steps', during that voiceover turn, the character MUST keep their mouth strictly and completely closed with lips motionless, reacting solely through facial expressions and eye movements that show how the thought lands (e.g. stunned freeze, eyes widening in realization, swallowing hard with lips pressed together). NEVER describe them speaking, delivering lines, or moving their mouth or lips during an inner thought!
+  * For live spoken dialogue turns from other characters or subsequent spoken lines, resume live dialogue acting and camera framing where active lip-sync applies."""
     else:  # shock_action
         mode_instructions = """THIS IS A WORDLESS BEAT (no speech of any kind):
 - "speech" MUST be an empty array: nobody speaks at all.
@@ -4672,6 +4742,7 @@ ABSOLUTE SPATIAL & CONTINUITY RULES:
    Blocking describes TWO moments: where each character is at 0.0s (position, posture, screen_profile, eyeline) and where the action leaves them at the end of the clip (end_position, end_posture, end_screen_profile, end_eyeline).
    If this clip continues in the same location as the previous clip, each character's 0.0s pose MUST match the pose the PREVIOUS clip ENDED them in - not the pose it started them in. They are free to move during this clip; every change between the two must be shown happening in action_steps. A character who stands still all clip simply has the same values at both ends.
    SHARED SEATING & BOOTHS (PREVENT MORPHING): When multiple characters share a booth or table, assign each person a distinct, separated physical seat (e.g. seated on opposite sides of the table). At 0.0s, describe both characters present with an active posture or subtle motion in action_steps within the first second, ensuring the video model instantiates both distinct human bodies from frame 0 and never merges or morphs them.
+   OPENING POSE FIDELITY (CRITICAL): At 0.0s, each character's posture, hand position, and physical stance in 'blocking' and 'action_steps' MUST match the OPENING of the beat or prompt (e.g. if the premise opens with a hand raised high frozen mid-slap, that MUST be their 0.0s starting pose in blocking and action_steps; do NOT preemptively set their ending resolved pose as their starting pose!).
 
 3. REMOTE TELEPHONE / INTERCOM / COMMUNICATOR CALLS (CRITICAL):
    If a character is speaking over a telephone, mobile phone, intercom, or radio from outside this room:
@@ -4691,10 +4762,11 @@ ABSOLUTE SPATIAL & CONTINUITY RULES:
    THE CAMERA IS A PERSON, NOT A TRIPOD: a real operator holding a camera is never frozen. Every shot has a real, motivated camera move during its {clip_dur} seconds: a slow push-in, a gentle drift, a small pan or tilt to follow a gesture, a light handheld sway. Keep it SMALL and SMOOTH (a light handheld feel, never a shake, never a whip): faces and lips must stay readable. NEVER write "locked", "static", "frozen" or "holds still" in a shot; the video model takes those words literally and the clip looks like a camera on a tripod.
    (1) THE KIND OF CLIP DECIDES THE COVERAGE:
        A) NARRATION (voiceover) and WORDLESS ACTION clips: the camera moves FREELY, like a person holding it and filming. It walks and tracks with someone, follows a hand or a prop, drifts across the place, pushes in or pulls back. There is no dialogue geometry to protect, so it may start from any side of the place. When such a clip sits INSIDE a conversation scene (the same people are still there), it keeps to the geography already shown (see 3).
-       B) DIALOGUE between TWO people: shot / reverse-shot, SPEAKER FIRST. After the scene's opening clip, nearly every clip is an [ANGLE CUT] that shows the SPEAKER'S FACE over the LISTENER'S shoulder: while Hannah speaks, the camera is behind Mike's shoulder looking at Hannah; when Mike answers, it is behind Hannah's shoulder looking at Mike. The speaker's face must always be visible, because only a visible face can move its lips. The speaker is turned THREE-QUARTER toward the lens, never in pure profile; the listener is the back or side of a shoulder in the foreground. A clip in which BOTH people speak CUTS INSIDE the clip: the first part is the over-the-shoulder shot of the first speaker, then a hard cut, timed in the gap between the two lines (e.g. hard cut at 2.5 seconds), to the over-the-shoulder shot of the second speaker. Write both parts in the one shot sentence with the cut time. With three lines in one clip, cut at each change of speaker, never more than twice. NEVER a profile two-shot with both faces turned toward each other. Name the scene's two shoulder angles once; every time an angle comes back, COPY the placement words of the earlier clip that used it exactly (the previous clips' shots are shown to you above), so "the same angle" really is the same.
+       B) DIALOGUE between TWO people: shot / reverse-shot, SPEAKER FIRST. After the scene's opening clip, nearly every clip is an [ANGLE CUT] that shows the SPEAKER'S FACE over the LISTENER'S shoulder: while Hannah speaks, the camera is behind Mike's shoulder looking at Hannah; when Mike answers, it is behind Hannah's shoulder looking at Mike. The speaker's face must be visible when each line BEGINS, because only a visible face can move its lips (F below says when the camera may leave it). The speaker is turned THREE-QUARTER toward the lens, never in pure profile; the listener is the back or side of a shoulder in the foreground. A clip in which BOTH people speak CUTS INSIDE the clip: the first part is the over-the-shoulder shot of the first speaker, then a hard cut, timed in the gap between the two lines (e.g. hard cut at 2.5 seconds), to the over-the-shoulder shot of the second speaker. Write both parts in the one shot sentence with the cut time. With three lines in one clip, cut at each change of speaker, never more than twice. NEVER a profile two-shot with both faces turned toward each other. Name the scene's two shoulder angles once; every time an angle comes back, COPY the placement words of the earlier clip that used it exactly (the previous clips' shots are shown to you above), so "the same angle" really is the same.
        C) DIALOGUE with THREE OR MORE people present (a table, a group in a corridor): do NOT cut between shoulders. Open the scene with a WIDE shot that shows everyone, and come back to a wide shot only every third or fourth clip so the group reads as a group: never the same wide three-shot in two clips in a row. EVERY clip in between is an [ANGLE CUT] that moves in on the SPEAKER (a medium shot or a close-up, from the group's side), with the listeners as soft shoulders, heads or silhouettes in the foreground; when two people trade lines in one clip, hold the two of them in a medium two-shot. When speaker changes in multi-speaker dialogue, cut or reframe tightly to the active speaker (Close-Up / Medium Close-Up) so their mouth is clearly prominent; listeners must be soft foreground shoulders or turned away with mouths closed, preventing lip-sync misattribution. List as on screen (in blocking) only the speaker and the one or two listeners the shot really shows; everyone else is 'off screen' for that clip. Cut to one key listener's face for a reaction when the story calls for it.
        D) ESTABLISHING PHASE: the FIRST clip of a scene, or of a new place, is the master: a wide or medium shot that shows where everyone is, what the room looks like and each person's screen position (frame-left vs frame-right). It MOVES (a slow drift or push); it does not freeze.
-       E) FRAMING WHEN SOMEONE SPEAKS: the video is VERTICAL (9:16), so frame TIGHT. The speaker is a Medium Close-Up (chest up) or a Close-Up, NEVER wider than a Medium shot (waist up): nothing below the waist is shown in a clip where someone speaks. Wide shots are only for the first clip of a scene, for group shots and for movement. When someone speaks, the camera focuses prominently on that speaker's face; any non-speaking listener present in the shot must be positioned over-the-shoulder, turned away, or passive with their mouth firmly closed, ensuring lip synchronization locks only onto the speaking character.
+       E) FRAMING WHEN SOMEONE SPEAKS: the video is VERTICAL (9:16), so frame TIGHT. The speaker is a Medium Close-Up (chest up) or a Close-Up, NEVER wider than a Medium shot (waist up): nothing below the waist is shown in a clip where someone speaks. Wide shots are only for the first clip of a scene, for group shots and for movement. When a line begins, the camera is on that speaker's face; any non-speaking listener present in the shot must be positioned over-the-shoulder, turned away, or passive with their mouth firmly closed, ensuring lip synchronization locks only onto the speaking character.
+       F) L-CUTS: REACTIONS WHILE SOMEONE IS STILL TALKING (CRITICAL): the camera does not have to stay on the speaker for the whole line. EVERY live line BEGINS on its speaker's face with the lips moving, for about a second or more, so the voice is tied to the right mouth. After that the camera may leave for a LISTENER'S reaction (a push-in on their eyes, a jaw tightening, a hand shifting) while the speaker's voice carries on, and it may come BACK to the speaker later in the same line or for the next line. While the camera is on a listener, that listener's mouth stays strictly closed with lips motionless: a listener never mouths, repeats or lip-syncs what the speaker is saying. A line is never spoken wholly over a listener's face unless the camera has just shown that same speaker talking. The speaker stays "visible" in blocking (they are still in the room); only the camera is elsewhere. Write these cuts, with their times, into the one shot sentence (for example: "on Hannah's face for her first second, cut at 1.2 seconds to Mike's closed-mouth reaction while she keeps talking, back to Hannah at 3.4 seconds for her last words"). INNER THOUGHTS ARE THE OPPOSITE: while a character's inner thought (is_voiceover) plays, the camera goes in on THAT character and stays locked on them, one unbroken close shot with no cut away until the thought ends, showing how it lands; their mouth never moves.
    (2) EVERY ANGLE SHOWS ITS BACKGROUND: say what is visible BEHIND the subject in that angle, taken from the place's layout (for example "behind Hannah, her front door and the rain-streaked window"). The location pictures cannot show every direction, so the shot text has to.
    (3) THE 180-DEGREE RULE & SCREEN DIRECTION: between two clips of one scene, keep the camera on the SAME SIDE of the imaginary line between the people, so each keeps their screen side: the person on frame-left stays on frame-left and looks toward screen-right. Crossing to the other side is allowed in only three cases, and then the shot MUST state the new positions in words and set "frame_position" and "screen_profile" to match (everything mirrors: who is left or right, where doors and windows are, which way people face): (a) the camera visibly travels across during the clip (an orbit, or a track past them); (b) the clip follows a wide or neutral shot, or a change of place; (c) it is a narration or action clip between scenes. The two parts of a cut inside one clip stay on the SAME side of the line. Never flip it by accident.
    (4) COVERAGE PHASE - MOTIVATED CUTS: besides the speaker shots above, use Close-Up / Extreme Close-Up on a face, trembling hands or a key prop at emotional peaks; Power Dynamics (the dominant person from a LOW angle, the vulnerable one from a HIGH angle); Reveals (open on a close detail, then pull back or tilt to show the scene). Every [ANGLE CUT] has a reason in the drama. NEVER cut in the MIDDLE of a movement: when someone walks, enters or leaves across consecutive clips, keep ONE continuous tracking shot ([SAME SETUP]) that follows them.
@@ -5193,8 +5265,9 @@ def _respace_turns(turns: list[dict], clip_duration: int | None = None) -> None:
         dur = float(DEFAULT_CLIP_SECONDS) if any(float(t.get("end_est", 0) or 0) > 5.0 for t in turns) else 5.0
     words = [max(1, len(_WORD.findall(t.get("line") or ""))) for t in turns]
     total = sum(words)
-    first, last = 0.4, dur - 0.2
-    gap = 0.2 if len(turns) > 1 else 0.0
+    is_high_density = total >= 45 and dur >= 10.0
+    first, last = (0.2, dur - 0.1) if is_high_density else (0.4, dur - 0.2)
+    gap = 0.1 if is_high_density else (0.2 if len(turns) > 1 else 0.0)
     span = (last - first) - gap * (len(turns) - 1)
     cursor = first
     for turn, count in zip(turns, words):
@@ -5204,8 +5277,71 @@ def _respace_turns(turns: list[dict], clip_duration: int | None = None) -> None:
         cursor += length + gap
 
 
+def _line_is_vo_in_topic(line: str, speaker: str, topic: str | None) -> bool:
+    """Detects if a line in the premise / topic was designated as V.O. or inner thought."""
+    if not topic or not line:
+        return False
+    clean_line = re.sub(r"[^\w\s]", " ", line.lower()).strip()
+    words = clean_line.split()
+    if not words:
+        return False
+
+    sub_slices = []
+    if len(words) >= 4:
+        sub_slices.append(" ".join(words[:4]))
+        sub_slices.append(" ".join(words[1:5]))
+    if len(words) >= 3:
+        sub_slices.append(" ".join(words[:3]))
+    sub_slices.append(" ".join(words[:min(len(words), 5)]))
+
+    vo_pattern = r"(?:\bv\.?o\.?(?!\w)|inner\s*thought|internal\s*monologue|voice\s*over|voiceover)"
+    live_override = r"(?:\blips?\s*moving\b|\bspeaking\s*(?:aloud|live)\b|\baloud\b|\blive\s*dialogue\b)"
+
+    t_lines = topic.splitlines()
+
+    for idx, t_line in enumerate(t_lines):
+        t_line_lower = t_line.lower()
+        if any(sub in t_line_lower for sub in sub_slices):
+            # Check 1: Suffix tag on the same line, e.g. "..." (Vivian Ashford V.O.)
+            for m in re.finditer(r'[\"“][^\"”]+[\"”][^\(\n]*\(([^\)]+)\)', t_line_lower):
+                matched_text = m.group(0)
+                if any(sub in matched_text for sub in sub_slices):
+                    tag_inside = m.group(1)
+                    if re.search(vo_pattern, tag_inside, re.I) and not re.search(live_override, tag_inside, re.I):
+                        return True
+                    if re.search(live_override, tag_inside, re.I):
+                        return False
+
+            # Check 2: Speaker heading on this line, e.g. VIVIAN (V.O. - inner thought): "..."
+            colon_pos = t_line_lower.find(":")
+            quote_pos = min([p for p in [t_line_lower.find('"'), t_line_lower.find('“')] if p != -1], default=-1)
+            if colon_pos != -1 and (quote_pos == -1 or colon_pos < quote_pos):
+                heading = t_line_lower[:colon_pos]
+                first_name = (speaker or "").split()[0].lower()
+                if first_name in heading:
+                    if re.search(vo_pattern, heading, re.I) and not re.search(live_override, heading, re.I):
+                        return True
+                    if quote_pos != -1:
+                        parenthetical = t_line_lower[colon_pos:quote_pos]
+                        if re.search(vo_pattern, parenthetical, re.I) and not re.search(live_override, parenthetical, re.I):
+                            return True
+                    return False
+
+            # Check 3: Heading on the immediately preceding line (idx - 1)
+            if idx > 0:
+                prev_line = t_lines[idx - 1].strip().lower()
+                first_name = (speaker or "").split()[0].lower()
+                if first_name in prev_line and prev_line.endswith(":"):
+                    if re.search(vo_pattern, prev_line, re.I) and not re.search(live_override, prev_line, re.I):
+                        return True
+                    return False
+
+    return False
+
+
 def _repair_narrated_clip(clip: dict, beat: dict, bible: dict, prev_clip: dict | None = None,
-                          attempt: int = 0, final: bool = False, clip_duration: int | None = None) -> list[str]:
+                          attempt: int = 0, final: bool = False, clip_duration: int | None = None,
+                          topic: str | None = None) -> list[str]:
     """Fix what the code can fix by itself, in place, BEFORE validation - so it costs no retry.
 
     A retry is an OpenAI call, and three in a row stop the job. Over 60 clips even a 2% per-clip failure
@@ -5220,10 +5356,16 @@ def _repair_narrated_clip(clip: dict, beat: dict, bible: dict, prev_clip: dict |
 
     # 1. Timing. The model chose the speakers and the order; bad arithmetic is not worth a retry.
     turns = _clip_turns(clip)
-    if turns and (not _turn_windows_valid(turns, clip_duration=clip_dur) or _turns_too_fast(turns)):
+    total_clip_words = sum(len(_WORD.findall(t.get("line") or "")) for t in turns) if turns else 0
+    is_high_density = total_clip_words >= 45 and clip_dur >= 10
+    if turns and (
+        not _turn_windows_valid(turns, clip_duration=clip_dur)
+        or _turns_too_fast(turns)
+        or (is_high_density and float(turns[0].get("start_est", 0) or 0) > 0.45)
+    ):
         _respace_turns(turns, clip_duration=clip_dur)
         clip["speech"] = turns
-        fixed.append(f"re-spaced {len(turns)} speech window(s) so they fit the clip without overlapping or rushing a line")
+        fixed.append(f"re-spaced {len(turns)} speech window(s) for high dialogue density ({total_clip_words} words)")
 
     # 1b. A delivery that cancels its own emotion is an instruction to sound robotic, and the model obeys
     #     it: the first 5-minute run asked for "low, controlled counterstrike WITHOUT HEAT" and got exactly
@@ -5338,6 +5480,107 @@ def _repair_narrated_clip(clip: dict, beat: dict, bible: dict, prev_clip: dict |
         tag = "[SAME SETUP]" if (same_loc and c_num % 3 != 0) else "[ANGLE CUT]"
         clip["shot"] = f"{tag} {shot_text}"
         fixed.append(f"prepended {tag} camera continuity tag to shot")
+
+    # 7. Internal Monologue & Voiceover preservation:
+    # Deterministically ensure that lines designated as V.O. / inner thoughts in the beat or premise
+    # have is_voiceover=True, (V.O.) delivery, and action_steps sanitized for zero lip-sync and closed mouth.
+    planned_lines = _beat_lines(beat)
+    turns = _clip_turns(clip)
+    changed_turns = False
+    vo_speakers = set()
+
+    for i, t in enumerate(turns):
+        is_vo = bool(t.get("is_voiceover"))
+        deliv = (t.get("delivery") or "").strip()
+        spk = (t.get("speaker") or "").strip()
+        line = t.get("line") or ""
+
+        # Check planned turn from beat
+        if not is_vo and i < len(planned_lines):
+            if planned_lines[i].get("is_voiceover"):
+                is_vo = True
+
+        # Check delivery or speaker tags
+        if not is_vo:
+            if re.search(r"\b(v\.o\.|voiceover|voice-over|inner thought|internal monologue)\b", deliv, re.I):
+                is_vo = True
+            elif re.search(r"\(v\.o\.?|\(inner thought", spk, re.I):
+                is_vo = True
+
+        # Check story premise / topic
+        if not is_vo and topic:
+            if _line_is_vo_in_topic(line, spk, topic):
+                is_vo = True
+
+        if is_vo:
+            vo_speakers.add(spk.lower())
+            if not t.get("is_voiceover"):
+                t["is_voiceover"] = True
+                changed_turns = True
+                fixed.append(f"set is_voiceover=True for '{spk}' inner thought")
+            if not re.search(r"\b(v\.o\.|voiceover|inner thought)\b", deliv, re.I):
+                clean_d = deliv.strip("()")
+                t["delivery"] = f"(V.O. - inner thought, {clean_d})" if clean_d else "(V.O. - inner thought, reflective realization)"
+                changed_turns = True
+                fixed.append(f"updated delivery for '{spk}' to inner thought voiceover")
+
+    if changed_turns:
+        clip["speech"] = turns
+
+    # Sanitize action_steps for characters with voiceover / inner thoughts:
+    # Prevent diffusion models from animating lips by stripping "mouth clearly visible" or "delivers line"
+    # and ensuring closed-mouth directive is in action_steps during voiceover turns.
+    # If a character has BOTH live dialogue and voiceover in this clip, do NOT force mouth closed during live turns!
+    live_turn_ranges = [
+        (float(t.get("start_est", 0.0) or 0.0), float(t.get("end_est", 0.0) or 0.0), (t.get("speaker") or "").strip().lower())
+        for t in turns if not t.get("is_voiceover")
+    ]
+    if vo_speakers:
+        for step in clip.get("action_steps", []):
+            c_step = (step.get("character") or "").strip().lower()
+            act_text = step.get("action") or ""
+            t_step = float(step.get("start_time", 0.0) or 0.0)
+            is_live_step = any(
+                spk_live == c_step and (t_live_start - 0.25 <= t_step <= t_live_end + 0.25)
+                for t_live_start, t_live_end, spk_live in live_turn_ranges
+            )
+            if is_live_step:
+                continue
+            if c_step in vo_speakers or not c_step:
+                if re.search(r"\b(delivers|mouth\s+clearly\s+visible|speaking|speaks|blurting|says|mouth\s+moving|moves\s+her\s+mouth|moves\s+his\s+mouth)\b", act_text, re.I):
+                    new_act = _MOUTH_VISIBLE.sub("", act_text)
+                    new_act = _META_DELIVERY.sub("", new_act)
+                    new_act = re.sub(r"\bdelivers\s+(?:(?:his|her|their)\s+)?line[^\,\.]*", "freezes with mouth strictly closed and lips motionless", new_act, flags=re.I)
+                    new_act = re.sub(r"\b(?:with\s+)?mouth\s+clearly\s+visible\b", "", new_act, flags=re.I)
+                    new_act = re.sub(r"\bblurting\b", "reacting with wide eyes", new_act, flags=re.I)
+                    new_act = re.sub(r"\bspeaking\b", "staring in silence", new_act, flags=re.I)
+                    new_act = re.sub(r"\bspeaks\b", "remains silent with mouth closed", new_act, flags=re.I)
+                    new_act = re.sub(r"\s{2,}", " ", new_act).strip(" ,")
+                    if not re.search(r"mouth\s+closed|lips\s+motionless|in\s+silence", new_act, re.I):
+                        new_act = f"{new_act.rstrip('.')}, mouth strictly closed with lips completely motionless."
+                    step["action"] = new_act.strip()
+    # 8. Opening pose fidelity at 0.0s:
+    # If this is clip 1 (or opening a new scene) and premise mentions a raised hand or frozen stance,
+    # prevent the model from preemptively setting the resolved end posture (e.g. hand lowered at side) at 0.0s.
+    c_num = clip.get("clip_number", beat.get("clip_number", 1))
+    if c_num == 1 and topic:
+        top_lower = topic.lower()
+        if any(w in top_lower for w in ("raised hand", "hand raised", "mid-slap", "frozen mid-slap", "raised trembling hand")):
+            for b in clip.get("blocking", []):
+                pos = b.get("position") or ""
+                if re.search(r"\b(?:her|his)\s+hand\s+lowered\b|\blowered\s+hand\b|\bhand\s+at\s+(?:her|his)\s+side\b", pos, re.I):
+                    b["position"] = re.sub(r"\b(?:her|his)\s+hand\s+lowered[^\,\.]*|\blowered\s+hand[^\,\.]*|\bhand\s+at\s+(?:her|his)\s+side[^\,\.]*", "her raised hand trembling high in mid-air", pos, flags=re.I)
+                    fixed.append(f"corrected 0.0s opening blocking pose for '{b.get('character')}' to raised hand stance")
+            for act in clip.get("action_steps", []):
+                t_act = float(act.get("start_time", 0.0) or 0.0)
+                if t_act <= 0.5:
+                    desc = act.get("action") or ""
+                    if re.search(r"\blowered\s+hand\b|\bhand\s+at\s+(?:her|his)\s+side\b|\bhand\s+rests\s+at\b", desc, re.I):
+                        new_desc = re.sub(r"\b(?:her|his)?\s*lowered\s+hand\s+rests\s+at\s+(?:her|his)\s+side\b", "her trembling hand remains raised high in mid-air", desc, flags=re.I)
+                        new_desc = re.sub(r"\bhand\s+rests\s+at\s+(?:her|his)\s+side\b", "hand remains raised high in mid-air", new_desc, flags=re.I)
+                        new_desc = re.sub(r"\s{2,}", " ", new_desc).strip(" ,")
+                        act["action"] = new_desc.strip()
+                        fixed.append(f"corrected 0.0s action step for '{act.get('character')}' to opening raised hand pose")
 
     return fixed
 
@@ -5487,7 +5730,7 @@ def write_narrated_chapter(
         clip = data["clips"][0]
         _normalize_narrated_clip(clip, bible)  # settle names and the turn shape before repairing
         last_attempt = attempt == CHAPTER_RETRIES
-        changes = _repair_narrated_clip(clip, beat, bible, prev_clip, attempt=attempt, final=last_attempt, clip_duration=clip_dur)
+        changes = _repair_narrated_clip(clip, beat, bible, prev_clip, attempt=attempt, final=last_attempt, clip_duration=clip_dur, topic=topic)
         if changes:
             _normalize_narrated_clip(clip, bible)  # a repair may have changed the cast
             for c in changes:
@@ -5626,6 +5869,84 @@ def _clean_speech_text(text: str) -> str:
     return text.strip()
 
 
+_RAPID_PACING = (
+    "Dialogue plays in continuous, rapid-fire succession with instant syllable handoffs across cuts. "
+    "ZERO pauses, silent breaks, or audio gaps between dialogue lines. Each line begins the instant the previous line finishes. "
+    "Actions and camera moves happen concurrently while lines are actively spoken, and a camera cut never interrupts, restarts or repeats a line."
+)
+_SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
+_CLAUSE_BREAK = re.compile(r"[,;:—–]")
+
+
+def _n_words(text: str) -> int:
+    return len(_WORD.findall(text or ""))
+
+
+def _live_segments(text: str) -> list[str]:
+    """Where a long live line can change camera: [on the speaker, over the listener] or, for a very long line,
+    [on the speaker, over the listener, back on the speaker]. A line that is short, or has no clean place to break, comes back whole.
+
+    Breaks fall on sentence ends first and on a comma or dash only inside a single long sentence. The words are untouched: the pieces,
+    joined with spaces, are the line."""
+    text = (text or "").strip()
+    if _n_words(text) < LCUT_MIN_WORDS:
+        return [text]
+    sentences = [s.strip() for s in _SENTENCE_END.split(text) if s.strip()]
+    pieces: list[str] = []
+    for s in sentences:                       # a fragment too short to stand alone joins its neighbour
+        if pieces and _n_words(pieces[-1]) < LCUT_SEGMENT_MIN_WORDS:
+            pieces[-1] = f"{pieces[-1]} {s}"
+        else:
+            pieces.append(s)
+    if len(pieces) >= 2 and _n_words(pieces[-1]) < LCUT_SEGMENT_MIN_WORDS:
+        pieces[-2] = f"{pieces[-2]} {pieces[-1]}"
+        pieces.pop()
+    if len(pieces) >= 2:
+        head, rest = pieces[0], pieces[1:]
+        if _n_words(head) < LCUT_HEAD_MIN_WORDS:
+            head, rest = f"{head} {rest[0]}", rest[1:]
+        if not rest:
+            return [text]
+        if len(rest) >= 2 and _n_words(text) >= LCUT_RETURN_MIN_WORDS and _n_words(rest[-1]) >= LCUT_HEAD_MIN_WORDS:
+            return [head, " ".join(rest[:-1]), rest[-1]]
+        return [head, " ".join(rest)]
+    for m in _CLAUSE_BREAK.finditer(text):    # one long sentence: break at the first clause that leaves enough on both sides
+        left, right = text[:m.end()].strip(), text[m.end():].strip(" —–")
+        if _n_words(left) >= LCUT_HEAD_MIN_WORDS and _n_words(right) >= LCUT_SEGMENT_MIN_WORDS:
+            return [left, right]
+    return [text]
+
+
+def _regroup_segments(segments: list[str]) -> list[str]:
+    """At most three pieces (speaker, listener, speaker): the middle ones are joined."""
+    if len(segments) <= 3:
+        return segments
+    return [segments[0], " ".join(segments[1:-1]), segments[-1]]
+
+
+def _turn_is_off_screen(turn: dict) -> bool:
+    """Is this line spoken from outside the shot (the writer or the plan said so)?"""
+    return (
+        bool(turn.get("is_off_screen")) or
+        bool(re.search(r"\b(off-screen|off-camera|in background|off camera|off screen)\b", turn.get("delivery") or "", re.I)) or
+        bool(re.search(r"\b(off-screen|off-camera|off camera|off screen)\b", turn.get("speaker") or "", re.I))
+    )
+
+
+def _pick_listener(speaker: str, turns: list[dict], index: int, visible: list[str]) -> str | None:
+    """Who the camera cuts to while `speaker` carries on: the person they are answering, else the next to speak, else anyone else in shot."""
+    others = [n for n in visible if n and n.strip().lower() != speaker.strip().lower()]
+    if not others:
+        return None
+    lowered = {n.lower(): n for n in others}
+    neighbours = ([turns[index - 1]] if index > 0 else []) + ([turns[index + 1]] if index + 1 < len(turns) else [])
+    for t in neighbours:
+        who = (t.get("speaker") or "").strip().lower()
+        if who in lowered:
+            return lowered[who]
+    return others[0]
+
+
 def _build_screenplay_prompt(
     clip: dict,
     bible: dict,
@@ -5723,6 +6044,9 @@ def _build_screenplay_prompt(
     environment = (clip.get("environment") or "").strip().rstrip(". ")
 
     blocking = [b for b in clip.get("blocking", []) if b.get("in_frame") in ON_SCREEN]
+    turns = _clip_turns(clip)
+    active_speakers = {t.get("speaker", "").strip().lower() for t in turns}
+    active_chars = active_speakers | {protagonist.lower()}
     staging_parts = []
     for b in blocking:
         cname = b.get("character", "")
@@ -5735,7 +6059,9 @@ def _build_screenplay_prompt(
                 desc += f" {pos}"
             else:
                 desc += f" at {pos}"
-        if fp and fp != "off screen":
+        if cname.lower() not in active_chars and len(blocking) > 2:
+            desc += " (in background, soft focus)"
+        elif fp and fp != "off screen":
             desc += f" ({fp})"
         staging_parts.append(desc)
 
@@ -5784,11 +6110,17 @@ def _build_screenplay_prompt(
     screenplay_lines.append(cast_line)
 
     turns = _clip_turns(clip)
+    total_clip_words = sum(len(_WORD.findall(t.get("line") or "")) for t in turns) if turns else 0
+    is_high_density = total_clip_words >= 45 and (clip_duration or 15) >= 10
     action_steps = clip.get("action_steps", []) or []
 
     if mode == "dialogue" and turns:
         first_speech_time = float(turns[0].get("start_est", 1.0) or 1.0)
         used_actions = set()
+
+        plan_shot = re.sub(r"^\s*\[(?:SAME SETUP|ANGLE CUT)\]\s*", "", (clip.get("shot") or "").strip()).rstrip(". ")
+        if DIALOGUE_CAMERA_PLAN and plan_shot:
+            screenplay_lines.append(f"[CAMERA PLAN: {plan_shot}.]")
 
         # 1. Opening actions before speech
         for idx, s in enumerate(action_steps):
@@ -5798,6 +6130,8 @@ def _build_screenplay_prompt(
                 if cleaned:
                     screenplay_lines.append(f"[{cleaned}.]")
                 used_actions.add(idx)
+                if is_high_density and len(used_actions) >= 1:
+                    break
 
         # 2. Interleave speech turns and camera cuts
         def _check_vo(turn_item: dict, turn_idx: int) -> bool:
@@ -5806,23 +6140,57 @@ def _build_screenplay_prompt(
             line_raw = (turn_item.get("line") or "").strip()
             if turn_item.get("is_voiceover"):
                 return True
-            if re.search(r"\b(v\.o\.|voiceover|voice-over|internal monologue|inner voice|narration)\b", deliv_raw, re.IGNORECASE):
+            if re.search(r"\b(v\.o\.|voiceover|voice-over|internal monologue|inner voice|inner thought|narration)\b", deliv_raw, re.IGNORECASE):
                 return True
-            if re.search(r"\(v\.o\.?\)", spk_raw, re.IGNORECASE) or re.search(r"\(voiceover\)", spk_raw, re.IGNORECASE):
+            if re.search(r"\(v\.o\.?|\(voiceover|\(inner thought", spk_raw, re.IGNORECASE):
                 return True
-            if re.search(r"^\s*\(v\.o\.?\)", line_raw, re.IGNORECASE) or re.search(r"^\s*\(voiceover\)", line_raw, re.IGNORECASE):
+            if re.search(r"^\s*(\(v\.o\.?|\(voiceover|\(inner thought)", line_raw, re.IGNORECASE):
                 return True
-            if turn_idx == 0 and len(turns) > 1 and turns[1].get("speaker", "").strip().lower() == spk_raw.lower():
-                if re.search(r"\b(spent|five years|remind|tonight was supposed|looking back|remember|thought|wished|hoped|backstory)\b", line_raw, re.IGNORECASE):
-                    return True
-                if re.search(r"\b(reflective|internal|whisper|melancholy|pensive|thoughtful)\b", deliv_raw, re.IGNORECASE):
-                    return True
+            # Only an explicit tag makes a line an inner thought. This used to GUESS from the words ("remember",
+            # "thought", "hoped") or a reflective delivery on a first line of two by the same speaker, which shut the
+            # mouth of a person who was really talking: a live line lost its lip-sync because of its vocabulary.
             return False
 
         prev_speaker = ""
         prev_was_vo = False
         has_vo = False
         on_screen_chars = {b.get("character", "").lower() for b in blocking}
+        visible_names = [b.get("character", "").strip() for b in blocking if b.get("character")]
+
+        # A speaker's consecutive live lines (a premise that already splits one speech in two) are one speech with a break in it:
+        # each piece is kept as its own segment, so the camera can leave the speaker between them.
+        merged_turns: list[dict] = []
+        for i, t in enumerate(turns):
+            who = re.sub(r"\s*\((?:off-screen|off-camera|v\.o\.?|voiceover)[^\)]*\)", "", t.get("speaker") or "", flags=re.I).strip().lower()
+            live = (not _check_vo(t, i)) and (not _turn_is_off_screen(t)) and who in on_screen_chars
+            piece = _clean_speech_text((t.get("line") or "").strip())
+            if merged_turns and live and merged_turns[-1].get("_live") and merged_turns[-1].get("_who") == who:
+                merged_turns[-1]["_segments"].append(piece)
+                merged_turns[-1]["_deliveries"].append((t.get("delivery") or "").strip())
+                merged_turns[-1]["line"] = f"{merged_turns[-1]['line']} {t.get('line') or ''}".strip()
+                merged_turns[-1]["end_est"] = t.get("end_est", merged_turns[-1].get("end_est"))
+            else:
+                nt = dict(t)
+                nt["_live"], nt["_who"], nt["_segments"] = live, who, ([piece] if live else [])
+                nt["_deliveries"] = [(t.get("delivery") or "").strip()]
+                merged_turns.append(nt)
+        turns = merged_turns
+
+        # Which lines get a cutaway: a premise's own splits always; of the rest, the LONGEST lines that have a clean break and someone to
+        # cut to, up to half the clip's live lines (at least one), never more than LCUT_MAX_SPLITS in all. Short clips are not over-cut.
+        auto_split: set[int] = set()
+        if LINE_SPLIT_LCUT:
+            live_idx = [i for i, t in enumerate(turns) if t.get("_live")]
+            cap = min(LCUT_MAX_SPLITS, max(1, len(live_idx) // 2))
+            explicit_n = sum(1 for i in live_idx if len(turns[i]["_segments"]) >= 2)
+            candidates = []
+            for i in live_idx:
+                if len(turns[i]["_segments"]) >= 2:
+                    continue
+                text = _clean_speech_text((turns[i].get("line") or "").strip())
+                if len(_live_segments(text)) >= 2 and _pick_listener(turns[i]["_who"], turns, i, visible_names):
+                    candidates.append((_n_words(text), -i, i))
+            auto_split = {i for _, _, i in sorted(candidates, reverse=True)[:max(0, cap - explicit_n)]}
 
         for i, turn in enumerate(turns):
             spk = (turn.get("speaker") or "").strip()
@@ -5841,6 +6209,10 @@ def _build_screenplay_prompt(
                 if idx not in used_actions:
                     t = float(s.get("start_time", 0.0) or 0.0)
                     if t <= t_start + 0.1:
+                        act_char = (s.get("character") or "").strip().lower()
+                        if is_high_density and i == 0 and act_char and act_char not in (spk.lower(), protagonist.lower()):
+                            used_actions.add(idx)
+                            continue
                         cleaned = _clean_action(s)
                         if cleaned:
                             c_text = cleaned if cleaned.endswith(".") else f"{cleaned}."
@@ -5848,49 +6220,108 @@ def _build_screenplay_prompt(
                             mid_actions_added += 1
                         used_actions.add(idx)
 
-            tag = _voice_tag(spk)
-            cinfo = next((c for c in bible.get("characters", []) if c["name"].lower() == spk.lower()), None)
+            spk_raw = (turn.get("speaker") or "").strip()
+            clean_spk = re.sub(r"\s*\((?:off-screen|off-camera|v\.o\.?|voiceover)[^\)]*\)", "", spk_raw, flags=re.I).strip() or spk_raw
+            tag = _voice_tag(clean_spk)
+            cinfo = next((c for c in bible.get("characters", []) if c["name"].lower() == clean_spk.lower()), None)
             written_voice = (cinfo.get("voice") or "").strip() if cinfo else ""
-            clean_deliv = movie._delivery_only(deliv, written_voice)
+            clean_deliv = movie._delivery_only(deliv, written_voice).strip(" ()")
             deliv_str = f"({clean_deliv}) " if clean_deliv else ""
 
-            is_on_screen = spk.lower() in on_screen_chars
+            is_off_screen = _turn_is_off_screen(turn)
+            is_on_screen = (clean_spk.lower() in on_screen_chars) and not is_off_screen
 
             if is_vo:
-                # Voiceover turn: do NOT cut to a talking-head close-up. Let physical visual movement play with mouth closed.
+                # Inner thought / voiceover: ONE unbroken shot. The camera goes in on the thinker and STAYS there until the
+                # thought ends, so the audience watches how it lands; the mouth never moves. A thinker who is not visible in
+                # this clip is not conjured up by a close-up: the thought plays over the scene instead.
+                if clean_spk.lower() in on_screen_chars:
+                    if is_high_density:
+                        screenplay_lines.append(f"[Snap zoom into an Extreme Close-up on {clean_spk}'s eyes and face. The camera stays locked on {clean_spk} for the whole of this inner thought, with no cut away until it ends. Mouth strictly closed, lips motionless:]")
+                    else:
+                        screenplay_lines.append(f"[Angle cut: Tight Close-up on {clean_spk}'s face. The camera stays locked on {clean_spk} for the whole of this inner thought, with no cut away until it ends. Mouth strictly closed, zero lip movement:]")
+                else:
+                    screenplay_lines.append(f"[The camera stays on the scene while {clean_spk}'s inner thought is heard over it. Nobody's lips move:]")
                 voice_note = f" in {tag}'s voice" if tag else (f", in {written_voice.rstrip('. ')}" if written_voice else "")
-                screenplay_lines.append(f'{spk.upper()} (V.O.{voice_note}): {deliv_str}"{line}"')
-                screenplay_lines.append("[Characters on screen engage in natural physical movement with mouths strictly closed and resting facial expressions.]")
+                screenplay_lines.append(f'{clean_spk.upper()} (V.O.{voice_note}): {deliv_str}"{line}"')
+                if clean_spk.lower() in on_screen_chars:
+                    screenplay_lines.append(f"[{clean_spk} keeps mouth strictly closed with lips pressed firmly together and motionless, showing how the thought lands only through eye movements and facial expression; zero lip movement.]")
                 prev_was_vo = True
-                prev_speaker = spk
+                prev_speaker = clean_spk
             else:
                 voice_note = f" (matching {tag})" if tag else (f" (in {written_voice.rstrip('. ')})" if written_voice else "")
-                if is_on_screen:
+                if is_off_screen:
+                    # L-cut / off-screen speech continuation: camera holds on reacting listener with lips strictly closed!
+                    off_voice = f" in {tag}'s voice" if tag else (f", in {written_voice.rstrip('. ')}" if written_voice else "")
+                    screenplay_lines.append(f"[Active listener on camera reacts with mouth strictly closed and lips motionless; {clean_spk}'s voice speaks off-camera:]")
+                    screenplay_lines.append(f'{clean_spk.upper()} (off-screen{off_voice}): {deliv_str}"{line}"')
+                    screenplay_lines.append(f"[On-screen characters keep mouths strictly closed with lips firmly motionless; zero lip movement.]")
+                elif is_on_screen:
                     if prev_was_vo:
-                        # Motivated transition from voiceover movement to live scene confrontation
-                        if mid_actions_added == 0:
-                            screenplay_lines.append(f"[Angle cut: Reaction shot on {spk} facing into the room, camera establishes their face before speaking:]")
+                        # Motivated transition from voiceover reaction to live scene confrontation
+                        if is_high_density:
+                            screenplay_lines.append(f"[Rapid whip cut: Close-up on {clean_spk} speaking immediately with lip sync:]")
+                        elif mid_actions_added == 0:
+                            screenplay_lines.append(f"[Angle cut: Close-up on {clean_spk} speaking with lip sync:]")
                         else:
-                            screenplay_lines.append(f"[Angle cut: Medium Close-up on {spk} facing into the room, camera establishes their face before speaking:]")
-                    elif spk.lower() != prev_speaker.lower() or mid_actions_added > 0:
-                        screenplay_lines.append(f"[Angle cut: Close-up on {spk}, camera establishes their face before speaking:]")
-                    screenplay_lines.append(f'{spk.upper()}{voice_note}: {deliv_str}"{line}"')
+                            screenplay_lines.append(f"[Angle cut: Medium Close-up on {clean_spk} speaking with lip sync:]")
+                    elif clean_spk.lower() != prev_speaker.lower() or mid_actions_added > 0:
+                        if is_high_density:
+                            screenplay_lines.append(f"[Rapid whip cut: Close-up on {clean_spk} speaking immediately with lip sync:]")
+                        else:
+                            screenplay_lines.append(f"[Angle cut: Close-up on {clean_spk} speaking with lip sync:]")
+                    # L-cut: the speaker is on camera for the first words (so the voice is tied to their lips), then the camera goes
+                    # to a listener with a closed mouth while the voice carries on, and may come back for the last sentence.
+                    segments = [s for s in (turn.get("_segments") or []) if s]
+                    explicit = len(segments) >= 2
+                    if not explicit and LINE_SPLIT_LCUT and i in auto_split:
+                        segments = [_clean_speech_text(s) for s in _live_segments(line)]
+                    listener = _pick_listener(clean_spk, turns, i, visible_names) if len(segments) >= 2 else None
+                    if listener and LINE_SPLIT_LCUT:
+                        # each piece keeps the delivery of the line it came from (a premise's own split); a split the builder made
+                        # itself has one delivery for every piece
+                        raw_deliv = turn.get("_deliveries") or []
+                        piece_deliv = raw_deliv if explicit and len(raw_deliv) == len(segments) else [deliv] * len(segments)
+                        if len(segments) > 3:      # more than speaker / listener / speaker: the middle pieces join, under the first of their deliveries
+                            piece_deliv = [piece_deliv[0], piece_deliv[1], piece_deliv[-1]]
+                        segments = _regroup_segments(segments)
+                        off_voice = f" in {tag}'s voice" if tag else (f", in {written_voice.rstrip('. ')}" if written_voice else "")
+
+                        def _piece_deliv(k: int) -> str:
+                            d = movie._delivery_only((piece_deliv[min(k, len(piece_deliv) - 1)] or deliv), written_voice).strip(" ()")
+                            return f"({d}) " if d else ""
+
+                        screenplay_lines.append(f'{clean_spk.upper()}{voice_note}: {_piece_deliv(0)}"{segments[0]}"')
+                        for k, seg in enumerate(segments[1:], 1):
+                            if k % 2 == 1:
+                                label = "concluding line" if k == len(segments) - 1 else "continuing"
+                                screenplay_lines.append(f"[Camera cuts to {listener} in a tight close-up, listening with mouth strictly closed and lips motionless; {clean_spk}'s voice continues off-camera:]")
+                                screenplay_lines.append(f'{clean_spk.upper()} (off-screen, {label}{off_voice}): {_piece_deliv(k)}"{seg}"')
+                                screenplay_lines.append(f"[{listener} keeps mouth strictly closed with lips firmly motionless; zero lip movement.]")
+                            else:
+                                screenplay_lines.append(f"[Cut back to a Close-up on {clean_spk}, speaking with lip sync, finishing the line:]")
+                                screenplay_lines.append(f'{clean_spk.upper()}{voice_note}: {_piece_deliv(k)}"{seg}"')
+                    else:
+                        screenplay_lines.append(f'{clean_spk.upper()}{voice_note}: {deliv_str}"{line}"')
                 else:
                     is_remote = any(
-                        b.get("character", "").strip().lower() == spk.lower() and
+                        b.get("character", "").strip().lower() == clean_spk.lower() and
                         any(w in (b.get("position") or "").lower() for w in ("remote", "phone", "receiver", "call", "intercom"))
                         for b in clip.get("blocking", [])
                     )
                     if is_remote:
                         screenplay_lines.append("[Camera holds on active listener holding telephone receiver with mouth closed]")
                         off_voice = f" in {tag}'s voice" if tag else (f", in {written_voice.rstrip('. ')}" if written_voice else "")
-                        screenplay_lines.append(f'{spk.upper()} (over telephone receiver{off_voice}): {deliv_str}"{line}"')
+                        screenplay_lines.append(f'{clean_spk.upper()} (over telephone receiver{off_voice}): {deliv_str}"{line}"')
                     else:
-                        if spk.lower() != prev_speaker.lower() or mid_actions_added > 0:
-                            screenplay_lines.append(f"[Angle cut: Close-up on {spk}, camera establishes their face before speaking:]")
-                        screenplay_lines.append(f'{spk.upper()}{voice_note}: {deliv_str}"{line}"')
+                        if clean_spk.lower() != prev_speaker.lower() or mid_actions_added > 0:
+                            if is_high_density:
+                                screenplay_lines.append(f"[Rapid whip cut: Close-up on {clean_spk} speaking immediately:]")
+                            else:
+                                screenplay_lines.append(f"[Angle cut: Close-up on {clean_spk}, camera establishes their face before speaking:]")
+                        screenplay_lines.append(f'{clean_spk.upper()}{voice_note}: {deliv_str}"{line}"')
                 prev_was_vo = False
-                prev_speaker = spk
+                prev_speaker = clean_spk
 
         # 3. Closing actions
         for idx, s in enumerate(action_steps):
@@ -5899,16 +6330,42 @@ def _build_screenplay_prompt(
                 if cleaned:
                     c_text = cleaned if cleaned.endswith(".") else f"{cleaned}."
                     screenplay_lines.append(f"[{c_text}]")
-                used_actions.add(idx)
+                    used_actions.add(idx)
+
+        l_cut_guardrail = (
+            " CRITICAL OFF-SCREEN DIALOGUE & REACTION RULE: When the camera cuts, tracks, or frames a reacting character "
+            "while another character's dialogue is actively concluding or spoken off-camera (L-cut reaction shots), "
+            "the on-screen reacting character MUST keep their mouth strictly closed with lips completely motionless. "
+            "NEVER animate the lips or mouth of any character on screen to another character's voice, and do not alter the speaker's vocal timbre. "
+            "Non-speaking listeners NEVER mouth off-screen dialogue."
+        )
 
         if has_vo:
-            screenplay_lines.append(
-                "LIP-SYNC DIRECTIVE: Synchronize lip movement exclusively onto characters speaking live on-camera dialogue; during (V.O.) lines, characters keep mouths strictly closed with natural resting facial expressions. Non-speaking characters keep mouths strictly closed. Fluid natural physical acting throughout. No background music."
-            )
+            if is_high_density:
+                screenplay_lines.append(
+                    "RAPID-FIRE PACING & LIP-SYNC DIRECTIVE: " + _RAPID_PACING + " Synchronize lip movement exclusively onto characters speaking live on-camera dialogue aloud. During all (V.O.) and inner thought lines, the camera stays locked on the thinker, whose mouth is strictly closed and lips completely stationary, reacting solely through eye movements and facial expressions. Non-speaking characters keep mouths strictly closed."
+                    + l_cut_guardrail +
+                    " Fluid natural rapid acting throughout. No background music."
+                )
+            else:
+                screenplay_lines.append(
+                    "LIP-SYNC DIRECTIVE: Synchronize lip movement exclusively onto characters speaking live on-camera dialogue aloud. During all (V.O.) and inner thought lines, the camera stays locked on the thinker, whose mouth is strictly closed and lips completely stationary, reacting solely through eye movements and facial expressions. Non-speaking characters keep mouths strictly closed."
+                    + l_cut_guardrail +
+                    " Fluid natural acting throughout. No background music."
+                )
         else:
-            screenplay_lines.append(
-                "LIP-SYNC DIRECTIVE: The camera establishes each speaker in Close-up before their line begins. Synchronize lip movement exclusively onto the active speaker of each line; non-speaking characters keep mouths strictly closed and do not animate lips. Fluid natural physical acting throughout. No background music."
-            )
+            if is_high_density:
+                screenplay_lines.append(
+                    "RAPID-FIRE PACING & LIP-SYNC DIRECTIVE: " + _RAPID_PACING + " The camera cuts swiftly to each speaker as their line begins. Synchronize lip movement exclusively onto the active speaker of each line; non-speaking characters keep mouths strictly closed and do not animate lips."
+                    + l_cut_guardrail +
+                    " Fluid natural rapid acting throughout. No background music."
+                )
+            else:
+                screenplay_lines.append(
+                    "LIP-SYNC DIRECTIVE: The camera establishes each speaker in Close-up before their line begins. Synchronize lip movement exclusively onto the active speaker of each line; non-speaking characters keep mouths strictly closed and do not animate lips."
+                    + l_cut_guardrail +
+                    " Fluid natural physical acting throughout. No background music."
+                )
 
     elif mode == "voiceover" and turns:
         turn = turns[0]
@@ -6108,26 +6565,32 @@ def build_narrated_prompt(
             tag = _voice_tag(name)
             spoken_as = (f" matching {tag}" if tag
                          else (f", speaking in {written_voice.rstrip('. ')}" if written_voice else ""))
-            if name.lower() in on_screen_now:
+            is_off_screen = (
+                bool(turn.get("is_off_screen")) or
+                bool(re.search(r"\b(off-screen|off-camera|in background|off camera|off screen)\b", delivery, re.I)) or
+                bool(re.search(r"\b(off-screen|off-camera|off camera|off screen)\b", turn.get("speaker", ""), re.I))
+            )
+            if name.lower() in on_screen_now and not is_off_screen:
                 lines.append(f"[{start_est:.1f}s to {end_est:.1f}s] {name} speaks aloud on camera with synchronized lip movement{spoken_as}, {delivery}: \"{line}\".")
             else:
                 remote_as = (f" in {tag}'s voice" if tag
                              else (f", in {written_voice.rstrip('. ')}" if written_voice else ""))
-                lines.append(f"[{start_est:.1f}s to {end_est:.1f}s] {name}'s voice comes from the telephone receiver/off-screen{remote_as}, {delivery}: \"{line}\".")
+                lines.append(f"[{start_est:.1f}s to {end_est:.1f}s] {name}'s voice comes from the telephone receiver/off-screen{remote_as}, {delivery}: \"{line}\". On-screen listeners keep mouths strictly closed.")
         parts.append("DIALOGUE DIRECTIVE: " + " ".join(lines))
+        l_cut_guardrail = " When dialogue concludes or plays off-screen, on-screen characters keep mouths strictly closed with zero lip movement. Never animate a face to another character's voice."
         if len(turns) > 1:
             speaking = [n for n in dict.fromkeys((t.get("speaker") or "").strip() for t in turns) if n]
             parts.append(
                 f"The lines run back to back in one continuous take, in that order, with a natural beat between them - "
                 f"never at the same time and never repeated. Only the speaker of each line moves their lips during it; "
                 f"everyone else listens with their mouth closed. Keep {movie._join(speaking)} in the shot (at least as a shoulder), and show each speaker's face while their line is spoken; the camera may cut between them at the change of speaker. "
-                f"LIP-SYNC DIRECTIVE: Synchronize lip movement exclusively onto the specific character speaking each line; keep non-speaking characters' mouths strictly closed and do not animate any other face."
+                f"LIP-SYNC DIRECTIVE: Synchronize lip movement exclusively onto the specific character speaking each line; keep non-speaking characters' mouths strictly closed and do not animate any other face.{l_cut_guardrail}"
             )
         else:
             speaking = [n for n in dict.fromkeys((t.get("speaker") or "").strip() for t in turns) if n]
             if speaking and any(n.lower() in on_screen_now for n in speaking):
                 parts.append(
-                    f"LIP-SYNC DIRECTIVE: Synchronize lip movement exclusively onto {movie._join(speaking)}; keep non-speaking characters' mouths strictly closed and do not animate any other face."
+                    f"LIP-SYNC DIRECTIVE: Synchronize lip movement exclusively onto {movie._join(speaking)}; keep non-speaking characters' mouths strictly closed and do not animate any other face.{l_cut_guardrail}"
                 )
     else:  # shock_action
         parts.append(

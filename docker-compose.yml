@@ -6,7 +6,7 @@ x-app: &app
   environment:
     REDIS_URL: redis://redis:6379/0
   volumes:
-    - media:/srv/media          # downloaded clips + final videos: the worker writes them, the api serves them
+    - ./media:/srv/media        # downloaded clips + final videos saved on Drive E: (65GB free)
     - ./app.py:/srv/app.py
     - ./dashboard.html:/srv/dashboard.html
     - ./movie_scene_multispeaker.py:/srv/movie_scene_multispeaker.py
@@ -40,4 +40,4 @@ services:
 
 volumes:
   redis-data:
-  media:
+

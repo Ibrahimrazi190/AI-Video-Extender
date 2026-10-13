@@ -4685,5 +4685,137 @@ _bl["locations"][0].pop("image_prompt", None)
 check("a place described as narrow or cramped gets a soft note naming the word", any(p.startswith("[SOFT]") and "'narrow'" in p and "room for three people" in p for p in hnd._check_scene_bible(_bl)))
 check("a spacious one does not", not [p for p in hnd._check_scene_bible(_b43) if "room for three people" in p])
 
+print("\n[47] L-cuts (speaker first, a listener's closed mouth, back to the speaker) and inner thoughts (camera locked on the thinker)")
+_blk47 = lambda n: {"character": n, "position": "by the door", "posture": "standing", "screen_profile": "three-quarter", "frame_position": "centre frame", "in_frame": "visible"}
+_shot47 = f"[ANGLE CUT] Camera on {_other43}'s face for his first second, cut at 1.2 seconds to {_pov43}'s closed-mouth reaction while he keeps talking, back to {_other43} at 3.4 seconds"
+
+
+def _clip47(blocked=None):
+    return {"delivery_mode": "dialogue", "location_id": _loc43, "present_characters": [_pov43, _other43],
+            "speech": [
+                {"speaker": _other43, "line": "I remember what you said that night and I hoped you meant it.", "delivery": "reflective whisper, hurt", "start_est": 0.4, "end_est": 4.0, "is_voiceover": False},
+                {"speaker": _other43, "line": "So did you?", "delivery": "sharp", "start_est": 4.1, "end_est": 5.5, "is_voiceover": False},
+                {"speaker": _pov43, "line": "I wanted to run.", "delivery": "(V.O. - inner thought, raw)", "start_est": 6.0, "end_est": 8.0, "is_voiceover": True}],
+            "shot": _shot47, "blocking": [_blk47(n) for n in (blocked or [_pov43, _other43])], "action_steps": [], "environment": "", "prop_state": []}
+
+
+_p47 = hnd.build_narrated_prompt(_clip47(), _b43, {}, {}, {}, None, clip_duration=15)[0]
+check("an explicit inner thought gets one locked close shot on the thinker, mouth closed, and the line after it is spoken normally",
+      f"The camera stays locked on {_pov43} for the whole of this inner thought" in _p47 and f"{_pov43.upper()} (V.O." in _p47 and "no cut away until it ends" in _p47, _p47)
+check("a live line is NOT turned into an inner thought because of its words ('remember', 'hoped') or a reflective delivery",
+      f"{_other43.upper()} (V.O." not in _p47 and f"Close-up on {_other43} speaking with lip sync" in _p47, _p47)
+check("the closing directive says the camera stays locked on the thinker during inner thoughts", "the camera stays locked on the thinker" in _p47)
+check("the camera plan is OFF by default now that the builder cuts to the listener itself", hnd.DIALOGUE_CAMERA_PLAN is False and "CAMERA PLAN" not in _p47)
+hnd.DIALOGUE_CAMERA_PLAN = True
+_p47_on = hnd.build_narrated_prompt(_clip47(), _b43, {}, {}, {}, None, clip_duration=15)[0]
+hnd.DIALOGUE_CAMERA_PLAN = False
+check("with DIALOGUE_CAMERA_PLAN on, the writer's shot reaches the video model for a 15 s dialogue clip, without its internal [ANGLE CUT] tag",
+      f"[CAMERA PLAN: Camera on {_other43}'s face for his first second, cut at 1.2 seconds" in _p47_on and "[CAMERA PLAN: [ANGLE CUT]" not in _p47_on, _p47_on)
+_p47_away = hnd.build_narrated_prompt(_clip47(blocked=[_other43]), _b43, {}, {}, {}, None, clip_duration=15)[0]
+check("a thinker who is not on screen is not conjured up by a close-up: the thought plays over the scene",
+      f"locked on {_pov43}" not in _p47_away and f"{_pov43}'s inner thought is heard over it" in _p47_away, _p47_away)
+_c47 = hnd._narrated_chapter_prompt("A tense thriller", 1, 4, GOOD["beats"][1], GOOD["scene_bible"], [])[0]
+_u47 = hnd._narrated_chapter_prompt("A tense thriller", 1, 4, dict(GOOD["beats"][1], delivery_mode="dialogue"), GOOD["scene_bible"], [])[1]
+check("the clip writer is told that every live line begins on its speaker, that the camera may leave for a listener and come back, and that a listener never mouths the line",
+      "L-CUTS: REACTIONS WHILE SOMEONE IS STILL TALKING" in _c47 and "BEGINS on its speaker's face with the lips moving" in _c47 and "it may come BACK to the speaker" in _c47
+      and "a listener never mouths, repeats or lip-syncs what the speaker is saying" in _c47 and "unless the camera has just shown that same speaker talking" in _c47)
+check("the clip writer is told the camera stays locked on whoever is thinking, in the rules and in the dialogue instructions",
+      "INNER THOUGHTS ARE THE OPPOSITE" in _c47 and "stays locked on them, one unbroken close shot" in _c47 and "The camera is LOCKED on the thinker for the whole inner thought" in _u47
+      and "BEGINS on its speaker's face with the lips moving" in _u47)
+check("the old rule that the speaker's face is visible for the WHOLE line is gone; it is visible when the line begins",
+      "must be visible when each line BEGINS" in _c47 and "must always be visible, because" not in _c47)
+
+print("\n[48] L-cuts built into the prompt (speaker, listener with a closed mouth, back to the speaker), rapid-fire pacing, planner rules")
+_N48 = lambda t: " ".join(hnd._WORD.findall(t)).lower()
+_margot = "Don't go soft now. Kids only respect fear. Make her give back the bracelet she stole from you."          # 18 words, 3 sentences
+_long3 = "I trusted you with everything I had. I gave you my name, my home and my years. Now you stand there and call me a liar."   # 25 words
+_one = "If you walk out of that door tonight, you will never see this house again"                                       # 15 words, one sentence
+_flat = "you walked out of that door and never looked back at any of us"                                              # 14 words, no break
+check("a line under 8 words is never split, and the threshold is 8", hnd.LCUT_MIN_WORDS == 8 and hnd._live_segments("Kids only respect fear. Make her pay!") == ["Kids only respect fear. Make her pay!"]
+      and hnd._live_segments("Stop! Don't hit her!") == ["Stop! Don't hit her!"])
+check("an 8-word line with a clean break is split: four words on the speaker, the rest over the listener", hnd._live_segments("Kids only respect fear. Make her pay now.") == ["Kids only respect fear.", "Make her pay now."])
+_sm = hnd._live_segments(_margot)
+check("an 18-word line of three sentences is split in two: the speaker's first sentence, then the rest", len(_sm) == 2 and _sm[0] == "Don't go soft now." and _N48(" ".join(_sm)) == _N48(_margot), _sm)
+_s3 = hnd._live_segments(_long3)
+check("a line of 20+ words also cuts back to the speaker for its last sentence (speaker, listener, speaker)", len(_s3) == 3 and _s3[2].startswith("Now you stand") and _N48(" ".join(_s3)) == _N48(_long3), _s3)
+_s1 = hnd._live_segments(_one)
+check("one long sentence breaks at its comma when both sides are long enough", len(_s1) == 2 and _s1[0].endswith("tonight,") and _N48(" ".join(_s1)) == _N48(_one), _s1)
+check("a long line with no place to break comes back whole", hnd._live_segments(_flat) == [_flat])
+check("the speaker is on camera for at least 4 words before the camera leaves", all(len(hnd._live_segments(t)[0].split()) >= hnd.LCUT_HEAD_MIN_WORDS for t in (_margot, _long3, _one)))
+check("more than three pieces are regrouped to speaker / listener / speaker", len(hnd._regroup_segments(["a", "b", "c", "d", "e"])) == 3 and hnd._regroup_segments(["a", "b"]) == ["a", "b"])
+
+
+def _clip48(turns, blocked=None):
+    return {"delivery_mode": "dialogue", "location_id": _loc43, "present_characters": [_pov43, _other43], "speech": turns,
+            "shot": "[ANGLE CUT] x", "blocking": [_blk47(n) for n in (blocked or [_pov43, _other43])], "action_steps": [], "environment": "", "prop_state": []}
+
+
+def _t48(spk, line, d="sharp", vo=False):
+    return {"speaker": spk, "line": line, "delivery": d, "start_est": 0.4, "end_est": 3.0, "is_voiceover": vo}
+
+
+def _build48(c):
+    return hnd.build_narrated_prompt(c, _b43, {}, {}, {}, None, clip_duration=15)[0]
+
+
+def _said48(p, who):
+    return _re43.findall(rf'^{_re43.escape(who.upper())}[^\n]*?"([^"]+)"', p, _re43.M)
+
+
+_pa = _build48(_clip48([_t48(_other43, _margot), _t48(_pov43, "Rosie, is your hand bleeding?")]))
+check("a long live line is rendered as: speaker on camera, a cut to the listener with a closed mouth while the voice continues",
+      f"[Camera cuts to {_pov43} in a tight close-up, listening with mouth strictly closed and lips motionless; {_other43}'s voice continues off-camera:]" in _pa
+      and f"{_other43.upper()} (off-screen, concluding line" in _pa and f"[{_pov43} keeps mouth strictly closed with lips firmly motionless; zero lip movement.]" in _pa, _pa)
+check("the camera is on the speaker with lip-sync for the first words, BEFORE it cuts away",
+      _pa.index("Don't go soft now.") < _pa.index("Camera cuts to") < _pa.index("Kids only respect fear"), _pa)
+check("not one word of the line is changed or lost by the split", _N48(" ".join(_said48(_pa, _other43))) == _N48(_margot), _said48(_pa, _other43))
+hnd.LINE_SPLIT_LCUT = False
+_pb = _build48(_clip48([_t48(_other43, _margot), _t48(_pov43, "Rosie, is your hand bleeding?")]))
+hnd.LINE_SPLIT_LCUT = True
+check("with LINE_SPLIT_LCUT off every line is one on-camera line again", "(off-screen," not in _pb and "Camera cuts to" not in _pb and _margot in _pb, _pb)
+_pc = _build48(_clip48([_t48(_other43, "I remember what you said."), _t48(_pov43, "So?")]))
+check("short lines are not split", "Camera cuts to" not in _pc and "(off-screen," not in _pc)
+_pd = _build48(_clip48([_t48(_other43, _long3), _t48(_pov43, _long3), _t48(_other43, _long3), _t48(_pov43, _long3)]))
+check("four long lines get two cutaways (never more than half the live lines)", _pd.count("Camera cuts to") == 2, _pd.count("Camera cuts to"))
+_p6 = _build48(_clip48([_t48(_other43 if k % 2 == 0 else _pov43, _long3) for k in range(6)]))
+check("six long lines get three cutaways, the most the builder adds (LCUT_MAX_SPLITS)", hnd.LCUT_MAX_SPLITS == 3 and _p6.count("Camera cuts to") == 3, _p6.count("Camera cuts to"))
+_l40 = ["Kids only respect fear. Make her give it back.", "No, I will not. She is only five years old.", "Then you are weaker than I thought. Much weaker.", "Say that again. Look me in the eye."]   # 4 lines, 8-10 words, about 40 words
+_p40 = _build48(_clip48([_t48(_other43 if k % 2 == 0 else _pov43, l) for k, l in enumerate(_l40)]))
+check("a clip of about 40 words in four 8-10 word lines now gets cutaways too (two: half its live lines)", sum(map(hnd._n_words, _l40)) in range(36, 45) and _p40.count("Camera cuts to") == 2, (_p40.count("Camera cuts to"), _p40))
+_p40b = _build48(_clip48([_t48(_other43, _l40[0]), _t48(_pov43, _l40[1]), _t48(_other43, _l40[2])]))
+check("a three-line clip gets one, so a short clip is not over-cut", _p40b.count("Camera cuts to") == 1, _p40b.count("Camera cuts to"))
+_lc = "Not one more word. Get out of here."   # 8 words, splittable but the shortest of three candidates
+_pk = _build48(_clip48([_t48(_other43, _lc), _t48(_pov43, _l40[0]), _t48(_other43, "Fine."), _t48(_pov43, _l40[1])]))
+check("with three splittable lines and room for two, the LONGEST two are chosen and the shortest stays whole",
+      _pk.count("Camera cuts to") == 2 and f'"{_lc}"' in _pk and '"Kids only respect fear."' in _pk and '"No, I will not."' in _pk, _pk)
+_pe = _build48(_clip48([_t48(_other43, _long3)]))
+check("a line of 20+ words cuts back to the speaker at the end", "[Cut back to a Close-up on" in _pe and _pe.index("Cut back to") > _pe.index("Camera cuts to"), _pe)
+_pf = _build48(_clip48([_t48(_other43, "Viv, what are you doing? Why did you stop?", "whispering urgently"), _t48(_other43, "Your stepkids are right there.", "mocking whisper"), _t48(_pov43, "What?")]))
+check("a premise that already splits one speaker's speech in two is honoured at that point, each piece with its own delivery",
+      '(whispering urgently) "Viv, what are you doing? Why did you stop?"' in _pf and f"{_other43.upper()} (off-screen, concluding line" in _pf and '(mocking whisper) "Your stepkids are right there."' in _pf
+      and _pf.count("Camera cuts to") == 1, _pf)
+_pg = _build48(_clip48([_t48(_pov43, "Wait. Where am I?", "(V.O. - inner thought, raw)", vo=True), _t48(_pov43, "Who are you?")]))
+check("an inner thought is never merged with the same person's live line, and nothing is cut away from it", "(V.O." in _pg and "(off-screen," not in _pg and "Camera cuts to" not in _pg and '"Who are you?"' in _pg, _pg)
+_ph = _build48(_clip48([_t48(_other43, _margot)], blocked=[_other43]))
+check("with nobody else in shot there is no listener to cut to, so the line stays whole", "Camera cuts to" not in _ph and _margot in _ph)
+_pi = _build48(_clip48([_t48(_pov43, "Short one."), _t48(_other43, _margot)]))
+check("the camera cuts to the person being answered", f"Camera cuts to {_pov43}" in _pi, _pi)
+_pj = _build48(_clip48([_t48(_other43, _long3), _t48(_pov43, _long3)]))
+check("a dense clip (45+ words) carries the rapid-fire pacing sentences",
+      "ZERO pauses, silent breaks, or audio gaps between dialogue lines" in _pj and "Each line begins the instant the previous line finishes" in _pj
+      and "never interrupts, restarts or repeats a line" in _pj and "camera moves happen concurrently while lines are actively spoken" in _pj, _pj[-900:])
+check("a sparse clip does not", "ZERO pauses" not in _pc)
+_o15 = hnd._narrated_outline_prompt("a story", 180, 12)[0]
+_o5 = hnd._narrated_outline_prompt("a story", 120, 24)[0]
+check("the single-call planner is told to write rapid-fire confrontations of 45 to 65 words (never over 70) and to flag any inner thought is_voiceover true, for 15 s clips",
+      "RAPID-FIRE CONFRONTATIONS (CRITICAL, 15-second DIALOGUE clips)" in _o15 and "about 45 to 65 words in total and never more than 70" in _o15
+      and "INNER THOUGHTS INSIDE A DIALOGUE CLIP (optional)" in _o15 and '"is_voiceover": true' in _o15 and 'Every live, spoken line keeps "is_voiceover": false' in _o15)
+check("the 5-second planner prompt is untouched by either rule", "RAPID-FIRE CONFRONTATIONS" not in _o5 and "INNER THOUGHTS INSIDE A DIALOGUE CLIP" not in _o5)
+check("the act-beats planner gets both rules too", "{_DENSITY_RULE}" in _insp44.getsource(hnd._narrated_act_beats_prompt) and "{_INNER_THOUGHT_RULE}" in _insp44.getsource(hnd._narrated_act_beats_prompt))
+_hb = dict(GOOD["beats"][1], delivery_mode="dialogue", duration=15, audio_lines=[{"speaker": _other43, "line": " ".join([_margot] * 3), "is_voiceover": False}])
+_hp = hnd._narrated_chapter_prompt("t", 1, 4, _hb, GOOD["scene_bible"], [], clip_duration=15)[1]
+check("a dense clip's writer is told to size windows at about 4 to 5 words per second, not 3.2 to 3.8",
+      "about 4 to 5 words per second" in _hp and "3.2 to 3.8" not in _hp, _hp[:1500])
+
 print(f"\n{'=' * 60}\n{ok} passed, {fail} failed\n{'=' * 60}")
 raise SystemExit(1 if fail else 0)
