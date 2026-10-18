@@ -223,6 +223,26 @@
   .beat-card-footer { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; color: var(--muted); }
   .beat-speech-label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 
+  .beat-warn { color: #d73a49; font-size: 12.5px; font-weight: 600; line-height: 1.4; }
+  .plan-warn { border: 1px solid #d73a49; border-radius: 8px; padding: 8px 12px; color: #d73a49; font-size: 13px; line-height: 1.45; }
+  /* Your own pictures: one slot per character and place in a beat */
+  .ref-box { border: 1px dashed var(--line); border-radius: 8px; padding: 8px 10px; background: var(--bg); display: grid; gap: 6px; }
+  .ref-title { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+  .ref-row { display: flex; flex-wrap: wrap; gap: 10px; }
+  .ref-slot { width: 112px; display: grid; gap: 4px; font-size: 12px; align-content: start; }
+  .ref-thumb { width: 112px; height: 144px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); display: flex; align-items: center; justify-content: center; overflow: hidden; color: var(--muted); font-size: 11px; text-align: center; }
+  .ref-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .ref-slot.mine .ref-thumb { border-color: var(--done); box-shadow: 0 0 0 1px var(--done); }
+  .ref-name { font-weight: 600; word-break: break-word; }
+  .ref-state { color: var(--muted); }
+  .ref-slot.mine .ref-state { color: var(--done); font-weight: 600; }
+  .ref-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+  .ref-btn { cursor: pointer; font: inherit; font-size: 11.5px; padding: 2px 8px; border: 1px solid var(--accent); border-radius: 5px; color: var(--accent); background: transparent; }
+  .ref-btn:hover { background: var(--accent); color: var(--accent-text); }
+  .ref-err { color: var(--danger, #d73a49); font-size: 11.5px; }
+  .ref-lock { color: var(--muted); font-size: 11px; }
+  .film-refs { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--soft); display: grid; gap: 8px; }
+
   .bible-details { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; background: var(--soft); }
   .bible-details summary { cursor: pointer; font-size: 13.5px; font-weight: 600; user-select: none; }
   .bible-content { margin-top: 10px; display: grid; gap: 12px; font-size: 13px; }
@@ -359,6 +379,9 @@
         <div id="rules-box"></div>
       </div>
 
+      <div class="plan-warn" id="plan-warn" role="alert" hidden></div>
+      <p class="plan-sub" id="ref-intro" hidden>🖼️ <strong>Your own pictures (optional).</strong> Under each beat there is a slot for every character in it and for the place it is set in (the place empty, nobody in it). A character's picture is used in every beat they are in. Anything you leave empty is made by the image model after you approve.</p>
+      <div class="film-refs" id="film-refs" hidden></div>
       <div class="beats-list" id="beats-editor"></div>
 
       <details class="bible-details" id="bible-details">
@@ -535,8 +558,13 @@
 
   function remember(jobId) {
     try { localStorage.setItem(STORE_KEY, jobId); } catch (e) { /* storage unavailable: the job just won't survive a reload */ }
+    try { history.replaceState(null, "", "?job_id=" + encodeURIComponent(jobId)); } catch (e) {}
   }
   function recall() {
+    try {
+      const q = new URLSearchParams(window.location.search).get("job_id") || window.location.hash.replace("#", "").trim();
+      if (q) return q;
+    } catch (e) {}
     try { return localStorage.getItem(STORE_KEY); } catch (e) { return null; }
   }
 
@@ -1138,6 +1166,209 @@
     return beats;
   }
 
+  // --- Names the plan does not have (mirrors app.py plan_name_problems) ---
+  // A beat set in a place, or showing a person, that the scene bible lacks cannot be rendered: that clip would stop the job when its script is
+  // written, after the clips before it were paid for. Typing a place into a beat's Location box is the usual way to cause it.
+  function beatNameProblems(job, b) {
+    const bible = job.movie_bible || {};
+    const places = (bible.locations || []).map((l) => l.id).filter(Boolean);
+    const cast = new Map((bible.characters || []).map((c) => [String(c.name).trim().toLowerCase(), c.name]));
+    const out = { places: [], people: [], knownPlaces: places, knownPeople: [...cast.values()] };
+    const loc = String(b.location_id || "").trim();
+    const parts = Array.isArray(b.location_ids) && b.location_ids.length ? b.location_ids : loc.split(/[,+&]|_and_|_to_/).map((x) => x.trim()).filter(Boolean);
+    if (places.length && !places.includes(loc) && !(parts.length && parts.every((x) => places.includes(x)))) {
+      out.places = parts.filter((x) => !places.includes(x));
+      if (!out.places.length) out.places = [loc || "(no place)"];
+    }
+    const names = [...(b.present_characters || []), ...(b.audio_lines || []).map((t) => t && t.speaker)];
+    out.people = [...new Set(names.filter(Boolean).map((n) => String(n).replace(/\s*\(.*?\)\s*$/, "").trim()).filter((n) => n && cast.size && !cast.has(n.toLowerCase())))];
+    return out;
+  }
+
+  // Shows what is wrong on each beat (reading the Location boxes as they are now, saved or not) and blocks Approve while anything is.
+  function refreshPlanWarnings() {
+    const job = shownJob, banner = $("plan-warn");
+    if (!banner) return;
+    if (!job || !job.beats || job.status !== "plan_ready" || !job.movie_bible) { banner.hidden = true; return; }
+    const edited = gatherEditedBeats();
+    const done = new Set((job.clips || []).filter((c) => c.status === "done").map((c) => c.index));
+    const bad = [];
+    document.querySelectorAll("#beats-editor .beat-card").forEach((card) => {
+      const idx = Number(card.dataset.beatIdx);
+      const p = !done.has(idx) && edited[idx] ? beatNameProblems(job, edited[idx]) : null;
+      const msgs = [];
+      if (p && p.places.length) msgs.push(`The place ${p.places.map((x) => `“${x}”`).join(", ")} is not one of the plan's places (${p.knownPlaces.join(", ")}).`);
+      if (p && p.people.length) msgs.push(`${p.people.map((x) => `“${x}”`).join(", ")} ${p.people.length === 1 ? "is" : "are"} not in the cast (${p.knownPeople.join(", ")}).`);
+      const warn = card.querySelector(".beat-warn");
+      if (warn) {
+        warn.hidden = !msgs.length;
+        warn.textContent = msgs.length ? `⚠ ${msgs.join(" ")} This clip cannot be rendered until that is fixed.` : "";
+      }
+      if (msgs.length) bad.push(idx + 1);
+    });
+    banner.hidden = !bad.length;
+    if (bad.length) {
+      banner.textContent = `⚠ ${bad.length === 1 ? "Beat" : "Beats"} ${bad.slice(0, 10).join(", ")}${bad.length > 10 ? ` and ${bad.length - 10} more` : ""} ${bad.length === 1 ? "names" : "name"} a place or a person the plan does not have, so ${bad.length === 1 ? "that clip" : "those clips"} could not be written and the job would stop part way through. Approve is blocked until ${bad.length === 1 ? "it is" : "they are"} fixed: pick one of the plan's places in the Location box, or use a person from the cast. Nothing is spent until you approve.`;
+    }
+    const btn = $("approve-plan");
+    btn.disabled = bad.length > 0 || planBusy || revisionBusy(job);
+    btn.title = bad.length ? "Fix the beats marked with a warning first" : "";
+  }
+
+  // --- Your own pictures for the characters and places of the plan (optional; an empty slot is generated after approval) ---
+  // A slot is a character or a place, shown under every beat it is in. All the slots of one character or place show the same state.
+  const refBusy = new Set();   // "kind:key" being uploaded or removed
+  const refError = {};         // "kind:key" -> what went wrong last time
+  const REF_MAX_MB = 25;
+
+  function refSlotState(job, kind, key) {
+    const meta = job.uploaded_refs && job.uploaded_refs[kind] && job.uploaded_refs[kind][key];
+    const url = kind === "cast" ? (job.cast_bank || {})[key] : ((job.location_bank || {})[key] || [])[0];
+    const hasDone = (job.clips || []).some((c) => c.status === "done");
+    const waiting = !!meta && !meta.used;   // uploaded since the last approval: no clip has been made with it yet
+    const locked = job.status !== "plan_ready" ? "the plan is already approved"
+      : (hasDone && url && !waiting ? "clips with this picture are already rendered" : null);
+    const preview = meta ? `/jobs/${job.id}/reference-images/${kind}/${encodeURIComponent(key)}/file?v=${encodeURIComponent(meta.file || "")}` : (url || null);
+    return { uploaded: !!meta, url: url || null, preview, locked };
+  }
+
+  // After an upload or a removal the server sends the slot back: keep the job we hold in step with it, so every slot repaints correctly.
+  function applySlotToJob(job, slot) {
+    job.uploaded_refs = job.uploaded_refs || {};
+    job.uploaded_refs[slot.kind] = job.uploaded_refs[slot.kind] || {};
+    if (slot.uploaded) job.uploaded_refs[slot.kind][slot.key] = { file: slot.file, at: Date.now() / 1000 };
+    else delete job.uploaded_refs[slot.kind][slot.key];
+    const bankName = slot.kind === "cast" ? "cast_bank" : "location_bank";
+    job[bankName] = job[bankName] || {};
+    if (slot.uploaded && slot.url) job[bankName][slot.key] = slot.kind === "cast" ? slot.url : [slot.url];
+    else delete job[bankName][slot.key];
+  }
+
+  function paintRefSlot(node, job) {
+    job = job || shownJob;
+    if (!job) return;
+    const kind = node.dataset.kind, key = node.dataset.key, k = `${kind}:${key}`;
+    const s = refSlotState(job, kind, key);
+    const busy = refBusy.has(k);
+    node.innerHTML = "";
+    node.className = `ref-slot${s.uploaded ? " mine" : ""}`;
+    const thumb = el("div", "ref-thumb");
+    if (s.preview) {
+      const img = document.createElement("img");
+      img.src = s.preview;
+      img.alt = `${key}`;
+      img.loading = "lazy";
+      thumb.appendChild(img);
+    } else {
+      thumb.appendChild(el("span", null, "no picture yet"));
+    }
+    node.appendChild(thumb);
+    node.appendChild(el("div", "ref-name", `${kind === "cast" ? "\u{1F464}" : "\u{1F4CD}"} ${key}`));
+    node.appendChild(el("div", "ref-state", busy ? "Working\u2026" : s.uploaded ? "Your picture" : s.url ? "Generated picture" : "Will be generated"));
+    if (refError[k]) node.appendChild(el("div", "ref-err", refError[k]));
+    if (s.locked) {
+      node.appendChild(el("div", "ref-lock", `Locked: ${s.locked}`));
+    } else if (!busy) {
+      const actions = el("div", "ref-actions");
+      const label = el("label", "ref-btn", s.uploaded || s.url ? "Replace" : "Upload");
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/jpeg,image/png,image/webp";
+      input.hidden = true;
+      input.addEventListener("change", () => { const f = input.files && input.files[0]; input.value = ""; if (f) uploadRef(kind, key, f); });
+      label.appendChild(input);
+      actions.appendChild(label);
+      if (s.uploaded) {
+        const rm = el("button", "ref-btn", "Remove");
+        rm.type = "button";
+        rm.title = "Take your picture back out: this one will be generated instead";
+        rm.addEventListener("click", () => removeRef(kind, key));
+        actions.appendChild(rm);
+      }
+      node.appendChild(actions);
+    }
+  }
+
+  const paintAllRefs = () => document.querySelectorAll(".ref-slot").forEach((n) => paintRefSlot(n));
+
+  async function refCall(kind, key, method, body, contentType) {
+    const job = shownJob, k = `${kind}:${key}`;
+    if (!job || refBusy.has(k)) return;
+    refError[k] = "";
+    refBusy.add(k);
+    paintAllRefs();
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/reference-images/${kind}/${encodeURIComponent(key)}`, {
+        method, headers: contentType ? { "Content-Type": contentType } : {}, body,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(describeError(data));
+      applySlotToJob(job, data);
+    } catch (e) {
+      refError[k] = e.message;
+    } finally {
+      refBusy.delete(k);
+      paintAllRefs();
+    }
+  }
+
+  function uploadRef(kind, key, file) {
+    if (file.size > REF_MAX_MB * 1048576) {
+      refError[`${kind}:${key}`] = `That picture is ${(file.size / 1048576).toFixed(0)} MB; the limit is ${REF_MAX_MB} MB.`;
+      paintAllRefs();
+      return;
+    }
+    return refCall(kind, key, "PUT", file, file.type || "application/octet-stream");
+  }
+  const removeRef = (kind, key) => refCall(kind, key, "DELETE");
+
+  function refSlotNode(kind, key, job) {
+    const node = el("div", "ref-slot");
+    node.dataset.kind = kind;
+    node.dataset.key = key;
+    paintRefSlot(node, job);
+    return node;
+  }
+
+  // The characters and places this beat uses, as slots. Only names the plan's bible knows can hold a picture.
+  function buildBeatRefs(job, b) {
+    const bible = job.movie_bible || {};
+    const castNames = new Map((bible.characters || []).map((c) => [String(c.name).toLowerCase(), c.name]));
+    const placeIds = new Set((bible.locations || []).map((l) => l.id));
+    const chars = [...new Set((b.present_characters || []).map((n) => castNames.get(String(n).toLowerCase())).filter(Boolean))];
+    let places = Array.isArray(b.location_ids) ? b.location_ids.slice() : [];
+    if (!places.length) {
+      const raw = String(b.location_id || "");
+      places = placeIds.has(raw) ? [raw] : raw.split(/[,+&]|_and_|_to_/).map((x) => x.trim()).filter(Boolean);
+    }
+    places = [...new Set(places.filter((p) => placeIds.has(p)))];
+    if (!chars.length && !places.length) return null;
+    const box = el("div", "ref-box");
+    box.appendChild(el("div", "ref-title", "\u{1F5BC}\uFE0F Pictures for this beat"));
+    const row = el("div", "ref-row");
+    chars.forEach((n) => row.appendChild(refSlotNode("cast", n, job)));
+    places.forEach((p) => row.appendChild(refSlotNode("locations", p, job)));
+    box.appendChild(row);
+    return box;
+  }
+
+  // Story Videos beats do not say who is in them, so there the slots for the whole cast and every place sit in one panel.
+  function renderFilmRefs(job) {
+    const box = $("film-refs");
+    if (!box) return;
+    const bible = job.movie_bible || {};
+    const show = job.mode === "story_videos" && ((bible.characters || []).length || (bible.locations || []).length);
+    box.hidden = !show;
+    if (!show) { box.innerHTML = ""; return; }
+    if (box.querySelector(".ref-slot") && box.contains(document.activeElement)) return;
+    box.innerHTML = "";
+    box.appendChild(el("div", "ref-title", "\u{1F5BC}\uFE0F Pictures for the cast and the places"));
+    const row = el("div", "ref-row");
+    (bible.characters || []).forEach((c) => row.appendChild(refSlotNode("cast", c.name, job)));
+    (bible.locations || []).forEach((l) => row.appendChild(refSlotNode("locations", l.id, job)));
+    box.appendChild(row);
+  }
+
   function renderPlanReview(job) {
     const box = $("plan-review");
     if (!box) return;
@@ -1165,6 +1396,8 @@
     }
 
     renderRevise(job, canEdit);
+    $("ref-intro").hidden = !(canEdit && (job.mode === "narrated_drama" || job.mode === "story_videos"));
+    renderFilmRefs(job);
 
     // What the plan checks found. "[REVIEW]" items are rules about how the film looks or sounds that the plan broke and
     // that nothing stopped: read them before approving. The rest are soft notes (story delivery, pacing, places).
@@ -1245,9 +1478,13 @@
         locInput.value = b.location_id || "";
         locInput.dataset.field = "location_id";
         locInput.disabled = !canEditCard;
+        locInput.addEventListener("input", refreshPlanWarnings);
         locWrap.appendChild(locInput);
         head.appendChild(locWrap);
         card.appendChild(head);
+        const warnBox = el("div", "beat-warn");
+        warnBox.hidden = true;
+        card.appendChild(warnBox);
 
         const actionText = el("textarea", "beat-action-input");
         actionText.rows = 2;
@@ -1259,7 +1496,7 @@
 
         if (b.audio_lines?.length) {
           const linesDiv = el("div", "");
-          const spoken = b.audio_lines.map(l => `“${escapeHtml(l.line)}” (${escapeHtml(l.speaker)})`).join(" · ");
+          const spoken = b.audio_lines.map(l => `“${escapeHtml(l.line)}” (${escapeHtml(l.speaker)}${l.is_voiceover ? ", inner thought" : ""})${l.cutaway && !l.is_voiceover ? ` <em>[camera cuts to: ${escapeHtml(l.cutaway)}]</em>` : ""}`).join(" · ");
           linesDiv.innerHTML = `<small style="color: var(--muted); display: block; margin-top: 4px;">Spoken: ${spoken}</small>`;
           card.appendChild(linesDiv);
         }
@@ -1269,6 +1506,9 @@
           revDiv.innerHTML = `<small style="color: var(--muted); display: block; margin-top: 2px;">Reveals: ${revs}</small>`;
           card.appendChild(revDiv);
         }
+
+        const refBox = job.mode === "narrated_drama" ? buildBeatRefs(job, b) : null;
+        if (refBox) card.appendChild(refBox);
 
         const footer = el("div", "beat-card-footer");
         const speechLabel = el("label", "beat-speech-label");
@@ -1289,6 +1529,8 @@
         container.appendChild(card);
       });
     }
+
+    refreshPlanWarnings();
 
     const bibleDiv = $("bible-content");
     bibleDiv.innerHTML = "";

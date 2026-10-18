@@ -11,6 +11,15 @@ Confirm you've read both, then wait for me to start our work. Make sure you neve
 
 
 IMPORTANT POINTS:
-1) Remove the openAI supervisor instruction that there cant be any silent beats/clips, becuase we can have clips where 
-an overview of a building can be shown just like in normal movies and dramas that tell the user next dialogue or scene will be in this
-building you know.
+1) Make the norm that for dialogue heavy scenes like 45+ words we have camera movement and showing things happening 
+    parallely so dialogues are rapid fire and we dont get cut words and stuttering due to shortage of time.
+
+2) IN every case never when two faces are in the same frame of camera visible , the lip only moves for the person who's dialolgue
+is about to be said. We have to implement this.
+
+2) We have to add this that when a video project starts a folder is made for storing all character images and voices locally so that
+if the video is quite long we dont lose the voices or images the next day since kie.ai removes the previously generated stuff.
+
+
+
+

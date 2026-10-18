@@ -75,69 +75,101 @@ ON_SCREEN = ("visible", "partly visible")
 POSTURES = ["standing", "walking", "sitting", "kneeling", "lying down", "crouching", "hovering", "floating"]
 
 # ---------------------------------------------------------------------------
-# Image Generation (FLUX)
+# Image Generation (kie.ai nano-banana-2-1)
 # ---------------------------------------------------------------------------
-@observe(name="generate_flux_image", as_type="span")
-def generate_flux_image(prompt: str, input_image: str = "") -> str:
-    """Text-to-image, or (with input_image) Kontext's edit mode, which keeps the input picture's content."""
+# Cast portraits and place pictures. Same task API as the video model: POST /api/v1/jobs/createTask, then poll /api/v1/jobs/recordInfo.
+# Replaced flux1-kontext on 2026-10-13. What differs from it: the edit input is `image_input`, a LIST of up to 10 picture URLs (Kontext took one
+# `input_image`), the size is `resolution` (1K / 2K / 4K) next to `aspect_ratio`, and there is no `nsfw_checker` field.
+IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "nano-banana-2-1")
+IMAGE_RESOLUTION = os.environ.get("IMAGE_RESOLUTION", "1K")   # 1K = 4 credits a picture, 2K = 6, 4K = 9 (kie.ai's price list)
+IMAGE_FORMAT = os.environ.get("IMAGE_FORMAT", "jpg")          # jpg or png
+IMAGE_ASPECT = "9:16"
+IMAGE_MAX_INPUTS = 10             # kie.ai: up to 10 input pictures (jpg, png or webp, 30 MB each) for an edit or a reference
+IMAGE_POLL_SECONDS = 3
+IMAGE_POLL_TIMEOUT = 600          # seconds; kie.ai itself gives up with code 408 after 10 minutes
+IMAGE_SUBMIT_RETRIES = 2          # only a request kie.ai REFUSED (rate limit 429, maintenance 455, server error 500) is sent again: nothing was queued or billed
+IMAGE_POLL_BLIPS = 5              # consecutive failed status checks tolerated, because the picture is already paid for
+LOCATION_EXTRA_VIEWS = 0          # extra "other angle" pictures per place (max 2); 0 = the master only (see app.py, 2026-10-13)
+
+
+def _kie_json(req) -> dict:
+    with urllib.request.urlopen(req, timeout=60) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _submit_image_task(payload: dict, headers: dict) -> str:
+    """Queue one picture and return its task id. kie.ai answers HTTP 200 even for a refused request, so the `code` in the body decides."""
+    url = "https://api.kie.ai/api/v1/jobs/createTask"
+    for attempt in range(IMAGE_SUBMIT_RETRIES + 1):
+        resp = _kie_json(urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers))
+        code, task_id = resp.get("code"), (resp.get("data") or {}).get("taskId")
+        if code == 200 and task_id:
+            return task_id
+        if code in (429, 455, 500) and attempt < IMAGE_SUBMIT_RETRIES:
+            time.sleep(5 * (attempt + 1))
+            continue
+        raise RuntimeError(f"kie.ai did not take the image request (code {code}): {resp.get('msg')}")
+    raise RuntimeError("kie.ai did not take the image request")
+
+
+@observe(name="generate_image", as_type="span")
+def generate_image(prompt: str, input_images: "list[str] | str | None" = None) -> str:
+    """One picture from kie.ai's IMAGE_MODEL: text-to-image, or, with `input_images` (up to 10 URLs), an edit or a picture that follows those
+    references. Returns the picture's URL, or "" when it could not be made (the caller decides what a missing picture means)."""
+    inputs = [input_images] if isinstance(input_images, str) else list(input_images or [])
+    inputs = [u for u in inputs if u][:IMAGE_MAX_INPUTS]
     client = get_client()
     if client:
         try:
-            client.update_current_span(metadata={"model": "flux1-kontext", "is_edit": bool(input_image)})
+            client.update_current_span(metadata={"model": IMAGE_MODEL, "resolution": IMAGE_RESOLUTION, "input_images": len(inputs)})
         except Exception:
             pass
-    url_create = "https://api.kie.ai/api/v1/jobs/createTask"
     headers = {"Authorization": f"Bearer {KIE_API_KEY}", "Content-Type": "application/json"}
     payload = {
-        "model": "flux1-kontext",
+        "model": IMAGE_MODEL,
         "input": {
             "prompt": prompt,
-            "aspect_ratio": "9:16",
-            "nsfw_checker": False,
-        }
+            "aspect_ratio": IMAGE_ASPECT,
+            "resolution": IMAGE_RESOLUTION,
+            "output_format": IMAGE_FORMAT,
+        },
     }
-    if input_image:
-        payload["input"]["input_image"] = input_image
+    if inputs:
+        payload["input"]["image_input"] = inputs
     try:
-        req = urllib.request.Request(url_create, data=json.dumps(payload).encode("utf-8"), headers=headers)
-        with urllib.request.urlopen(req) as response:
-            resp = json.loads(response.read().decode("utf-8"))
-            task_id = resp["data"]["taskId"]
+        task_id = _submit_image_task(payload, headers)
         if client:
             try:
                 client.update_current_span(metadata={"task_id": task_id})
             except Exception:
                 pass
-
+        poll_url = f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}"
+        deadline, blips = time.time() + IMAGE_POLL_TIMEOUT, 0
         while True:
-            time.sleep(3)
-            url_poll = f"https://api.kie.ai/api/v1/jobs/recordInfo?taskId={task_id}"
-            req2 = urllib.request.Request(url_poll, headers=headers)
-            with urllib.request.urlopen(req2) as response2:
-                status_resp = json.loads(response2.read().decode("utf-8"))
-                data = status_resp.get("data", {})
-                state = data.get("state")
-
-                if state == "success":
-                    result = json.loads(data["resultJson"])
-                    url = result["resultUrls"][0]
-                    if client:
-                        try:
-                            client.update_current_span(metadata={"state": "success", "result_url": url})
-                        except Exception:
-                            pass
-                    return url
-                elif state in ["fail", "error"]:
-                    msg = data.get("failMsg")
-                    print(f"    [Error] FLUX generation failed: {msg}")
-                    if client:
-                        try:
-                            client.update_current_span(level="ERROR", status_message=str(msg))
-                        except Exception:
-                            pass
-                    return ""
+            time.sleep(IMAGE_POLL_SECONDS)
+            if time.time() > deadline:
+                raise TimeoutError(f"no picture after {IMAGE_POLL_TIMEOUT} s (task {task_id})")
+            try:
+                data = _kie_json(urllib.request.Request(poll_url, headers=headers)).get("data") or {}
+            except (OSError, ValueError):       # a dropped connection or a non-JSON reply: ask again
+                blips += 1
+                if blips >= IMAGE_POLL_BLIPS:
+                    raise
+                continue
+            blips = 0
+            state = data.get("state")
+            if state == "success":
+                url = json.loads(data["resultJson"])["resultUrls"][0]
+                if client:
+                    try:
+                        client.update_current_span(metadata={"state": "success", "result_url": url})
+                    except Exception:
+                        pass
+                return url
+            if state in ("fail", "error"):
+                raise RuntimeError(f"{data.get('failMsg') or 'no reason given'} (failCode {data.get('failCode')})")
     except Exception as e:
-        print(f"    [Error] FLUX Image generation request failed: {e}")
+        print(f"    [Error] Image generation failed: {e}")
         if client:
             try:
                 client.update_current_span(level="ERROR", status_message=str(e))
@@ -145,8 +177,9 @@ def generate_flux_image(prompt: str, input_image: str = "") -> str:
                 pass
         return ""
 
+
 def _view_prompt(view: str) -> str:
-    """Kontext edit prompt: the same empty place as the master picture, seen from another spot."""
+    """Edit prompt: the same empty place as the master picture, seen from another spot."""
     return (f"The same place as in the input picture, with exactly the same architecture, layout, furniture, materials, "
             f"colors and light, now seen {view}. Keep exactly the same pieces of furniture, the same number of each and in the same places: "
             f"add nothing, remove nothing. Empty, no people. Photorealistic, live-action movie still, NO CGI, NO 3D render.")
@@ -1453,17 +1486,17 @@ def main():
         print(f"  Script is being saved to {script_path}")
 
     if args.script_only:
-        print("\n🎭 CAST BANK (FLUX Image Prompts):")
+        print("\n🎭 CAST BANK (image prompts):")
         for c in bible["characters"]:
             print(f"  - {c['name']} (Voice: {c['voice']})")
-            print(f"    FLUX Prompt: {c['image_prompt']}")
+            print(f"    Image prompt: {c['image_prompt']}")
         print("\n🏠 LOCATIONS (fixed pictures and layout; every camera angle in that place uses them):")
         for loc in bible["locations"]:
             print(f"  - {loc['id']}: {loc['description']}")
             if loc.get("layout"): print(f"    Layout: {loc['layout']}")
             for i, view in enumerate(loc.get("views", []), 1):
                 print(f"    View {i}: {view}{'  (master picture)' if i == 1 else '  (edited from the master)'}")
-            print(f"    FLUX Prompt: {loc['image_prompt']}")
+            print(f"    Image prompt: {loc['image_prompt']}")
         if bible.get("props"):
             print("\n🧰 PROPS (fixed descriptions, written into every clip that shows them):")
             for p in bible["props"]:
@@ -1506,24 +1539,24 @@ def main():
             print(f"  Reusing {speaker}'s voice sample (from clip {v['from_clip']}: \"{v['line']}\").")
         voices_path.write_text(json.dumps(voices, indent=2, ensure_ascii=False), encoding="utf-8")
     elif not args.script_only:
-        print("\n[PHASE 1.5] Generating cast and location images with FLUX...")
+        print(f"\n[PHASE 1.5] Generating cast and location images with {IMAGE_MODEL}...")
         images = {"cast": {}, "locations": {}}
         for c in bible["characters"]:
             print(f"  Generating image for {c['name']}...", flush=True)
-            cast_bank[c["name"]] = generate_flux_image(c["image_prompt"])
+            cast_bank[c["name"]] = generate_image(c["image_prompt"])
             images["cast"][c["name"]] = {"prompt": c["image_prompt"], "url": cast_bank[c["name"]]}
             if cast_bank[c["name"]]: print(f"    Saved: {cast_bank[c['name']]}")
         for loc in bible["locations"]:
             views = loc.get("views") or ["wide view"]
             print(f"  Generating the master picture of {loc['id']} ({views[0]})...", flush=True)
-            master = generate_flux_image(loc["image_prompt"])
+            master = generate_image(loc["image_prompt"])
             entry = {"prompt": loc["image_prompt"], "url": master, "views": [{"view": views[0], "prompt": loc["image_prompt"], "url": master}]}
             if master:
                 print(f"    Saved: {master}")
-                # The other angles are edits of the master (Kontext keeps its content), so they show the same room, not a new one.
-                for view in views[1:PLACE_VIEWS[1]]:
+                # The other angles are edits of the master (an edit keeps the master's content), so they show the same room, not a new one.
+                for view in views[1:1 + max(0, min(2, LOCATION_EXTRA_VIEWS))]:
                     print(f"  Generating {loc['id']} {view}...", flush=True)
-                    url = generate_flux_image(_view_prompt(view), input_image=master)
+                    url = generate_image(_view_prompt(view), [master])
                     if url:
                         entry["views"].append({"view": view, "prompt": _view_prompt(view), "url": url})
                         print(f"    Saved: {url}")

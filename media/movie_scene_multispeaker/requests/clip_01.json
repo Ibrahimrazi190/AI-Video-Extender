@@ -1,0 +1,29 @@
+{
+  "attempts": [
+    {
+      "sent_to_kie": {
+        "model": "bytedance/seedance-2-mini",
+        "input": {
+          "prompt": "Five-second shot.",
+          "resolution": "480p",
+          "duration": 5,
+          "aspect_ratio": "9:16",
+          "nsfw_checker": false,
+          "generate_audio": true
+        }
+      },
+      "error": "polling exceeded 15 minutes"
+    }
+  ],
+  "sent_to_kie": {
+    "model": "bytedance/seedance-2-mini",
+    "input": {
+      "prompt": "Five-second shot.",
+      "resolution": "480p",
+      "duration": 5,
+      "aspect_ratio": "9:16",
+      "nsfw_checker": false,
+      "generate_audio": true
+    }
+  }
+}

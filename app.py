@@ -12,6 +12,7 @@
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -20,14 +21,16 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal, get_args
+from urllib.parse import quote
 
 import httpx
 import numpy as np
 import redis
 from celery import Celery
 from celery.utils.log import get_task_logger
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 try:
     from langfuse.openai import OpenAI
     from langfuse import observe, get_client
@@ -60,6 +63,7 @@ KIE_API_BASE = "https://api.kie.ai"
 KIE_UPLOAD_BASE = "https://kieai.redpandaai.co"  # kie.ai's file host; uploads are deleted after 24 hours
 KIE_MODEL = "bytedance/seedance-2-mini"
 KIE_POLL_TIMEOUT = 15 * 60  # seconds to wait for one clip before giving up
+KIE_POLL_OUTAGE = 600  # seconds of unbroken network failure while waiting for a clip before giving up on it (the clip is already paid for)
 ANCHOR_MAX_AGE = 23 * 60 * 60  # seconds; kie.ai deletes uploads after 24 hours, so older anchors are made again
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 # Downloaded clips and each job's final video (a Docker volume shared by the api and the worker). kie.ai deletes
@@ -240,11 +244,19 @@ class Job(BaseModel):
     delivery: dict | None = None       # Narrated Drama: story_in_five, must-understand facts and jargon (what the script must SAY)
     plan_report: dict | None = None    # Narrated Drama: delivery checks, spoken-script stats, dialogue-only page, blind reader
     plan_rules: list | None = None     # Narrated Drama: standing rules the user added while revising the plan [{"id", "text"}]
+    # Narrated Drama: what the author wrote for each CONTINUATION, for the clips it covers: [{"start_clip", "end_clip", "text"}]. The continuation planner
+    # reads it once; the clip writer reads it again for those clips (its opening pose, shots and deliveries), which it never saw before.
+    continuation_notes: list | None = None
     revision: dict | None = None       # Narrated Drama: the plan revision in progress or just finished (status, note, clips, result)
     plan_versions_count: int = 0       # how many earlier versions of the plan can be restored (kept in Redis, see _plan_versions)
-    cast_bank: dict | None = None      # character name -> FLUX image URL
-    location_bank: dict | None = None  # location id -> list of FLUX image URLs
+    cast_bank: dict | None = None      # character name -> reference image URL
+    location_bank: dict | None = None  # location id -> list of reference image URLs
     voice_bank: dict | None = None     # character name -> voice sample URL
+    # Pictures the USER uploaded in the plan review (they are in cast_bank / location_bank like generated ones, and are never regenerated):
+    # {"cast": {character name: {"file", "at"}}, "locations": {place id: {"file", "at"}}}. "file" is our own copy under media/<job>/refs/ and
+    # "at" the unix time it was last sent to kie.ai, whose file host deletes uploads after 24 hours (see _fresh_reference_banks), and "used" is
+    # set when the plan is approved: from then on clips are made with the picture, so a later continuation cannot swap it.
+    uploaded_refs: dict | None = None
     # The joined video (final_video_path(), served at GET /jobs/{id}/video): when it was last built, or why it failed.
     final_video_at: float | None = None
     final_error: str | None = None
@@ -308,6 +320,25 @@ def update_job(job_id: str, **fields) -> Job:
         if raw is None:
             raise KeyError(f"job {job_id} not found")
         job = Job.model_validate({**Job.model_validate_json(raw).model_dump(), **fields})
+        pipe.multi()
+        pipe.set(key, job.model_dump_json())
+        return job
+
+    return redis_client.transaction(apply, key, value_from_callable=True)
+
+
+def mutate_job(job_id: str, fn) -> Job:
+    """Change a job in place under WATCH: `fn(job)` edits the Job it is given and returns nothing. For edits that MERGE into a dict field
+    (update_job() would overwrite the whole field). `fn` may run more than once if another writer got in first, so it must only set values."""
+    key = _job_key(job_id)
+
+    def apply(pipe):
+        raw = pipe.get(key)
+        if raw is None:
+            raise KeyError(f"job {job_id} not found")
+        job = Job.model_validate_json(raw)
+        fn(job)
+        job = Job.model_validate(job.model_dump())
         pipe.multi()
         pipe.set(key, job.model_dump_json())
         return job
@@ -817,16 +848,18 @@ def _clip_input(prompt, resolution, duration, generate_audio, video_urls, audio_
 
 def _wait_for_clip(client: httpx.Client, task_id: str) -> dict:
     deadline = time.monotonic() + KIE_POLL_TIMEOUT
-    delay, network_errors = 3.0, 0
+    delay, outage_since = 3.0, None
     while time.monotonic() < deadline:
         time.sleep(delay)
         delay = min(delay * 1.3, 10)
         try:
             data = _unwrap(client.get("/api/v1/jobs/recordInfo", params={"taskId": task_id}))
-            network_errors = 0
+            outage_since = None
         except httpx.TransportError:
-            network_errors += 1  # the task is already paid for, so ride out a few network blips
-            if network_errors > 5:
+            # The task is already paid for and asking about it is free, so ride out a connection outage (it used to give up after five failed
+            # checks, about a minute, and the retry then paid for the same clip a second time). Only an outage longer than KIE_POLL_OUTAGE stops it.
+            outage_since = outage_since if outage_since is not None else time.monotonic()
+            if time.monotonic() - outage_since > KIE_POLL_OUTAGE:
                 raise
             continue
         if data.get("state") == "success":
@@ -850,9 +883,14 @@ def generate_clip(
     reference_audio_urls: list[str] | None = None,
     reference_image_urls: list[str] | None = None,
     generate_audio: bool = True,
+    on_task_id=None,
+    resume_task_id: str | None = None,
 ) -> dict:
     """Submit one Seedance 2.0 Mini job, poll until it finishes, and return
     {"task_id": str, "video_url": str, "credits_consumed": number}.
+
+    `on_task_id(task_id)` is called as soon as kie.ai has accepted the job (so the caller can keep the id: a clip that is paid for but whose polling
+    breaks can then be picked up again). `resume_task_id` skips the submission and waits for that existing task instead.
 
     Reference URLs must be publicly fetchable by kie.ai and are left out of the request if not given.
     Raises KieError if kie.ai rejects the request or the task fails (failMsg is in the message).
@@ -869,7 +907,15 @@ def generate_clip(
         ),
     }
     with _kie_client(KIE_API_BASE) as client:
-        task_id = _unwrap(client.post("/api/v1/jobs/createTask", json=body))["taskId"]
+        if resume_task_id:
+            task_id = resume_task_id
+        else:
+            task_id = _unwrap(client.post("/api/v1/jobs/createTask", json=body))["taskId"]
+            if on_task_id is not None:
+                try:
+                    on_task_id(task_id)
+                except Exception:
+                    pass   # keeping the id is a convenience; it must never lose a paid clip
         result = _wait_for_clip(client, task_id)
         try:
             get_client().update_current_span(
@@ -1114,8 +1160,15 @@ def assemble_final_video(job: Job) -> Path:
 
 # --- Story Videos Helpers ---
 import movie_scene_multispeaker as movie
-def _generate_flux_images(job_id: str, bible: dict, existing_cast: dict | None = None, existing_locs: dict | None = None) -> tuple[dict, dict]:
-    """Generate FLUX images for all cast and locations. Only generates images for characters/locations not already present in the banks. Returns (cast_bank, location_bank)."""
+# Extra "other angle" pictures made per place by editing its master (set in movie_scene_multispeaker.py, 0 = the master only). They were
+# switched off on 2026-10-13 after the stored pictures of a real job (made with the old flux1-kontext model) showed the reverse view and
+# the diagonal view both came back as the master's own camera angle: two paid edits per place that only repeated the master and used up
+# two of the nine reference-picture slots in every clip. The image model is now nano-banana-2-1, whose edit mode has NOT been tried for
+# angles; raise it (max 2) only after a test shows it really turns the camera.
+# (The setting lives in movie_scene_multispeaker as LOCATION_EXTRA_VIEWS and is read when a job runs: app.py and that module import each
+# other, so reading it here while the module loads would fail when the movie script is started first.)
+def _generate_reference_images(job_id: str, bible: dict, existing_cast: dict | None = None, existing_locs: dict | None = None) -> tuple[dict, dict]:
+    """Generate the reference images (cast portraits, place pictures) with the kie.ai image model (movie.IMAGE_MODEL). Only generates images for characters/locations not already present in the banks. Returns (cast_bank, location_bank)."""
     cast_bank = dict(existing_cast or {})
     # Narrated Drama derives look/image_prompt from each character's structured "appearance"; doing it here
     # too covers a bible that reached this point without it (an older job, or a continuation's new cast).
@@ -1126,27 +1179,296 @@ def _generate_flux_images(job_id: str, bible: dict, existing_cast: dict | None =
         pass
     for c in bible.get("characters", []):
         if c["name"] not in cast_bank:
-            url = movie.generate_flux_image(c["image_prompt"])
+            url = movie.generate_image(c["image_prompt"])
             if url:
                 cast_bank[c["name"]] = url
-                task_log.info("job %s: FLUX cast image for %s", job_id, c["name"])
+                task_log.info("job %s: cast image for %s", job_id, c["name"])
             else:
-                task_log.warning("job %s: FLUX cast image failed for %s", job_id, c["name"])
+                task_log.warning("job %s: cast image failed for %s", job_id, c["name"])
 
     location_bank = dict(existing_locs or {})
     for loc in bible.get("locations", []):
         if loc["id"] not in location_bank:
-            master = movie.generate_flux_image(loc["image_prompt"])
+            master = movie.generate_image(loc["image_prompt"])
             views = [master] if master else []
             if master:
-                for view_desc in loc.get("views", [])[1:3]:  # up to 2 additional angles
-                    angle = movie.generate_flux_image(movie._view_prompt(view_desc), input_image=master)
+                for view_desc in loc.get("views", [])[1:1 + max(0, min(2, movie.LOCATION_EXTRA_VIEWS))]:  # additional angles (none by default)
+                    angle = movie.generate_image(movie._view_prompt(view_desc), [master])
                     if angle:
                         views.append(angle)
             location_bank[loc["id"]] = views
-            task_log.info("job %s: FLUX location images for %s (%d views)", job_id, loc["id"], len(views))
+            task_log.info("job %s: location images for %s (%d views)", job_id, loc["id"], len(views))
 
     return cast_bank, location_bank
+
+
+# --- Names the plan does not have ---
+# A beat that names a place or a person the plan's scene bible does not have cannot be rendered: the clip writer may only use the bible's places
+# and cast, so that clip stops the job when its script is written, after the clips before it have been paid for. Typing a place into a beat's
+# Location box is the usual way to cause it. This is checked when the plan is approved (and shown on the beat in the dashboard).
+_PLACE_SPLIT = re.compile(r"[,+&]|_and_|_to_")      # the same split the clip writer uses for a beat set in two places
+PLAN_PROBLEMS_SHOWN = 6
+
+
+def _beat_places(beat: dict) -> list[str]:
+    loc = str(beat.get("location_id") or "").strip()
+    return list(beat.get("location_ids") or [p.strip() for p in _PLACE_SPLIT.split(loc) if p.strip()])
+
+
+def plan_name_problems(beats: list | None, bible: dict | None, skip: set[int] | frozenset = frozenset()) -> list[str]:
+    """What in these beats the bible does not have: a place, or a person (on screen or speaking). `skip` is the beats whose clips are
+    already rendered. Empty when every pending beat can be rendered."""
+    bible = bible or {}
+    places = [l["id"] for l in bible.get("locations", []) if l.get("id")]
+    people = {c["name"].strip().lower(): c["name"] for c in bible.get("characters", []) if c.get("name")}
+    problems: list[str] = []
+    for i, b in enumerate(beats or []):
+        if i in skip or not isinstance(b, dict):
+            continue
+        loc = str(b.get("location_id") or "").strip()
+        parts = _beat_places(b)
+        if places and loc not in places and not (parts and all(p in places for p in parts)):
+            unknown = [p for p in parts if p not in places] or [loc or "(no place)"]
+            problems.append(f"Beat {i + 1}: {', '.join(repr(u) for u in unknown)} is not one of the plan's places ({', '.join(places)}).")
+        names = list(b.get("present_characters") or []) + [t.get("speaker") for t in (b.get("audio_lines") or []) if isinstance(t, dict)]
+        bad = sorted({re.sub(r"\s*\(.*?\)\s*$", "", str(n)).strip() for n in names if n} - set(people.values()))
+        bad = [n for n in bad if n and n.lower() not in people]
+        if people and bad:
+            problems.append(f"Beat {i + 1}: {', '.join(repr(n) for n in bad)} {'is' if len(bad) == 1 else 'are'} not in the cast ({', '.join(people.values())}).")
+    return problems
+
+
+def _plan_problems_message(problems: list[str]) -> str:
+    shown = problems[:PLAN_PROBLEMS_SHOWN]
+    more = f" (and {len(problems) - len(shown)} more)" if len(problems) > len(shown) else ""
+    return ("The plan names a place or a person it does not have, so these clips could not be written and the job would stop part way through. "
+            "Nothing was started. Fix them and approve again: " + " ".join(shown) + more)
+
+
+# --- Your own reference pictures (plan review: Narrated Drama and Story Videos) ---
+# In the plan review the user can upload a picture for any character and any place. An uploaded picture goes into cast_bank / location_bank
+# exactly like a generated one, so _generate_reference_images() (which only makes what is missing) leaves it alone and every clip uses it.
+# A character's picture is used in every beat that character is in; a place's picture is that place, empty, in every beat set there.
+REF_KINDS = ("cast", "locations")
+REF_MAX_BYTES = 25 * 1024 * 1024                  # kie.ai takes a reference picture under 30 MB
+REF_MIN_SIDE, REF_MAX_SIDE = 300, 6000            # pixels, each side (Seedance's limit for a reference image)
+REF_MIN_RATIO, REF_MAX_RATIO = 0.4, 2.5           # width / height (Seedance's limit)
+REF_REUPLOAD_AFTER = 23 * 3600                    # kie.ai deletes uploaded files after 24 hours
+
+
+def _sniff_image(data: bytes) -> str | None:
+    """The kind of picture these bytes are (by their first bytes, not by the file name), or None."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def _image_size(path: Path) -> tuple[int, int]:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", str(path)],
+        capture_output=True, text=True,
+    )
+    streams = (json.loads(out.stdout).get("streams") or []) if out.returncode == 0 and out.stdout.strip() else []
+    if not streams:
+        raise ValueError("this file is not a picture that can be read")
+    return int(streams[0]["width"]), int(streams[0]["height"])
+
+
+def _ref_dir(job_id: str) -> Path:
+    return job_media_dir(job_id) / "refs"
+
+
+def _ref_bank_url(job: Job, kind: str, key: str) -> str | None:
+    """The picture the job currently has for this character or place (a place's first view)."""
+    if kind == "cast":
+        return (job.cast_bank or {}).get(key) or None
+    views = (job.location_bank or {}).get(key) or []
+    return views[0] if views else None
+
+
+def _ref_known_keys(job: Job) -> dict[str, list[str]]:
+    bible = job.movie_bible or {}
+    return {"cast": [c["name"] for c in bible.get("characters", []) if c.get("name")],
+            "locations": [l["id"] for l in bible.get("locations", []) if l.get("id")]}
+
+
+def _ref_lock_reason(job: Job, kind: str, key: str) -> str | None:
+    """Why this picture cannot be changed now, or None. Only while the plan waits for approval; and a picture that clips already rendered
+    were made with stays, because a new one would change the character's face or the place half way through the film."""
+    if job.status != "plan_ready":
+        return "the plan is already approved"
+    meta = ((job.uploaded_refs or {}).get(kind) or {}).get(key)
+    waiting = bool(meta) and not meta.get("used")        # uploaded since the last approval: no clip has been made with it yet
+    if any(c.status == "done" for c in job.clips) and _ref_bank_url(job, kind, key) and not waiting:
+        return "clips with this picture are already rendered; a new one would change its look half way through the film"
+    return None
+
+
+def _ref_slot(job: Job, kind: str, key: str) -> dict:
+    meta = ((job.uploaded_refs or {}).get(kind) or {}).get(key)
+    url = _ref_bank_url(job, kind, key)
+    preview = f"/jobs/{job.id}/reference-images/{kind}/{quote(key, safe='')}/file?v={quote(str(meta.get('file')), safe='')}" if meta else url
+    return {"kind": kind, "key": key, "uploaded": bool(meta), "file": (meta or {}).get("file"), "url": url, "preview": preview,
+            "locked": _ref_lock_reason(job, kind, key)}
+
+
+def _ref_job_for_change(job_id: str, kind: str, key: str) -> Job:
+    """The job, if this picture may be changed now; raises the HTTP error otherwise."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if kind not in REF_KINDS:
+        raise HTTPException(status_code=404, detail=f"kind must be one of {list(REF_KINDS)}")
+    if job.mode not in ("narrated_drama", "story_videos"):
+        raise HTTPException(status_code=400, detail="reference pictures are only for Narrated Drama and Story Videos")
+    if key not in _ref_known_keys(job)[kind]:
+        raise HTTPException(status_code=404, detail=f"'{key}' is not a {'character' if kind == 'cast' else 'place'} of this plan")
+    if _revision_busy(job):
+        raise HTTPException(status_code=409, detail="the plan is being revised; wait for it to finish")
+    reason = _ref_lock_reason(job, kind, key)
+    if reason:
+        raise HTTPException(status_code=409, detail=f"this picture cannot be changed: {reason}")
+    return job
+
+
+def save_reference_upload(job_id: str, kind: str, key: str, data: bytes) -> dict:
+    """Keep an uploaded picture (our own copy on disk, and one on kie.ai's file host that the video model can fetch) and make it the
+    character's or the place's picture. Replaces an earlier upload. Raises HTTPException with a reason the user can act on."""
+    job = _ref_job_for_change(job_id, kind, key)
+    ext = _sniff_image(data)
+    if ext is None:
+        raise HTTPException(status_code=400, detail="that file is not a JPEG, PNG or WebP picture")
+    if len(data) > REF_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"that picture is {len(data) / 1048576:.0f} MB; the limit is {REF_MAX_BYTES // 1048576} MB")
+    folder = _ref_dir(job_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    slug = re.sub(r"[^\w\-]+", "_", key.lower()).strip("_") or "x"
+    path = folder / f"{kind}_{slug}_{hashlib.sha1(data).hexdigest()[:8]}.{ext}"
+    path.write_bytes(data)
+    try:
+        try:
+            width, height = _image_size(path)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if not (REF_MIN_SIDE <= width <= REF_MAX_SIDE and REF_MIN_SIDE <= height <= REF_MAX_SIDE):
+            raise HTTPException(status_code=400, detail=f"the picture is {width}x{height}; each side must be between {REF_MIN_SIDE} and {REF_MAX_SIDE} pixels")
+        if not (REF_MIN_RATIO <= width / height <= REF_MAX_RATIO):
+            raise HTTPException(status_code=400, detail=f"the picture is {width}x{height}; its width divided by its height must be between {REF_MIN_RATIO} and {REF_MAX_RATIO}")
+        try:
+            url = _upload_to_kie(path)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"could not send the picture to kie.ai: {e}") from e
+    except HTTPException:
+        path.unlink(missing_ok=True)
+        raise
+    old_file = (((job.uploaded_refs or {}).get(kind) or {}).get(key) or {}).get("file")
+
+    def put(j: Job) -> None:
+        uploads = {k: dict(v) for k, v in (j.uploaded_refs or {}).items()}
+        uploads.setdefault(kind, {})[key] = {"file": path.name, "at": time.time()}
+        j.uploaded_refs = uploads
+        if kind == "cast":
+            j.cast_bank = {**(j.cast_bank or {}), key: url}
+        else:
+            j.location_bank = {**(j.location_bank or {}), key: [url]}
+
+    saved = mutate_job(job_id, put)
+    if old_file and old_file != path.name:
+        (folder / old_file).unlink(missing_ok=True)
+    return _ref_slot(saved, kind, key)
+
+
+def remove_reference_upload(job_id: str, kind: str, key: str) -> dict:
+    """Take an uploaded picture back out, so that character or place is generated like any other."""
+    job = _ref_job_for_change(job_id, kind, key)
+    meta = ((job.uploaded_refs or {}).get(kind) or {}).get(key)
+    if not meta:
+        raise HTTPException(status_code=404, detail="there is no uploaded picture to remove")
+
+    def drop(j: Job) -> None:
+        uploads = {k: dict(v) for k, v in (j.uploaded_refs or {}).items()}
+        (uploads.get(kind) or {}).pop(key, None)
+        j.uploaded_refs = uploads or None
+        bank = dict(j.cast_bank or {}) if kind == "cast" else dict(j.location_bank or {})
+        bank.pop(key, None)
+        if kind == "cast":
+            j.cast_bank = bank or None
+        else:
+            j.location_bank = bank or None
+
+    saved = mutate_job(job_id, drop)
+    (_ref_dir(job_id) / meta["file"]).unlink(missing_ok=True)
+    return _ref_slot(saved, kind, key)
+
+
+def _fresh_reference_banks(job_id: str) -> tuple[dict, dict]:
+    """The job's cast and location pictures, with every uploaded picture that kie.ai's file host may have deleted by now (sent more than
+    23 hours ago) sent again from our own copy. A long job, or a regenerate the next day, would otherwise hand the video model a dead link."""
+    job = get_job(job_id)
+    cast, places = dict(job.cast_bank or {}), dict(job.location_bank or {})
+    uploads = {k: {key: dict(m) for key, m in v.items()} for k, v in (job.uploaded_refs or {}).items()}
+    now, changed = time.time(), False
+    for kind, bank in (("cast", cast), ("locations", places)):
+        for key, meta in (uploads.get(kind) or {}).items():
+            if now - float(meta.get("at") or 0) <= REF_REUPLOAD_AFTER:
+                continue
+            path = _ref_dir(job_id) / str(meta.get("file"))
+            if not path.is_file():
+                task_log.warning("job %s: the uploaded picture for %s '%s' is gone from disk; using the link it has", job_id, kind, key)
+                continue
+            try:
+                url = _upload_to_kie(path)
+            except Exception as e:
+                task_log.warning("job %s: could not send the picture for %s '%s' to kie.ai again: %s", job_id, kind, key, e)
+                continue
+            bank[key] = url if kind == "cast" else [url]
+            meta["at"] = now
+            changed = True
+            task_log.info("job %s: sent the uploaded picture for %s '%s' to kie.ai again (the first copy was older than 23 hours)", job_id, kind, key)
+    if changed:
+        update_job(job_id, cast_bank=cast, location_bank=places, uploaded_refs=uploads)
+    return cast, places
+
+
+def _fresh_voice_bank(job_id: str, voice_bank: dict | None = None) -> dict:
+    """Ensure all banked voice files on Kie.ai file host are alive. If any returns 404 or is expired,
+    re-upload the local WAV copy from media/{job_id}/voices/."""
+    import urllib.request
+    job = get_job(job_id)
+    if job is None:
+        return dict(voice_bank or {})
+    vb = dict(voice_bank if voice_bank is not None else (job.voice_bank or {}))
+    voices_dir = job_media_dir(job_id) / "voices"
+    if not voices_dir.is_dir():
+        return vb
+    changed = False
+    for speaker, url in list(vb.items()):
+        alive = False
+        try:
+            req = urllib.request.Request(url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                if resp.status == 200:
+                    alive = True
+        except Exception:
+            alive = False
+        if not alive:
+            stem = speaker.lower().replace(" ", "_")
+            matches = list(voices_dir.glob(f"{stem}*.wav"))
+            if matches:
+                try:
+                    new_url = _upload_to_kie(matches[0])
+                    vb[speaker] = new_url
+                    changed = True
+                    task_log.info("job %s: refreshed expired voice sample for '%s' to %s", job_id, speaker, new_url)
+                except Exception as e:
+                    task_log.warning("job %s: could not re-upload voice sample for '%s': %s", job_id, speaker, e)
+    if changed:
+        update_job(job_id, voice_bank=vb)
+    return vb
 
 
 def _bank_new_voices(job_id: str, clip_index: int, clip_script: dict, video_url: str,
@@ -1226,18 +1548,18 @@ def _generate_movie_plan(job_id: str) -> None:
 
 
 def _continue_movie_job(job_id: str) -> None:
-    """Phase 1.5: FLUX images -> Phase 2: Per-clip script + render -> assemble."""
+    """Phase 1.5: reference images -> Phase 2: Per-clip script + render -> assemble."""
     job = get_job(job_id)
     topic = job.request.topic
     total_clips = len(job.clips)
     bible = job.movie_bible
     beats = job.beats
 
-    # Phase 1.5: FLUX images (check and generate any missing cast/locations)
+    # Phase 1.5: reference images (check and generate any missing cast/locations)
     cast_bank = job.cast_bank or {}
     location_bank = job.location_bank or {}
-    task_log.info("job %s: checking/generating FLUX reference images", job_id)
-    cast_bank, location_bank = _generate_flux_images(job_id, bible, cast_bank, location_bank)
+    task_log.info("job %s: checking/generating reference images", job_id)
+    cast_bank, location_bank = _generate_reference_images(job_id, bible, cast_bank, location_bank)
     update_job(job_id, cast_bank=cast_bank, location_bank=location_bank)
 
     # Phase 2: Per-clip script + generate (interleaved, 1 clip at a time)
@@ -1270,6 +1592,7 @@ def _continue_movie_job(job_id: str) -> None:
 
         # Build prompt and render
         prev_clip_script = prev_clips[-1] if prev_clips else None
+        cast_bank, location_bank = _fresh_reference_banks(job_id)   # an uploaded picture older than 23 h is sent to kie.ai again first
         prompt, image_urls, audio_urls = movie.build_multi_prompt(
             clip_script, bible, cast_bank, location_bank, voice_bank, prev_clip=prev_clip_script
         )
@@ -1304,7 +1627,7 @@ def _generate_narrated_plan(job_id: str) -> None:
     # thrown away together with every planning call already paid for.
     blocking, reviewable = hnd.split_plan_problems(hnd._hard_problems(problems))
     if blocking:
-        # Nothing has been paid for yet: FLUX images and clips both come after the plan is approved. Saving
+        # Nothing has been paid for yet: reference images and clips both come after the plan is approved. Saving
         # the rejected plan for inspection and refusing it here is what keeps a broken plan from becoming a
         # paid run. It is not stored on the job, so it cannot be resumed by accident.
         folder = job_media_dir(job_id)
@@ -1355,8 +1678,28 @@ def _generate_narrated_plan(job_id: str) -> None:
                   job_id, len(beats), bible.get("pov_protagonist"))
 
 
+def _bank_clip_voices(job_id: str, i: int, clip_script: dict, clip_file: Path, beats: list, clip_dur: int, voice_bank: dict) -> bool:
+    """Cut a voice sample out of a rendered clip for every speaker who has none yet (their first usable line), into `voice_bank`, in place.
+    True when a new voice was banked."""
+    import hybrid_narrated_drama as hnd
+    clip_turns = hnd._clip_turns(clip_script)
+    banked = False
+    for t_idx, turn in enumerate(clip_turns):
+        spk = (turn.get("speaker") or "").strip()
+        if not spk or spk.lower() in {k.lower() for k in voice_bank}:
+            continue
+        if not hnd.should_bank_voice(turn, spk, beats, i):
+            task_log.info("job %s: clip %d: '%s' line is too short to bank a voice from; waiting for a longer one", job_id, i + 1, spk)
+            continue
+        s_est = float(turn.get("start_est", 0.5) or 0.5)
+        e_est = float(turn.get("end_est", clip_dur - 0.4) or (clip_dur - 0.4))
+        hnd.bank_voice(clip_file, spk, voice_bank, start_est=s_est, end_est=e_est, turn_index=t_idx, turns=clip_turns)
+        banked = True
+    return banked
+
+
 def _continue_narrated_drama_job(job_id: str) -> None:
-    """Phase 1.5: FLUX images -> Phase 2: Narrated drama per-clip (VO / Dialogue / Shock) -> assemble."""
+    """Phase 1.5: reference images -> Phase 2: Narrated drama per-clip (VO / Dialogue / Shock) -> assemble."""
     job = get_job(job_id)
     import hybrid_narrated_drama as hnd
     topic = hnd.topic_with_rules(job.request.topic, job.plan_rules)   # every clip writer sees the standing rules (the same text each clip, so it still caches)
@@ -1364,11 +1707,11 @@ def _continue_narrated_drama_job(job_id: str) -> None:
     bible = job.movie_bible
     beats = job.beats
 
-    # Phase 1.5: FLUX images
+    # Phase 1.5: reference images
     cast_bank = job.cast_bank or {}
     location_bank = job.location_bank or {}
-    task_log.info("job %s: checking/generating FLUX reference images", job_id)
-    cast_bank, location_bank = _generate_flux_images(job_id, bible, cast_bank, location_bank)
+    task_log.info("job %s: checking/generating reference images", job_id)
+    cast_bank, location_bank = _generate_reference_images(job_id, bible, cast_bank, location_bank)
     update_job(job_id, cast_bank=cast_bank, location_bank=location_bank)
 
     # Phase 2: Per-clip script + generate
@@ -1393,7 +1736,7 @@ def _continue_narrated_drama_job(job_id: str) -> None:
             task_log.info("job %s: scripting narrated clip %d of %d (%ds)", job_id, i + 1, total_clips, clip_dur)
             is_supervise = getattr(job.request, "supervise", False)
             ch_data, clip_problems = hnd.write_narrated_chapter(
-                topic, i, total_clips, beats, bible, prev_clips, supervise=is_supervise, acts=job.acts,
+                hnd.topic_with_continuation(topic, job.continuation_notes, i + 1), i, total_clips, beats, bible, prev_clips, supervise=is_supervise, acts=job.acts,
                 clip_duration=clip_dur
             )
             clip_hard = hnd._hard_problems(clip_problems)
@@ -1412,10 +1755,14 @@ def _continue_narrated_drama_job(job_id: str) -> None:
 
         # Build prompt & render
         prev_script = prev_clips[-1] if prev_clips else None
+        cast_bank, location_bank = _fresh_reference_banks(job_id)   # an uploaded picture older than 23 h is sent to kie.ai again first
+        voice_bank = _fresh_voice_bank(job_id, voice_bank)
         prompt, img_urls, aud_urls = hnd.build_narrated_prompt(
             clip_script, bible, cast_bank, location_bank, voice_bank, prev_clip=prev_script,
             clip_duration=clip_dur
         )
+        if clip_obj and getattr(clip_obj, "custom_prompt", None):
+            prompt = clip_obj.custom_prompt
         task_log.info("job %s: rendering narrated clip %d of %d [%s, %ds] (%d images, %d audios)",
                       job_id, i + 1, total_clips, clip_script.get("delivery_mode"), clip_dur, len(img_urls), len(aud_urls))
         res = hnd.render_narrated_clip(i + 1, prompt, img_urls, aud_urls, interactive=False,
@@ -1428,22 +1775,7 @@ def _continue_narrated_drama_job(job_id: str) -> None:
 
         # Bank voice if speaker present
         clip_file = _local_clip_movie(job_id, i, video_url)
-        clip_turns = hnd._clip_turns(clip_script)
-        banked = False
-        for t_idx, turn in enumerate(clip_turns):
-            spk = (turn.get("speaker") or "").strip()
-            if not spk or spk.lower() in {k.lower() for k in voice_bank}:
-                continue
-            if not hnd.should_bank_voice(turn, spk, beats, i):
-                task_log.info("job %s: clip %d: '%s' line is too short to bank a voice from; waiting for a longer one",
-                              job_id, i + 1, spk)
-                continue
-            s_est = float(turn.get("start_est", 0.5) or 0.5)
-            e_est = float(turn.get("end_est", clip_dur - 0.4) or (clip_dur - 0.4))
-            hnd.bank_voice(clip_file, spk, voice_bank, start_est=s_est, end_est=e_est,
-                           turn_index=t_idx, turns=clip_turns)
-            banked = True
-        if banked:
+        if _bank_clip_voices(job_id, i, clip_script, clip_file, beats, clip_dur, voice_bank):
             update_job(job_id, voice_bank=voice_bank)
 
         prev_clips.append(clip_script)
@@ -1742,6 +2074,15 @@ def _extend_movie_plan_task_traced(job_id: str, continuation_prompt: str, additi
     updated_bible = outline.get("scene_bible", bible)
     new_beats = outline.get("beats", [])
 
+    # Check and generate reference images for any newly added characters or locations immediately
+    cast_bank = job.cast_bank or {}
+    location_bank = job.location_bank or {}
+    try:
+        task_log.info("job %s: checking/generating reference images for continuation", job_id)
+        cast_bank, location_bank = _generate_reference_images(job_id, updated_bible, cast_bank, location_bank)
+    except Exception as e:
+        task_log.warning("job %s: reference image generation for continuation had an issue: %s", job_id, e)
+
     all_beats = list(job.beats or [])
     all_beats.extend(new_beats)
 
@@ -1751,12 +2092,18 @@ def _extend_movie_plan_task_traced(job_id: str, continuation_prompt: str, additi
         beat_dur = int(new_beats[idx].get("duration", 15)) if job.mode == "narrated_drama" else None
         clips.append(Clip(index=existing_count + idx, duration=beat_dur, status="pending"))
 
+    notes = list(job.continuation_notes or [])
+    if job.mode == "narrated_drama" and continuation_prompt.strip():
+        notes.append({"start_clip": existing_count + 1, "end_clip": existing_count + len(new_beats), "text": continuation_prompt.strip()})
     update_job(
         job_id,
         beats=all_beats,
         movie_bible=updated_bible,
         scene_bible=json.dumps(updated_bible, ensure_ascii=False),
+        cast_bank=cast_bank,
+        location_bank=location_bank,
         clips=clips,
+        continuation_notes=notes or None,
         status="plan_ready",
         error=None,
     )
@@ -2007,8 +2354,7 @@ REGENERATE_LABELS = {"script": "Regenerate Script", "scene": "Regenerate Scene"}
 def _render_movie_clip_at(job_id: str, clip: Clip) -> None:
     job = get_job(job_id)
     bible = job.movie_bible or (json.loads(job.scene_bible) if job.scene_bible else {})
-    cast_bank = job.cast_bank or {}
-    location_bank = job.location_bank or {}
+    cast_bank, location_bank = _fresh_reference_banks(job_id)   # an uploaded picture older than 23 h is sent to kie.ai again first
     voice_bank = job.voice_bank or {}
     clip_script = clip.movie_script
     prev_clip_script = job.clips[clip.index - 1].movie_script if (clip.index > 0 and clip.index - 1 < len(job.clips)) else None
@@ -2418,6 +2764,83 @@ def _start_regeneration(job_id: str, clip_index: int, task, overrides: dict | No
     return {"job_id": job_id, "clip_index": clip_index}
 
 
+# --- A clip that is already paid for on kie.ai but never reached the job (the connection dropped while it rendered) ---
+def _kie_task_state(task_id: str) -> dict:
+    """ONE free status check of a kie.ai task (it never waits and spends no credits): {"state", "video_url", "fail_msg", "fail_code", "credits"}."""
+    with _kie_client(KIE_API_BASE) as client:
+        data = _unwrap(client.get("/api/v1/jobs/recordInfo", params={"taskId": task_id}))
+    urls = []
+    if data.get("state") == "success":
+        urls = json.loads(data.get("resultJson") or "{}").get("resultUrls") or []
+    return {"state": data.get("state"), "video_url": urls[0] if urls else None, "fail_msg": data.get("failMsg"),
+            "fail_code": data.get("failCode"), "credits": data.get("creditsConsumed")}
+
+
+class AttachTaskRequest(BaseModel):
+    task_id: str = Field(min_length=6, max_length=200)
+
+
+@app.post("/jobs/{job_id}/clips/{clip_index}/attach-task")
+def attach_kie_task(job_id: str, clip_index: int, request: AttachTaskRequest) -> dict:
+    """Give a clip the video of a kie.ai task that finished while the job could not see it (its Task ID is in kie.ai's log). One free status
+    check, then the clip is marked done with that video, its speakers' voices are banked, and the final video is rebuilt when every clip is done.
+    Nothing is rendered or paid for again. Narrated Drama only, and only while no task is running the job."""
+    job = _require_clip(job_id, clip_index)
+    if job.mode != "narrated_drama":
+        raise HTTPException(status_code=400, detail="attaching a kie.ai task is only for Narrated Drama")
+    if job_is_running(job_id):
+        raise HTTPException(status_code=409, detail="the job is running right now; wait for it to stop first")
+    clip = job.clips[clip_index]
+    if clip.status == "done" and clip.video_url:
+        raise HTTPException(status_code=409, detail=f"clip {clip_index + 1} already has its video")
+    if not (clip.movie_script and isinstance(clip.movie_script, dict) and clip.movie_script.get("delivery_mode")):
+        raise HTTPException(status_code=409, detail=f"clip {clip_index + 1} has no script yet, so this task cannot belong to it")
+    task_id = request.task_id.strip()
+    try:
+        state = _kie_task_state(task_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"could not ask kie.ai about task {task_id}: {e}") from e
+    if state["state"] == "fail":
+        raise HTTPException(status_code=422, detail=f"kie.ai reports that task as failed ({state['fail_code']}): {state['fail_msg']}")
+    if state["state"] != "success" or not state["video_url"]:
+        raise HTTPException(status_code=409, detail=f"that task is not finished (state: {state['state']}); try again in a minute")
+
+    video_url = state["video_url"]
+    beats = job.beats or []
+    beat = beats[clip_index] if clip_index < len(beats) else {}
+    clip_dur = int(beat.get("duration") or clip.duration or 15)
+    update_clip(job_id, clip_index, video_url=video_url, status="done", resolution="480p", duration=clip_dur, error=None)
+    voices_banked = False
+    try:
+        clip_file = _local_clip_movie(job_id, clip_index, video_url)
+        voice_bank = dict(job.voice_bank or {})
+        if _bank_clip_voices(job_id, clip_index, clip.movie_script, clip_file, beats, clip_dur, voice_bank):
+            update_job(job_id, voice_bank=voice_bank)
+            voices_banked = True
+    except Exception as e:      # the clip itself is attached; a voice can be banked from a later clip
+        task_log.warning("job %s: clip %d attached, but its voices could not be banked: %s", job_id, clip_index + 1, e)
+    record = job_media_dir(job_id) / "requests" / f"clip_{clip_index + 1:02d}.json"
+    try:
+        rec = json.loads(record.read_text(encoding="utf-8")) if record.exists() else {"attempts": []}
+        rec["task_id"] = task_id
+        rec["kie_reply"] = {"task_id": task_id, "video_url": video_url, "credits_consumed": state["credits"], "attached_by_hand": True}
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps(rec, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    job = get_job(job_id)
+    job_status = job.status
+    if all(c.status == "done" for c in job.clips):
+        update_job(job_id, status="done", error=None)
+        job_status = "done"
+        try:
+            assemble_task.delay(job_id)
+        except Exception as e:
+            task_log.warning("job %s: could not queue the final video: %s", job_id, e)
+    return {"job_id": job_id, "clip": clip_index + 1, "video_url": video_url, "credits_consumed": state["credits"],
+            "voices_banked": voices_banked, "job_status": job_status}
+
+
 @app.get("/jobs/{job_id}/plan")
 def get_job_plan(job_id: str) -> dict:
     """Return the Master Plan file contents or Redis state for this job."""
@@ -2479,16 +2902,67 @@ def approve_plan(job_id: str, request: PlanApprovalRequest | None = None) -> dic
         if request.movie_bible is not None:
             fields["movie_bible"] = request.movie_bible
             fields["scene_bible"] = json.dumps(request.movie_bible, ensure_ascii=False)
+    problems = plan_name_problems(
+        fields.get("beats", job.beats), fields.get("movie_bible", job.movie_bible),
+        skip={c.index for c in job.clips if c.status == "done"},
+    )
+    if problems:
+        raise HTTPException(status_code=422, detail=_plan_problems_message(problems))
     if fields:
         job = update_job(job_id, **fields)
     _save_master_plan_file(job)
-    update_job(job_id, status="generating", error=None)
+    if job.uploaded_refs:   # from here on clips are made with the pictures the user uploaded, so a later continuation may not swap them
+        marked = {k: {key: {**m, "used": True} for key, m in v.items()} for k, v in job.uploaded_refs.items()}
+        update_job(job_id, status="generating", error=None, uploaded_refs=marked)
+    else:
+        update_job(job_id, status="generating", error=None)
     try:
         execute_movie_job.delay(job_id)
     except Exception as e:
         update_job(job_id, status="plan_ready")
         raise HTTPException(status_code=503, detail=f"could not queue video generation: {e}") from e
     return {"job_id": job_id, "status": "generating"}
+
+
+@app.get("/jobs/{job_id}/reference-images")
+def get_reference_images(job_id: str) -> dict:
+    """Every character's and place's picture slot for this plan: the picture it has now (uploaded or generated, or None), whether it was
+    uploaded, and why it cannot be changed (None when it can)."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    keys = _ref_known_keys(job)
+    return {kind: {key: _ref_slot(job, kind, key) for key in keys[kind]} for kind in REF_KINDS}
+
+
+@app.put("/jobs/{job_id}/reference-images/{kind}/{key}")
+async def put_reference_image(job_id: str, kind: str, key: str, request: Request) -> dict:
+    """Upload a picture for one character (kind 'cast', key the name) or one place (kind 'locations', key the place id). The request body is
+    the picture itself (JPEG, PNG or WebP), sent as it is, not as a form."""
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > REF_MAX_BYTES + 4096:
+        raise HTTPException(status_code=413, detail=f"that picture is too big; the limit is {REF_MAX_BYTES // 1048576} MB")
+    data = await request.body()
+    return await run_in_threadpool(save_reference_upload, job_id, kind, key, data)
+
+
+@app.delete("/jobs/{job_id}/reference-images/{kind}/{key}")
+def delete_reference_image(job_id: str, kind: str, key: str) -> dict:
+    """Remove an uploaded picture, so that character or place is generated like any other."""
+    return remove_reference_upload(job_id, kind, key)
+
+
+@app.get("/jobs/{job_id}/reference-images/{kind}/{key}/file")
+def get_reference_image_file(job_id: str, kind: str, key: str) -> FileResponse:
+    """The uploaded picture itself (our own copy), for the dashboard's preview."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    meta = ((job.uploaded_refs or {}).get(kind) or {}).get(key)
+    path = _ref_dir(job_id) / str(meta["file"]) if meta else None
+    if not path or not path.is_file():
+        raise HTTPException(status_code=404, detail="no uploaded picture here")
+    return FileResponse(path, media_type={"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}.get(path.suffix.lstrip("."), "application/octet-stream"))
 
 
 def _revisable_job(job_id: str) -> Job:

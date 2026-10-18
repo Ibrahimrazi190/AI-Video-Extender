@@ -4817,5 +4817,808 @@ _hp = hnd._narrated_chapter_prompt("t", 1, 4, _hb, GOOD["scene_bible"], [], clip
 check("a dense clip's writer is told to size windows at about 4 to 5 words per second, not 3.2 to 3.8",
       "about 4 to 5 words per second" in _hp and "3.2 to 3.8" not in _hp, _hp[:1500])
 
+print("\n[49] One picture per place: the angle edits that only repeated the master are off")
+_calls49 = []
+_real_flux49 = app.movie.generate_image
+app.movie.generate_image = lambda prompt, input_images=None: (_calls49.append((prompt, input_images)) or f"http://img/{len(_calls49)}.jpg")
+_bible49 = lambda: {"characters": [], "locations": [{"id": "hall", "image_prompt": "a hall", "views": ["from the door", "from the window", "from the fireplace"]}]}
+try:
+    _c49, _l49 = app._generate_reference_images("t", _bible49())
+    _n_default, _urls_default, _edit_default = len(_calls49), _l49["hall"], any(i for _, i in _calls49)
+    for _extra, _label in ((2, "two"), (5, "five")):
+        _calls49.clear()
+        app.movie.LOCATION_EXTRA_VIEWS = _extra
+        _c49, _l49x = app._generate_reference_images("t", _bible49())
+        globals()[f"_n49_{_label}"], globals()[f"_edits49_{_label}"] = len(_calls49), [i for _, i in _calls49][1:]
+finally:
+    app.movie.LOCATION_EXTRA_VIEWS = 0
+    app.movie.generate_image = _real_flux49
+check("by default a place costs ONE picture (the master) and no edit call is made", app.movie.LOCATION_EXTRA_VIEWS == 0 and _n_default == 1 and not _edit_default and _urls_default == ["http://img/1.jpg"], (_n_default, _urls_default))
+check("the angle edits can still be switched back on: two extra views are edits of the master", _n49_two == 3 and all(e == ["http://img/1.jpg"] for e in _edits49_two), (_n49_two, _edits49_two))
+check("and never more than two extra, whatever the setting", _n49_five == 3)
+
+print("\n[50] The image model is kie.ai's nano-banana-2-1 (FLUX is gone): the request it sends and how it reads the answers")
+import urllib.error as _ue50
+import urllib.request as _ur50
+import time as _time50
+
+
+class _Resp50:
+    def __init__(self, obj):
+        self._b = json.dumps(obj).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self._b
+
+
+def _run50(script, *args, **kw):
+    """Runs movie.generate_image against a scripted kie.ai (no network, no sleeping). Returns (url, the requests that were made)."""
+    seen = []
+
+    def fake(req, timeout=None):
+        seen.append({"url": req.full_url, "body": json.loads(req.data) if req.data else None, "headers": dict(req.header_items())})
+        item = script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return _Resp50(item)
+    real_open, real_sleep = _ur50.urlopen, _time50.sleep
+    _ur50.urlopen, _time50.sleep = fake, (lambda s: None)
+    try:
+        url = app.movie.generate_image(*args, **kw)
+    finally:
+        _ur50.urlopen, _time50.sleep = real_open, real_sleep
+    return url, seen
+
+
+_ok50 = {"code": 200, "msg": "success", "data": {"taskId": "t1"}}
+_done50 = {"code": 200, "data": {"state": "success", "resultJson": json.dumps({"resultUrls": ["http://img/a.jpg"]})}}
+_url50, _seen50 = _run50([dict(_ok50), {"code": 200, "data": {"state": "generating"}}, dict(_done50)], "a grand hall")
+_in50 = _seen50[0]["body"]["input"]
+check("the model is nano-banana-2-1 and the picture is returned from resultJson.resultUrls", app.movie.IMAGE_MODEL == "nano-banana-2-1" and _seen50[0]["body"]["model"] == "nano-banana-2-1" and _url50 == "http://img/a.jpg", (_url50, _seen50[0]["body"]))
+check("a text-to-image request carries exactly prompt, aspect_ratio 9:16, resolution 1K and output_format jpg: no image_input, no nsfw_checker (not fields of this model)",
+      _in50 == {"prompt": "a grand hall", "aspect_ratio": "9:16", "resolution": "1K", "output_format": "jpg"}, _in50)
+check("it posts to createTask with the bearer key, then polls recordInfo with the task id until success (3 requests)",
+      _seen50[0]["url"] == "https://api.kie.ai/api/v1/jobs/createTask" and "Authorization" in _seen50[0]["headers"] and _seen50[1]["url"].endswith("/api/v1/jobs/recordInfo?taskId=t1") and len(_seen50) == 3, [s["url"] for s in _seen50])
+_u2, _s2 = _run50([dict(_ok50), dict(_done50)], "edit it", ["http://in/1.png", "", "http://in/2.png"])
+check("input pictures go in as the image_input LIST (empty entries dropped)", _s2[0]["body"]["input"]["image_input"] == ["http://in/1.png", "http://in/2.png"], _s2[0]["body"])
+_u3, _s3 = _run50([dict(_ok50), dict(_done50)], "edit it", "http://in/only.png")
+check("a single URL is accepted too", _s3[0]["body"]["input"]["image_input"] == ["http://in/only.png"])
+_u4, _s4 = _run50([dict(_ok50), dict(_done50)], "many", [f"http://in/{i}.png" for i in range(14)])
+check("at most 10 input pictures are sent (kie.ai's limit)", len(_s4[0]["body"]["input"]["image_input"]) == 10)
+_u5, _s5 = _run50([dict(_ok50), {"code": 200, "data": {"state": "fail", "failMsg": "blocked by the safety filter", "failCode": "501"}}], "x")
+check("a failed task gives an empty URL instead of raising, so one bad picture cannot stop the job", _u5 == "" and len(_s5) == 2)
+_u6, _s6 = _run50([{"code": 402, "msg": "Insufficient credits"}], "x")
+check("a refused request (402: no credits) is not retried and gives an empty URL: kie.ai answers HTTP 200 with the code in the body", _u6 == "" and len(_s6) == 1)
+_u7, _s7 = _run50([{"code": 429, "msg": "rate limited"}, dict(_ok50), dict(_done50)], "x")
+check("a rate-limited request (429) was never queued, so it is sent again", _u7 == "http://img/a.jpg" and len(_s7) == 3)
+_u8, _s8 = _run50([dict(_ok50), _ue50.URLError("blip"), _ue50.URLError("blip"), dict(_done50)], "x")
+check("a few failed status checks are tolerated (the picture is already paid for)", _u8 == "http://img/a.jpg")
+_u9, _s9 = _run50([dict(_ok50)] + [_ue50.URLError("down")] * 5, "x")
+check("five in a row give up with an empty URL", _u9 == "" and len(_s9) == 6)
+_real_to = app.movie.IMAGE_POLL_TIMEOUT
+app.movie.IMAGE_POLL_TIMEOUT = -1
+_u10, _s10 = _run50([dict(_ok50)], "x")
+app.movie.IMAGE_POLL_TIMEOUT = _real_to
+check("a picture that never arrives times out (no endless loop) and is not resubmitted", _u10 == "" and len(_s10) == 1)
+check("FLUX is gone: no generate_flux_image anywhere, the job step has its new name",
+      not hasattr(app.movie, "generate_flux_image") and not hasattr(app, "_generate_flux_images") and hasattr(app, "_generate_reference_images")
+      and "flux" not in _insp44.getsource(app.movie.generate_image).lower() and "flux" not in _insp44.getsource(app._generate_reference_images).lower())
+
+import subprocess as _sp50, sys as _sys50
+_imp50 = _sp50.run([_sys50.executable, "-c", "import movie_scene_multispeaker as m, app; print(m.IMAGE_MODEL, m.LOCATION_EXTRA_VIEWS)"], capture_output=True, text=True, cwd=os.getcwd())
+check("the movie script can be started first (movie_scene_multispeaker and app import each other): no circular-import failure", _imp50.returncode == 0 and _imp50.stdout.strip() == "nano-banana-2-1 0", (_imp50.stdout, _imp50.stderr[-400:]))
+
+print("\n[51] Your own pictures in the plan review: upload a picture per character and per place; only what is left empty is generated")
+import struct as _st51
+import zlib as _zl51
+import tempfile as _tf51
+
+
+def _png51(w, h, shade=0x20):
+    raw = b"".join(b"\x00" + bytes([0x7f, shade, shade]) * w for _ in range(h))     # a flat colour: valid, and tiny once compressed
+
+    def chunk(t, d):
+        return _st51.pack(">I", len(d)) + t + d + _st51.pack(">I", _zl51.crc32(t + d) & 0xffffffff)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", _st51.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", _zl51.compress(raw, 9)) + chunk(b"IEND", b"")
+
+
+_keep51 = {n: getattr(app, n) for n in ("get_job", "update_job", "mutate_job", "_upload_to_kie", "MEDIA_DIR")}
+_store51, _kie51 = {}, {"calls": [], "fail": False}
+_tmp51 = _tf51.TemporaryDirectory()
+
+
+def _mutate51(jid, fn):
+    job = _store51[jid]
+    fn(job)
+    _store51[jid] = app.Job.model_validate(job.model_dump())
+    return _store51[jid]
+
+
+def _update51(jid, **f):
+    _store51[jid] = app.Job.model_validate({**_store51[jid].model_dump(), **f})
+    return _store51[jid]
+
+
+def _kie_up51(path):
+    if _kie51["fail"]:
+        raise RuntimeError("kie.ai is down")
+    _kie51["calls"].append(path.name)
+    return f"https://kie.example/{len(_kie51['calls'])}_{path.name}"
+
+
+app.get_job, app.update_job, app.mutate_job, app._upload_to_kie = (lambda jid: _store51.get(jid)), _update51, _mutate51, _kie_up51
+app.MEDIA_DIR = Path(_tmp51.name)
+_c51 = _TC43(app.app)
+try:
+    _j51 = _mkjob43()
+    _store51[_j51.id] = _j51
+    _id51 = _j51.id
+    _who51, _place51 = _pov43, _loc43
+    _base51 = f"/jobs/{_id51}/reference-images"
+    _slots = _c51.get(_base51).json()
+    check("the slots list every character and every place of the plan, empty and open to upload",
+          set(_slots["cast"]) == set(_cast43) and set(_slots["locations"]) == {l["id"] for l in _b43["locations"]}
+          and not _slots["cast"][_who51]["uploaded"] and _slots["cast"][_who51]["url"] is None and _slots["cast"][_who51]["locked"] is None, _slots)
+    _r = _c51.put(f"{_base51}/cast/{_who51}", content=_png51(720, 1280), headers={"Content-Type": "image/png"})
+    check("uploading a character's picture works: the slot says it is yours and carries the kie.ai link", _r.status_code == 200 and _r.json()["uploaded"] is True and _r.json()["url"].startswith("https://kie.example/"), (_r.status_code, _r.text[:300]))
+    _job = _store51[_id51]
+    _file1 = _job.uploaded_refs["cast"][_who51]["file"]
+    check("it is in cast_bank like a generated picture, our own copy is on disk, and the preview URL carries the file name", _job.cast_bank[_who51] == _r.json()["url"] and (Path(_tmp51.name) / _id51 / "refs" / _file1).is_file() and _r.json()["preview"].endswith(f"/file?v={_file1}"))
+    _r2 = _c51.put(f"{_base51}/locations/{_place51}", content=_png51(720, 1280, 0x60), headers={"Content-Type": "image/png"})
+    check("a place's picture goes into location_bank as a one-picture list", _r2.status_code == 200 and _store51[_id51].location_bank[_place51] == [_r2.json()["url"]])
+    _f = _c51.get(f"{_base51}/cast/{_who51}/file")
+    check("the uploaded picture can be fetched back from our own copy (for the preview)", _f.status_code == 200 and _f.headers["content-type"] == "image/png" and _f.content == _png51(720, 1280))
+    _r3 = _c51.put(f"{_base51}/cast/{_who51}", content=_png51(720, 1280, 0x90), headers={"Content-Type": "image/png"})
+    _file2 = _store51[_id51].uploaded_refs["cast"][_who51]["file"]
+    check("replacing a picture keeps one copy: the new file is there and the old one is gone", _r3.status_code == 200 and _file2 != _file1 and (Path(_tmp51.name) / _id51 / "refs" / _file2).is_file() and not (Path(_tmp51.name) / _id51 / "refs" / _file1).exists())
+    _d = _c51.delete(f"{_base51}/cast/{_who51}")
+    check("removing it puts the slot back to 'generate this one': bank entry and file are gone", _d.status_code == 200 and _d.json()["uploaded"] is False and _d.json()["url"] is None
+          and _who51 not in (_store51[_id51].cast_bank or {}) and not (Path(_tmp51.name) / _id51 / "refs" / _file2).exists())
+    check("removing what was never uploaded is a 404", _c51.delete(f"{_base51}/cast/{_who51}").status_code == 404)
+    # what is refused, and why
+    _bad = lambda data, ct="image/png", kind="cast", key=_who51: _c51.put(f"{_base51}/{kind}/{key}", content=data, headers={"Content-Type": ct})
+    _t = _bad(b"hello, this is not a picture")
+    check("a file that is not a JPEG, PNG or WebP is refused, whatever its name or type says", _t.status_code == 400 and "JPEG, PNG or WebP" in _t.json()["detail"], _t.text)
+    _files_before = sorted(p.name for p in (Path(_tmp51.name) / _id51 / "refs").glob("*"))
+    _t = _bad(_png51(120, 200))
+    check("a picture under 300 px a side is refused with the size and the limit (Seedance's rule), and nothing is left on disk", _t.status_code == 400 and "300" in _t.json()["detail"] and "120x200" in _t.json()["detail"]
+          and sorted(p.name for p in (Path(_tmp51.name) / _id51 / "refs").glob("*")) == _files_before, _t.text)
+    _t = _bad(_png51(3000, 300))
+    check("a picture whose width divided by height is outside 0.4 to 2.5 is refused", _t.status_code == 400 and "0.4" in _t.json()["detail"], _t.text)
+    _t = _bad(b"\x89PNG\r\n\x1a\n" + b"\0" * (26 * 1024 * 1024))
+    check("a picture over 25 MB is refused (413)", _t.status_code == 413, _t.status_code)
+    check("a name that is not in the plan is a 404", _bad(_png51(720, 1280), key="Nobody At All").status_code == 404)
+    check("a kind other than cast or locations is a 404", _bad(_png51(720, 1280), kind="props").status_code == 404)
+    _kie51["fail"] = True
+    _t = _bad(_png51(720, 1280, 0x33))
+    _kie51["fail"] = False
+    check("if kie.ai cannot take the picture the answer is 502, the slot stays empty and no stray file is kept", _t.status_code == 502 and _who51 not in (_store51[_id51].cast_bank or {})
+          and not [p for p in (Path(_tmp51.name) / _id51 / "refs").glob("*") if p.is_file() and p.name.startswith("cast_")], _t.text)
+    # locking
+    _lock = _mkjob43()
+    _lock = app.Job.model_validate({**_lock.model_dump(), "status": "generating"})
+    _store51[_lock.id] = _lock
+    _t = _c51.put(f"/jobs/{_lock.id}/reference-images/cast/{_who51}", content=_png51(720, 1280), headers={"Content-Type": "image/png"})
+    check("once the plan is approved (the job is running) no picture can be changed (409)", _t.status_code == 409 and "already approved" in _t.json()["detail"], _t.text)
+    _cont = _mkjob43()
+    _cont = app.Job.model_validate({**_cont.model_dump(), "cast_bank": {_who51: "https://old/face.jpg"},
+                                    "clips": [{"index": 0, "status": "done", "video_url": "https://v/1.mp4"}]})
+    _store51[_cont.id] = _cont
+    _t = _c51.put(f"/jobs/{_cont.id}/reference-images/cast/{_who51}", content=_png51(720, 1280), headers={"Content-Type": "image/png"})
+    _t2 = _c51.put(f"/jobs/{_cont.id}/reference-images/cast/{_other43}", content=_png51(720, 1280), headers={"Content-Type": "image/png"})
+    check("in a continuation a face the finished clips were made with stays (409), but a character with no picture yet can still get one", _t.status_code == 409 and "half way through" in _t.json()["detail"] and _t2.status_code == 200, (_t.text, _t2.text))
+    _slot_new = _c51.get(f"/jobs/{_cont.id}/reference-images").json()["cast"][_other43]
+    _rm_new = _c51.delete(f"/jobs/{_cont.id}/reference-images/cast/{_other43}")
+    check("a picture uploaded in this review (no clip made with it yet) can still be replaced or removed, even when earlier clips are done", _slot_new["uploaded"] and _slot_new["locked"] is None and _rm_new.status_code == 200, (_slot_new, _rm_new.text))
+    _used = _mkjob43()
+    _used = app.Job.model_validate({**_used.model_dump(), "cast_bank": {_who51: "https://k/u.png"}, "uploaded_refs": {"cast": {_who51: {"file": "x.png", "at": _time50.time(), "used": True}}},
+                                    "clips": [{"index": 0, "status": "done", "video_url": "https://v/1.mp4"}]})
+    _store51[_used.id] = _used
+    check("but one that finished clips were made with (marked used at approval) is locked like a generated one",
+          _c51.get(f"/jobs/{_used.id}/reference-images").json()["cast"][_who51]["locked"] and _c51.put(f"/jobs/{_used.id}/reference-images/cast/{_who51}", content=_png51(720, 1280), headers={"Content-Type": "image/png"}).status_code == 409)
+    _apr = _mkjob43()
+    _apr = app.Job.model_validate({**_apr.model_dump(), "cast_bank": {_who51: "https://k/u.png"}, "uploaded_refs": {"cast": {_who51: {"file": "x.png", "at": _time50.time()}}, "locations": {_place51: {"file": "y.png", "at": _time50.time()}}}})
+    _store51[_apr.id] = _apr
+    _real_q, _real_sv = app.execute_movie_job.delay, app._save_master_plan_file
+    app.execute_movie_job.delay, app._save_master_plan_file = (lambda jid: None), (lambda job: None)
+    try:
+        _ap = _c51.post(f"/jobs/{_apr.id}/approve-plan")
+    finally:
+        app.execute_movie_job.delay, app._save_master_plan_file = _real_q, _real_sv
+    _after = _store51[_apr.id]
+    check("approving the plan marks every uploaded picture as used (and starts the job)", _ap.status_code == 202 and _after.status == "generating"
+          and _after.uploaded_refs["cast"][_who51]["used"] is True and _after.uploaded_refs["locations"][_place51]["used"] is True and _after.uploaded_refs["cast"][_who51]["file"] == "x.png")
+    # the continuation case: clip 1 is done in one place, the continuation adds an outside place and its beat
+    _cb = _cp43.deepcopy(_b43)
+    _old_place = _cb["locations"][0]["id"]
+    _cb["locations"].append({**_cp43.deepcopy(_cb["locations"][0]), "id": "outside_front_garden", "description": "The mansion's front garden"})
+    _cj = _mkjob43()
+    _cj = app.Job.model_validate({**_cj.model_dump(), "movie_bible": _cb, "location_bank": {_old_place: ["https://gen/room.jpg"]},
+                                  "cast_bank": {n: f"https://gen/{i}.jpg" for i, n in enumerate(_cast43)},
+                                  "clips": [{"index": 0, "status": "done", "video_url": "https://v/1.mp4"}, {"index": 1, "status": "pending"}]})
+    _store51[_cj.id] = _cj
+    _cs = _c51.get(f"/jobs/{_cj.id}/reference-images").json()
+    check("continuation: the place the finished clip used stays locked, and the NEW outside place is open for an upload",
+          _cs["locations"][_old_place]["locked"] and _cs["locations"]["outside_front_garden"]["locked"] is None and _cs["locations"]["outside_front_garden"]["url"] is None, _cs["locations"])
+    _up = _c51.put(f"/jobs/{_cj.id}/reference-images/locations/outside_front_garden", content=_png51(720, 1280, 0x44), headers={"Content-Type": "image/png"})
+    _calls_c = []
+    _real_img51 = app.movie.generate_image
+    app.movie.generate_image = lambda prompt, input_images=None: (_calls_c.append(prompt) or "https://gen.example/new.jpg")
+    try:
+        _cc, _ll = app._generate_reference_images("t", _store51[_cj.id].movie_bible, _store51[_cj.id].cast_bank, _store51[_cj.id].location_bank)
+    finally:
+        app.movie.generate_image = _real_img51
+    check("continuation: the outside picture is uploaded, then approval generates NOTHING (the room's picture and the uploaded outside picture are both kept)",
+          _up.status_code == 200 and _calls_c == [] and _ll[_old_place] == ["https://gen/room.jpg"] and _ll["outside_front_garden"] == [_up.json()["url"]], (_up.text, _calls_c))
+    _store51[_cj.id] = app.Job.model_validate({**_store51[_cj.id].model_dump(), "location_bank": {_old_place: ["https://gen/room.jpg"]}, "uploaded_refs": None})
+    app.movie.generate_image = lambda prompt, input_images=None: (_calls_c.append(prompt) or "https://gen.example/new.jpg")
+    try:
+        _cc, _ll = app._generate_reference_images("t", _store51[_cj.id].movie_bible, _store51[_cj.id].cast_bank, _store51[_cj.id].location_bank)
+    finally:
+        app.movie.generate_image = _real_img51
+    check("and if you upload nothing for the new place, only that one place is generated (one image call), the old room and every face are untouched",
+          len(_calls_c) == 1 and _ll[_old_place] == ["https://gen/room.jpg"] and _ll["outside_front_garden"] == ["https://gen.example/new.jpg"], _calls_c)
+    # ---- names the plan does not have: shown on the beat, and approval is refused before anything is started ----
+    _bible_n = _cp43.deepcopy(_b43)
+    _pl_n = [l["id"] for l in _bible_n["locations"]]
+    _good_beats = _cp43.deepcopy(_mkjob43().beats)
+    check("a plan whose places and people are all in the bible has no problems (so a good plan is never refused)", app.plan_name_problems(_good_beats, _bible_n) == [], app.plan_name_problems(_good_beats, _bible_n))
+    _bad_place = _cp43.deepcopy(_good_beats)
+    _bad_place[1]["location_id"] = "mars_base"
+    _pn = app.plan_name_problems(_bad_place, _bible_n)
+    check("a beat set in a place the plan does not have is named, with the places it could use", len(_pn) == 1 and _pn[0].startswith("Beat 2:") and "'mars_base'" in _pn[0] and _pl_n[0] in _pn[0], _pn)
+    _two = _cp43.deepcopy(_good_beats)
+    _two[2]["location_id"] = f"{_pl_n[0]}, {_pl_n[-1]}"
+    _two[3]["location_id"] = f"{_pl_n[0]}_and_{_pl_n[-1]}"
+    _two[4]["location_id"] = "x"
+    _two[4]["location_ids"] = [_pl_n[0], _pl_n[-1]]
+    check("a beat set in two of the plan's places is fine, however it is written (comma, _and_, or a list)", app.plan_name_problems(_two, _bible_n) == [], app.plan_name_problems(_two, _bible_n))
+    _half = _cp43.deepcopy(_good_beats)
+    _half[2]["location_id"] = f"{_pl_n[0]}, atlantis"
+    _ph = app.plan_name_problems(_half, _bible_n)
+    check("with two places, only the one that is missing is named", len(_ph) == 1 and "'atlantis'" in _ph[0] and _pl_n[0] not in _ph[0].split("is not one of")[0], _ph)
+    _ppl = _cp43.deepcopy(_good_beats)
+    _ppl[0]["present_characters"] = list(_ppl[0].get("present_characters") or []) + ["Brand New Person"]
+    _ppl[1]["audio_lines"] = list(_ppl[1].get("audio_lines") or []) + [{"speaker": "Ghost Speaker (V.O.)", "line": "boo", "is_voiceover": True}]
+    _pp = app.plan_name_problems(_ppl, _bible_n)
+    check("a person on screen, or speaking (a '(V.O.)' tag is ignored), who is not in the cast is named; names are not case sensitive",
+          len(_pp) == 2 and "'Brand New Person'" in _pp[0] and "'Ghost Speaker'" in _pp[1] and app.plan_name_problems([{"location_id": _pl_n[0], "present_characters": [_pov43.upper()]}], _bible_n) == [], _pp)
+    check("beats whose clips are already rendered are skipped (a continuation is not blocked by what is already done)", app.plan_name_problems(_bad_place, _bible_n, skip={1}) == [])
+    check("a bible with no places or no cast (nothing to check against) never blocks", app.plan_name_problems(_bad_place, {"characters": [], "locations": []}) == [])
+    _long = [{"location_id": f"nowhere{i}"} for i in range(9)]
+    _msg = app._plan_problems_message(app.plan_name_problems(_long, _bible_n))
+    check("the message is short for a long list (6 shown, the rest counted) and says nothing was started", _msg.count("is not one of the plan's places") == 6 and "(and 3 more)" in _msg and "Nothing was started" in _msg, _msg)
+    _bj = _mkjob43()
+    _bj = app.Job.model_validate({**_bj.model_dump(), "beats": _bad_place})
+    _store51[_bj.id] = _bj
+    _queued52 = []
+    _real_q, _real_sv = app.execute_movie_job.delay, app._save_master_plan_file
+    app.execute_movie_job.delay, app._save_master_plan_file = (lambda jid: _queued52.append(jid)), (lambda job: None)
+    try:
+        _ap1 = _c51.post(f"/jobs/{_bj.id}/approve-plan")
+        _state1, _q1 = _store51[_bj.id].status, list(_queued52)
+        _sv1 = _c51.patch(f"/jobs/{_bj.id}/plan", json={"beats": _bad_place})
+        _fixed = _cp43.deepcopy(_bad_place)
+        _fixed[1]["location_id"] = _pl_n[0]
+        _ap2 = _c51.post(f"/jobs/{_bj.id}/approve-plan", json={"beats": _fixed})
+        _q2 = list(_queued52)
+        _bj3 = app.Job.model_validate({**_mkjob43().model_dump(), "beats": _bad_place, "clips": [{"index": 0, "status": "done", "video_url": "https://v/0.mp4"}, {"index": 1, "status": "done", "video_url": "https://v/1.mp4"}]})
+        _store51[_bj3.id] = _bj3
+        _ap3 = _c51.post(f"/jobs/{_bj3.id}/approve-plan")
+    finally:
+        app.execute_movie_job.delay, app._save_master_plan_file = _real_q, _real_sv
+    check("approving a plan with an unknown place is refused (422) with the beat and the places, the job stays in review and nothing is queued",
+          _ap1.status_code == 422 and "Beat 2" in _ap1.json()["detail"] and "mars_base" in _ap1.json()["detail"] and _state1 == "plan_ready" and _q1 == [], (_ap1.status_code, _ap1.text[:300], _state1, _q1))
+    check("saving edits with the bad place is still allowed (it is only a draft)", _sv1.status_code == 200, _sv1.text[:200])
+    check("fixing the place in the request itself lets the approval through", _ap2.status_code == 202 and _q2 == [_bj.id], (_ap2.status_code, _ap2.text[:200], _q2))
+    check("a beat whose clip is already done is not held against a continuation", _ap3.status_code == 202, (_ap3.status_code, _ap3.text[:200]))
+    check("a Talking Head job has no such slots",_c51.put(f"/jobs/{_store51 and next(iter(_store51))}/reference-images/cast/x", content=b"x").status_code in (400, 404))
+    # the pipeline leaves them alone
+    _calls51 = []
+    _real_img51 = app.movie.generate_image
+    app.movie.generate_image = lambda prompt, input_images=None: (_calls51.append(prompt) or f"https://gen.example/{len(_calls51)}.jpg")
+    try:
+        _bible51 = _cp43.deepcopy(_b43)
+        _have_cast = {_who51: "https://kie.example/mine.png"}
+        _have_locs = {_place51: ["https://kie.example/mine_place.png"]}
+        _c_out, _l_out = app._generate_reference_images("t", _bible51, _have_cast, _have_locs)
+    finally:
+        app.movie.generate_image = _real_img51
+    _other_places = [l["id"] for l in _bible51["locations"] if l["id"] != _place51]
+    check("generation only makes what is missing: an uploaded character and place are kept as they are and never regenerated",
+          _c_out[_who51] == "https://kie.example/mine.png" and _l_out[_place51] == ["https://kie.example/mine_place.png"]
+          and len(_calls51) == (len(_cast43) - 1) + len(_other_places), (len(_calls51), _c_out, _l_out))
+    # stale uploads
+    _st = _mkjob43()
+    _refs_dir = Path(_tmp51.name) / _st.id / "refs"
+    _refs_dir.mkdir(parents=True)
+    (_refs_dir / "cast_old.png").write_bytes(_png51(720, 1280))
+    (_refs_dir / "cast_new.png").write_bytes(_png51(720, 1280, 0x70))
+    _now51 = _time50.time()
+    _st = app.Job.model_validate({**_st.model_dump(), "cast_bank": {_who51: "https://dead.example/old.png", _other43: "https://live.example/new.png"},
+                                  "uploaded_refs": {"cast": {_who51: {"file": "cast_old.png", "at": _now51 - 25 * 3600}, _other43: {"file": "cast_new.png", "at": _now51 - 60}}}})
+    _store51[_st.id] = _st
+    _kie51["calls"].clear()
+    _c_fresh, _l_fresh = app._fresh_reference_banks(_st.id)
+    check("before a clip is built, an uploaded picture older than 23 hours is sent to kie.ai again from our copy, and a recent one is left alone",
+          _kie51["calls"] == ["cast_old.png"] and _c_fresh[_who51].startswith("https://kie.example/") and _c_fresh[_other43] == "https://live.example/new.png"
+          and _store51[_st.id].uploaded_refs["cast"][_who51]["at"] > _now51 - 5 and _store51[_st.id].cast_bank[_who51] == _c_fresh[_who51], (_kie51["calls"], _c_fresh))
+    _kie51["calls"].clear()
+    app._fresh_reference_banks(_st.id)
+    check("and not again straight away", _kie51["calls"] == [])
+    _src51 = _insp44.getsource(app)
+    check("every place that builds a clip's prompt from the pictures refreshes them first (Narrated Drama, Story Videos, regenerate)", _src51.count("_fresh_reference_banks(job_id)") == 3)
+finally:
+    app.get_job, app.update_job, app.mutate_job, app._upload_to_kie, app.MEDIA_DIR = (_keep51[n] for n in ("get_job", "update_job", "mutate_job", "_upload_to_kie", "MEDIA_DIR"))
+    _tmp51.cleanup()
+_dash51 = open("dashboard.html", encoding="utf-8").read()
+check("the dashboard puts a slot for every character in the beat and for its place under each Narrated Drama beat, with upload, replace and remove",
+      all(s in _dash51 for s in ("function buildBeatRefs(", "Pictures for this beat", "/reference-images/", 'method, headers: contentType', "removeRef(kind, key)", 'id="ref-intro"', "Will be generated", "Your picture")))
+check("slots repaint from the job after every upload, so a character in several beats shows the same state everywhere, without rebuilding the beat cards (which would lose unsaved edits)",
+      "function applySlotToJob(" in _dash51 and "paintAllRefs" in _dash51 and "const refBox = job.mode === \"narrated_drama\"" in _dash51)
+check("the dashboard marks each beat that names a place or person the plan lacks (reading the Location box as it is typed), shows a banner, and blocks Approve until fixed",
+      all(s in _dash51 for s in ("function beatNameProblems(", "function refreshPlanWarnings(", 'id="plan-warn"', 'class="beat-warn"' if False else "beat-warn", 'locInput.addEventListener("input", refreshPlanWarnings)', "Approve is blocked until", "btn.disabled = bad.length > 0")))
+check("Story Videos beats do not name their people, so the whole cast and every place get one panel there", 'id="film-refs"' in _dash51 and "function renderFilmRefs(" in _dash51 and 'job.mode === "story_videos"' in _dash51)
+
+_cb52 = {"pov_protagonist": "Vivian Ashford", "characters": [{"name": "Vivian Ashford", "appearance": {"hair_color": "dark brown"}}],
+         "locations": [{"id": "ashford_mansion_grand_drawing_room", "description": "the drawing room"}], "props": []}
+_hdr = "[INT. ASHFORD MANSION — GRAND DRAWING ROOM — DAY. CONTINUOUS. High ceilings, chandelier.]"
+_same = hnd.extend_bible_with_continuation(_hdr, _cb52)
+check("a continuation whose scene header is the SAME room (its id is the first four words of the existing id) does not add a second drawing room",
+      [l["id"] for l in _same["locations"]] == ["ashford_mansion_grand_drawing_room"], [l["id"] for l in _same["locations"]])
+_new = hnd.extend_bible_with_continuation("[EXT. HARBOUR WAREHOUSE — NIGHT. Rain on the quay.]", _cb52)
+check("a genuinely new place in a continuation header is still added", "harbour_warehouse" in [l["id"] for l in _new["locations"]] and len(_new["locations"]) == 2, [l["id"] for l in _new["locations"]])
+_other_room = hnd.extend_bible_with_continuation("[INT. ASHFORD MANSION — KITCHEN — DAY.]", _cb52)
+check("a different room of the same house is a new place, not the drawing room", "ashford_mansion_kitchen" in [l["id"] for l in _other_room["locations"]], [l["id"] for l in _other_room["locations"]])
+print("\n[53] A cutaway the plan asks for: the camera can show ANY meaningful person, prop or detail while a line's voice carries on")
+
+
+def _tc(spk, line, cut="", d="sharp", vo=False):
+    t = _t48(spk, line, d, vo)
+    t["cutaway"] = cut
+    return t
+
+
+_fist = "Rosie's small fist, a thin red cut across her knuckles"
+_ln_a = "Don't go soft now. Kids only respect fear. Make her give back the bracelet she stole from you."
+_item = hnd.OUTLINE_SCHEMA["properties"]["beats"]["items"]["properties"]["audio_lines"]["items"]
+check("the plan's lines have a required 'cutaway' (empty when none), for the single-call plan and the act-by-act and continuation plans alike",
+      "cutaway" in _item["properties"] and "cutaway" in _item["required"]
+      and hnd.ACT_BEATS_SCHEMA["properties"]["beats"] is hnd.OUTLINE_SCHEMA["properties"]["beats"], _item["required"])
+_o15b = hnd._narrated_outline_prompt("a story", 180, 12)[0]
+_o5b = hnd._narrated_outline_prompt("a story", 120, 24)[0]
+check("both planners are told about cutaways for 10-15 s clips (a person's reaction or a prop or detail the story needs seen, on the line the camera is away during, and a speaker's consecutive lines stay separate); the 5 s prompt is untouched",
+      all(x in _o15b for x in ("CUTAWAYS WHILE A LINE IS STILL BEING SPOKEN", "a prop or a detail" if False else "prop or detail", "Never on an inner thought", "consecutive lines stay SEPARATE lines"))
+      and "CUTAWAYS WHILE A LINE" not in _o5b and "{_CUTAWAY_RULE}" in _insp44.getsource(hnd._narrated_act_beats_prompt))
+check("a cutaway names a person in shot (their reaction), or any detail; the speaker's own name or nothing names nothing",
+      hnd._cutaway_target("Theo", ["Margot", "Theo"], "Margot") == ("person", "Theo") and hnd._cutaway_target("Rosie's", ["Rosie Vale"], "Margot") == ("person", "Rosie Vale")
+      and hnd._cutaway_target(_fist, ["Margot", "Rosie"], "Margot") == ("detail", _fist) and hnd._cutaway_target("Margot", ["Margot"], "Margot") is None and hnd._cutaway_target("  ", ["Margot"], "Margot") is None)
+check("a line the plan gave a cutaway to may be split in shorter pieces (6 words, 3 + 3); without a cutaway the same line stays whole",
+      hnd._live_segments("Stop right now. Put it down.", relaxed=True) == ["Stop right now.", "Put it down."] and hnd._live_segments("Stop right now. Put it down.") == ["Stop right now. Put it down."])
+# the premise's own split (two consecutive lines by Margot), the cutaway on the second, a prop
+_pm = _build48(_clip48([_tc(_other43, _ln_a), _tc(_other43, "The one you promised me.", _fist), _tc(_pov43, "Rosie, is your hand bleeding?")]))
+check("the cutaway on the second of two lines is what the camera shows while Margot's voice concludes: the fist, with every mouth closed (not Vivian)",
+      f"[Camera cuts to {_fist}, filmed close, while {_other43}'s voice continues off-camera. Nobody on screen speaks:]" in _pm and f"{_other43.upper()} (off-screen, concluding line" in _pm
+      and "[Every mouth on screen stays strictly closed with lips firmly motionless; zero lip movement.]" in _pm and f"Camera cuts to {_pov43} in a tight close-up" not in _pm, _pm)
+check("the speaker is on camera speaking the first part BEFORE the cut to the detail, and no word is lost",
+      _pm.index("Don't go soft now.") < _pm.index("Camera cuts to Rosie's small fist") < _pm.index("The one you promised me.") and "Make her give back the bracelet she stole from you." in _pm)
+check("a cutaway that names a cast member is that person's tight close-up with a closed mouth (when they are in shot); otherwise the detail form",
+      f"Camera cuts to {_pov43} in a tight close-up" in _build48(_clip48([_tc(_other43, _ln_a, _pov43)])) and f"[Camera cuts to {_pov43}, filmed close" not in _build48(_clip48([_tc(_other43, _ln_a, _pov43)])))
+_pa2 = _build48(_clip48([_tc(_other43, _ln_a, _fist)]))
+check("one long line the plan gave a cutaway to is split with the plan's cutaway, even with nobody else to cut to (a detail needs no listener)",
+      "Camera cuts to Rosie's small fist" in _pa2 and _pa2.count("Camera cuts to") == 1, _pa2)
+_ps = _build48(_clip48([_tc(_other43, "Stop right now. Put it down.", "the knife in her hand"), _tc(_pov43, "Why?")]))
+check("a SHORT line the plan gave a cutaway to is still split for it (relaxed pieces); the same line with no cutaway stays whole",
+      "Camera cuts to the knife in her hand" in _ps and "Camera cuts to" not in _build48(_clip48([_tc(_other43, "Stop right now. Put it down."), _tc(_pov43, "Why?")])), _ps)
+_pv = _build48(_clip48([_tc(_pov43, "Wait. Where am I? What is happening to me right now?", "the door", "(V.O. - inner thought, raw)", True), _tc(_other43, "Who are you?")]))
+check("an inner thought is never cut away from, whatever cutaway it carries", "Camera cuts to" not in _pv and "The camera stays locked on" in _pv and "(off-screen" not in _pv, _pv)
+_p3 = _build48(_clip48([_tc(_other43, "Put the knife down now, please. Do it right now.", "the knife on the table"), _tc(_pov43, "I will not. It is mine. You cannot have it.", "her white knuckles"),
+                        _tc(_other43, "Then I will take it. Give it here. Do it now.", "the open door"), _tc(_pov43, "Fine.")]))
+check("every line the plan gave a cutaway to gets it, even beyond the usual cap of cutaways per clip (it asked for them)", _p3.count("Camera cuts to") == 3, _p3.count("Camera cuts to"))
+_p_none = _build48(_clip48([_tc(_other43, _ln_a), _tc(_pov43, "Rosie, is your hand bleeding?")]))
+check("with no cutaway anywhere the clip is built exactly as before (the cut goes to the person being answered)", f"Camera cuts to {_pov43} in a tight close-up" in _p_none and "filmed close" not in _p_none)
+# carrying the extras through code that rebuilds a beat's lines
+_old = [{"speaker": _pov43, "line": "old words", "is_voiceover": True, "cutaway": ""}, {"speaker": _other43, "line": "old second line here", "is_voiceover": False, "cutaway": "the door"}]
+_new = hnd._carry_line_fields(_old, [{"speaker": _pov43, "line": "new words"}, {"speaker": _other43, "line": "new second"}, {"speaker": _pov43, "line": "third"}])
+check("a rewritten line keeps its inner-thought flag and its cutaway when the same person says it at the same position, and a new line starts without them",
+      _new[0].get("is_voiceover") is True and _new[1].get("cutaway") == "the door" and "is_voiceover" not in _new[2] and "cutaway" not in _new[2], _new)
+_swap = hnd._carry_line_fields(_old, [{"speaker": _other43, "line": "x"}, {"speaker": _pov43, "line": "y"}])
+check("but not when a different person now says it", "is_voiceover" not in _swap[0] and "cutaway" not in _swap[1], _swap)
+_beat_rw = {"delivery_mode": "dialogue", "location_id": _loc43, "audio_lines": _old, "summary": "s", "turn": "t"}
+_rw = hnd._put_rewrite(_beat_rw, {"summary": "s2", "turn": "t2", "audio_lines": [{"speaker": _pov43, "line": "thinking again"}, {"speaker": _other43, "line": "answering again"}]}, _b43)
+check("a plan revision that rewrites a clip no longer turns its inner thought into dialogue, and keeps the cutaway",
+      _rw["audio_lines"][0].get("is_voiceover") is True and _rw["audio_lines"][1].get("cutaway") == "the door", _rw["audio_lines"])
+check("the fact repair carries them too", '_carry_line_fields(beat.get("audio_lines"), lines)' in _insp44.getsource(hnd._repair_missing_facts))
+_clip_cp = {"speech": [{"speaker": _pov43, "line": "a"}, {"speaker": _other43, "line": "b"}]}
+hnd._copy_line_fields(_clip_cp, {"audio_lines": _old})
+_clip_bad = {"speech": [{"speaker": _pov43, "line": "a"}]}
+hnd._copy_line_fields(_clip_bad, {"audio_lines": _old})
+check("the plan's cutaway and inner-thought flag are copied onto the finished clip's turns by position (never when the line counts differ)",
+      _clip_cp["speech"][0].get("is_voiceover") is True and "cutaway" not in _clip_cp["speech"][0] and _clip_cp["speech"][1].get("cutaway") == "the door" and "cutaway" not in _clip_bad["speech"][0])
+check("the chapter writer copies them at both of its returns", _insp44.getsource(hnd.write_narrated_chapter).count("_copy_line_fields(") == 2)
+check("the dashboard shows each line's cutaway (and marks inner thoughts) in the beat's Spoken list", "camera cuts to:" in _dash51 and ", inner thought" in _dash51)
+
+print("\n[54] A connection that drops while a paid clip renders: never pay twice, wait on the same task, and attach a finished task by hand")
+import httpx as _hx54
+import tempfile as _tf54
+
+_calls54 = []
+_script54 = []
+
+
+def _fake_generate54(**kw):
+    _calls54.append({"resume": kw.get("resume_task_id"), "has_cb": kw.get("on_task_id") is not None})
+    step = _script54.pop(0)
+    if step.get("task") and kw.get("on_task_id"):
+        kw["on_task_id"](step["task"])          # kie.ai accepted the job
+    if step.get("raise"):
+        raise step["raise"]
+    return step["result"]
+
+
+_keep54 = (hnd.generate_clip, hnd.time.sleep)
+hnd.generate_clip, hnd.time.sleep = _fake_generate54, (lambda s_: None)
+try:
+    _d54 = Path(_tf54.mkdtemp())
+    # 1. the connection drops while polling: the retry waits for the SAME task and does not submit again
+    _calls54.clear()
+    _script54[:] = [{"task": "T1", "raise": _hx54.ConnectError("Name or service not known")}, {"result": {"video_url": "https://v/1.mp4", "task_id": "T1", "credits_consumed": 57}}]
+    _r1 = hnd.render_narrated_clip(1, "PROMPT A", ["i1"], ["a1"], out_dir=_d54)
+    _rec1 = json.loads((_d54 / "requests" / "clip_01.json").read_text(encoding="utf-8"))
+    check("after a dropped connection the retry waits for the SAME kie.ai task (resume_task_id) instead of submitting the clip again",
+          _r1["video_url"] == "https://v/1.mp4" and [c["resume"] for c in _calls54] == [None, "T1"] and _rec1["task_id"] == "T1" and "kie_reply" in _rec1, (_calls54, _rec1.get("task_id")))
+    # 2. kie.ai itself says the task FAILED: the next try is a fresh submission
+    _calls54.clear()
+    _script54[:] = [{"task": "T2", "raise": hnd.KieError("task T2 failed (500): boom", "500")}, {"task": "T3", "result": {"video_url": "https://v/3.mp4", "task_id": "T3"}}]
+    _r2 = hnd.render_narrated_clip(2, "PROMPT B", [], [], out_dir=_d54)
+    check("but a task kie.ai reports as failed is not waited for again: the retry is a NEW submission", [c["resume"] for c in _calls54] == [None, None] and _r2["task_id"] == "T3", _calls54)
+    # 3. an earlier RUN sent this prompt and never saw it finish: a later run waits for that task; a different prompt does not
+    (_d54 / "requests" / "clip_03.json").write_text(json.dumps({"attempts": [], "task_id": "T9", "sent_to_kie": {"model": "m", "input": {"prompt": "PROMPT C"}}}), encoding="utf-8")
+    _calls54.clear()
+    _script54[:] = [{"result": {"video_url": "https://v/9.mp4", "task_id": "T9"}}]
+    hnd.render_narrated_clip(3, "PROMPT C", [], [], out_dir=_d54)
+    check("a later run (Resume) of a clip whose earlier task was never seen finishing waits for that task when the prompt is the same", [c["resume"] for c in _calls54] == ["T9"], _calls54)
+    (_d54 / "requests" / "clip_04.json").write_text(json.dumps({"attempts": [], "task_id": "T8", "sent_to_kie": {"model": "m", "input": {"prompt": "OLD PROMPT"}}}), encoding="utf-8")
+    _calls54.clear()
+    _script54[:] = [{"task": "T10", "result": {"video_url": "https://v/10.mp4", "task_id": "T10"}}]
+    hnd.render_narrated_clip(4, "NEW PROMPT", [], [], out_dir=_d54)
+    check("but not when the prompt changed (the old task belongs to different words)", [c["resume"] for c in _calls54] == [None], _calls54)
+    (_d54 / "requests" / "clip_05.json").write_text(json.dumps({"attempts": [], "task_id": "T7", "sent_to_kie": {"model": "m", "input": {"prompt": "P5"}}, "kie_reply": {"video_url": "u"}}), encoding="utf-8")
+    _calls54.clear()
+    _script54[:] = [{"task": "T11", "result": {"video_url": "https://v/11.mp4", "task_id": "T11"}}]
+    hnd.render_narrated_clip(5, "P5", [], [], out_dir=_d54)
+    check("and not when that clip had already finished", [c["resume"] for c in _calls54] == [None], _calls54)
+finally:
+    hnd.generate_clip, hnd.time.sleep = _keep54
+
+# the polling itself rides out a long outage (it used to give up after five failed checks)
+class _Client54:
+    def __init__(self, fail_times, then):
+        self.fail, self.then, self.n = fail_times, then, 0
+
+    def get(self, *a, **k):
+        self.n += 1
+        if self.n <= self.fail:
+            raise _hx54.ConnectError("Name or service not known")
+        return self.then
+
+
+_keep54b = (app._unwrap, app.time.sleep, app.KIE_POLL_OUTAGE)
+app._unwrap, app.time.sleep = (lambda r_: r_), (lambda s_: None)
+try:
+    _ok54 = {"state": "success", "resultJson": json.dumps({"resultUrls": ["https://v/ok.mp4"]})}
+    _c_ok = _Client54(40, _ok54)
+    _w1 = app._wait_for_clip(_c_ok, "TASK")
+    check("polling rides out 40 failed checks in a row (a long outage) and still gets the finished clip", _w1["video_url"] == "https://v/ok.mp4" and _c_ok.n == 41, _c_ok.n)
+    app.KIE_POLL_OUTAGE = -1
+    try:
+        app._wait_for_clip(_Client54(3, _ok54), "TASK")
+        _gave_up = False
+    except _hx54.TransportError:
+        _gave_up = True
+    check("and gives up only when the unbroken outage is longer than KIE_POLL_OUTAGE", _gave_up)
+finally:
+    app._unwrap, app.time.sleep, app.KIE_POLL_OUTAGE = _keep54b
+
+# generate_clip: reports the task id the moment kie.ai accepts it, and can wait on an existing task without submitting
+class _Posts54:
+    posted = 0
+
+
+class _Ctx54:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def post(self, *a, **k):
+        _Posts54.posted += 1
+        return {"taskId": "TX"}
+
+    def get(self, *a, **k):
+        return {"state": "success", "resultJson": json.dumps({"resultUrls": ["https://v/x.mp4"]})}
+
+
+_keep54c = (app._kie_client, app._unwrap, app.time.sleep)
+app._kie_client, app._unwrap, app.time.sleep = (lambda *a, **k: _Ctx54()), (lambda r_: r_), (lambda s_: None)
+try:
+    _seen54 = []
+    _g1 = app.generate_clip("p", "480p", 15, on_task_id=_seen54.append)
+    _p1 = _Posts54.posted
+    _g2 = app.generate_clip("p", "480p", 15, on_task_id=_seen54.append, resume_task_id="TY")
+    check("generate_clip hands the task id to its caller as soon as kie.ai accepts the job", _seen54 == ["TX"] and _g1["task_id"] == "TX" and _p1 == 1)
+    check("and with resume_task_id it submits nothing and waits for that task", _Posts54.posted == 1 and _g2["task_id"] == "TY" and _seen54 == ["TX"])
+    _g3 = app.generate_clip("p", "480p", 15, on_task_id=lambda t_: 1 / 0)
+    check("a failing task-id callback can never lose a paid clip", _g3["video_url"] == "https://v/x.mp4")
+finally:
+    app._kie_client, app._unwrap, app.time.sleep = _keep54c
+
+# attach a finished kie.ai task to a clip by hand
+_keep54d = {n: getattr(app, n) for n in ("get_job", "update_job", "update_clip", "_kie_task_state", "_local_clip_movie", "_bank_clip_voices", "job_is_running", "MEDIA_DIR")}
+_keep54e = app.assemble_task.delay
+_store54, _log54 = {}, {"banked": 0, "assembled": [], "state": None}
+_tmp54 = _tf54.TemporaryDirectory()
+
+
+def _uc54(jid, idx, **f):
+    j_ = _store54[jid].model_dump()
+    j_["clips"][idx] = {**j_["clips"][idx], **f}
+    _store54[jid] = app.Job.model_validate(j_)
+    return _store54[jid]
+
+
+def _uj54(jid, **f):
+    _store54[jid] = app.Job.model_validate({**_store54[jid].model_dump(), **f})
+    return _store54[jid]
+
+
+app.get_job, app.update_job, app.update_clip = (lambda jid: _store54.get(jid)), _uj54, _uc54
+app._kie_task_state = lambda tid: _log54["state"] if not isinstance(_log54["state"], Exception) else (_ for _ in ()).throw(_log54["state"])
+app._local_clip_movie = lambda jid, idx, url: Path(_tmp54.name) / "clip.mp4"
+app._bank_clip_voices = lambda *a, **k: (_log54.__setitem__("banked", _log54["banked"] + 1) or True)
+app.job_is_running = lambda jid: _log54.get("running", False)
+app.MEDIA_DIR = Path(_tmp54.name)
+app.assemble_task.delay = lambda jid: _log54["assembled"].append(jid)
+_c54 = _TC43(app.app)
+try:
+    def _job54(**kw):
+        j_ = _mkjob43()
+        return app.Job.model_validate({**j_.model_dump(), "status": "failed", "error": "narrated clip 2 failed after retries",
+                                       "clips": [{"index": 0, "status": "done", "video_url": "https://v/0.mp4"}, {"index": 1, "status": "generating", "movie_script": {"delivery_mode": "dialogue", "speech": []}}], **kw})
+    _j54 = _job54()
+    _store54[_j54.id] = _j54
+    _url54 = f"/jobs/{_j54.id}/clips/1/attach-task"
+    _log54["state"] = {"state": "generating", "video_url": None, "fail_msg": None, "fail_code": None, "credits": None}
+    _a0 = _c54.post(_url54, json={"task_id": "kie-task-123"})
+    check("a task that is still rendering is refused (409) and nothing changes", _a0.status_code == 409 and "not finished" in _a0.json()["detail"] and _store54[_j54.id].clips[1].status == "generating", _a0.text)
+    _log54["state"] = {"state": "fail", "video_url": None, "fail_msg": "audio filter", "fail_code": "501", "credits": 0}
+    _a1 = _c54.post(_url54, json={"task_id": "kie-task-123"})
+    check("a task kie.ai reports as failed is refused with its reason (422)", _a1.status_code == 422 and "audio filter" in _a1.json()["detail"], _a1.text)
+    _log54["state"] = RuntimeError("no route to host")
+    check("if kie.ai cannot be asked the answer is 502 and nothing changes", _c54.post(_url54, json={"task_id": "kie-task-123"}).status_code == 502 and _store54[_j54.id].clips[1].status == "generating")
+    _log54["state"] = {"state": "success", "video_url": "https://v/clip2.mp4", "fail_msg": None, "fail_code": None, "credits": 57.0}
+    _log54["running"] = True
+    check("while a task is running the job, nothing is attached (409)", _c54.post(_url54, json={"task_id": "kie-task-123"}).status_code == 409)
+    _log54["running"] = False
+    _a2 = _c54.post(_url54, json={"task_id": "kie-task-123"})
+    _after = _store54[_j54.id]
+    check("a finished task is attached: the clip is done with that video, voices are banked, the job is done and the final video is queued, with nothing rendered again",
+          _a2.status_code == 200 and _after.clips[1].status == "done" and _after.clips[1].video_url == "https://v/clip2.mp4" and _after.clips[1].resolution == "480p"
+          and _log54["banked"] == 1 and _after.status == "done" and _after.error is None and _log54["assembled"] == [_j54.id]
+          and _a2.json()["credits_consumed"] == 57.0 and _a2.json()["voices_banked"] is True, (_a2.status_code, _a2.text))
+    _rec54 = json.loads((Path(_tmp54.name) / _j54.id / "requests" / "clip_02.json").read_text(encoding="utf-8"))
+    check("the request record keeps the task id and notes it was attached by hand (so a later run never waits on or re-sends it)", _rec54["task_id"] == "kie-task-123" and _rec54["kie_reply"]["attached_by_hand"] is True)
+    check("a clip that already has its video cannot be attached over (409)", _c54.post(_url54, json={"task_id": "kie-task-123"}).status_code == 409)
+    _j55 = _job54()
+    _j55 = app.Job.model_validate({**_j55.model_dump(), "clips": [{"index": 0, "status": "done", "video_url": "https://v/0.mp4"}, {"index": 1, "status": "pending"}]})
+    _store54[_j55.id] = _j55
+    check("a clip with no script yet cannot own a task (409)", _c54.post(f"/jobs/{_j55.id}/clips/1/attach-task", json={"task_id": "kie-task-123"}).status_code == 409)
+    check("a clip number that does not exist is a 404, and a too-short task id is a 422", _c54.post(f"/jobs/{_j54.id}/clips/9/attach-task", json={"task_id": "kie-task-123"}).status_code == 404 and _c54.post(_url54, json={"task_id": "x"}).status_code == 422)
+    _j56 = _job54()
+    _j56 = app.Job.model_validate({**_j56.model_dump(), "mode": "story_videos", "request": {**_j56.request.model_dump(), "mode": "story_videos"}})
+    _store54[_j56.id] = _j56
+    check("only Narrated Drama can attach a task (400)", _c54.post(f"/jobs/{_j56.id}/clips/1/attach-task", json={"task_id": "kie-task-123"}).status_code == 400)
+finally:
+    for _n, _v in _keep54d.items():
+        setattr(app, _n, _v)
+    app.assemble_task.delay = _keep54e
+    _tmp54.cleanup()
+check("the job loop and the attach tool share ONE voice-banking helper", "_bank_clip_voices(job_id, i, clip_script, clip_file, beats, clip_dur, voice_bank)" in _insp44.getsource(app._continue_narrated_drama_job)
+      and "_bank_clip_voices(job_id, clip_index, clip.movie_script" in _insp44.getsource(app.attach_kie_task))
+
+print("\n[55] A continuation's own text (opening pose, shots, delivery) reaches the clip writer, and rapid-fire dialogue opens close, not on a wide shot")
+_note55 = "[FRAME 0.0s OPENING POSE & BLOCKING: Margot already has an arm around Vivian. Theo shields Rosie across the rug.]\nMARGOT: (whispering urgently) \"Viv, what are you doing?\""
+_notes55 = [{"start_clip": 2, "end_clip": 2, "text": _note55}, {"start_clip": 5, "end_clip": 7, "text": "THIRD EPISODE TEXT"}]
+check("the premise for a clip a continuation covers gets its text, headed as the author's shot list for exactly that clip",
+      hnd.topic_with_continuation("PREMISE", _notes55, 2).startswith("PREMISE\n\nDIRECTIONS FOR CLIP 2 (the author's own shot list for exactly this clip;") and _note55 in hnd.topic_with_continuation("PREMISE", _notes55, 2))
+check("a continuation of several clips says 'CLIPS 5 TO 7' and each of them gets it", all("DIRECTIONS FOR CLIPS 5 TO 7" in hnd.topic_with_continuation("P", _notes55, n) and "THIRD EPISODE TEXT" in hnd.topic_with_continuation("P", _notes55, n) for n in (5, 6, 7)))
+check("a clip no continuation covers (the first clips) gets the premise unchanged, and so does a job with no notes", hnd.topic_with_continuation("PREMISE", _notes55, 1) == "PREMISE" and hnd.topic_with_continuation("PREMISE", _notes55, 3) == "PREMISE" and hnd.topic_with_continuation("PREMISE", None, 2) == "PREMISE")
+check("a note with no text or a broken range is ignored", hnd.topic_with_continuation("P", [{"start_clip": "x", "end_clip": 2, "text": "t"}, {"start_clip": 2, "end_clip": 2, "text": "  "}], 2) == "P")
+_w55 = hnd._narrated_chapter_prompt("A tense thriller", 1, 4, GOOD["beats"][1], GOOD["scene_bible"], [])[0]
+check("the clip writer is told the directions' opening pose is THIS clip's 0.0s pose even if it differs from the last clip's end (a cut: no walk-in or approach to bridge it)",
+      "DIRECTIONS FOR THIS CLIP (CRITICAL)" in _w55 and "THIS clip's 0.0s pose even where it differs from where the previous clip left someone" in _w55 and "never film a walk-in, an approach or a repositioning" in _w55)
+check("and that a rapid-fire dialogue clip (45+ words) opens on a medium or tighter shot with everyone in frame, never a wide shot", "RAPID-FIRE DIALOGUE OPENS CLOSE (CRITICAL)" in _w55 and "Never open on a wide shot" in _w55)
+_dense55 = _build48(_clip48([_t48(_other43, _long3), _t48(_pov43, _long3)]))
+_sparse55 = _build48(_clip48([_t48(_other43, "Stop it now, please."), _t48(_pov43, "Why?")]))
+check("the prompt of a rapid-fire dialogue clip begins with an opening-frame line naming everyone in shot (a medium shot, first line at once, no wide shot, nobody walks in); a sparse clip has none",
+      (f"[OPENING FRAME: the very first frame is a medium shot that already holds {_pov43} and {_other43} together in frame." in _dense55
+       or f"[OPENING FRAME: the very first frame is a medium shot that already holds {_other43} and {_pov43} together in frame." in _dense55)
+      and "no wide establishing shot, and nobody walks into frame" in _dense55 and "OPENING FRAME" not in _sparse55, _dense55[:600])
+check("the opening-frame line comes before any action line and before the first spoken line", _dense55.index("[OPENING FRAME:") < _dense55.index(_other43.upper() + ":") if (_other43.upper() + ":") in _dense55 else True)
+check("the job loop gives each clip writer the continuation text for its clip, and the continuation task stores it",
+      "hnd.topic_with_continuation(topic, job.continuation_notes, i + 1)" in _insp44.getsource(app._continue_narrated_drama_job)
+      and "continuation_notes=notes or None" in _insp44.getsource(app._extend_movie_plan_task_traced) and app.Job.model_fields["continuation_notes"].default is None)
+# the continuation task, end to end, on an in-memory store with the planner faked
+_keep55 = {n: getattr(app, n) for n in ("get_job", "update_job", "_save_master_plan_file")}
+_keep55h = (hnd.write_narrated_continuation_outline, hnd.plain_pass_beats)
+_st55 = {}
+app.get_job = lambda jid: _st55.get(jid)
+app.update_job = lambda jid, **f: _st55.__setitem__(jid, app.Job.model_validate({**_st55[jid].model_dump(), **f})) or _st55[jid]
+app._save_master_plan_file = lambda job: None
+hnd.write_narrated_continuation_outline = lambda *a, **k: ({"scene_bible": a[2], "beats": [{"clip_number": 99, "duration": 15, "audio_lines": [], "delivery_mode": "shock_action", "location_id": _loc43}]}, [])
+hnd.plain_pass_beats = lambda *a, **k: None
+try:
+    _jb55 = _mkjob43()
+    _jb55 = app.Job.model_validate({**_jb55.model_dump(), "status": "done", "beats": _jb55.beats[:1], "clips": [{"index": 0, "status": "done", "video_url": "https://v/0.mp4"}]})
+    _st55[_jb55.id] = _jb55
+    app._extend_movie_plan_task_traced(_jb55.id, "  CLIP 2 TEXT with the FRAME 0.0s pose  ", 15)
+    _n1 = _st55[_jb55.id].continuation_notes
+    _st55[_jb55.id] = app.Job.model_validate({**_st55[_jb55.id].model_dump(), "status": "done"})
+    app._extend_movie_plan_task_traced(_jb55.id, "CLIP 3 TEXT", 15)
+    _n2 = _st55[_jb55.id].continuation_notes
+finally:
+    for _n_, _v_ in _keep55.items():
+        setattr(app, _n_, _v_)
+    hnd.write_narrated_continuation_outline, hnd.plain_pass_beats = _keep55h
+check("planning a continuation stores its text (trimmed) with the clips it covers, and a second continuation adds its own note after the first",
+      _n1 == [{"start_clip": 2, "end_clip": 2, "text": "CLIP 2 TEXT with the FRAME 0.0s pose"}] and [n["start_clip"] for n in _n2] == [2, 3] and _n2[1]["text"] == "CLIP 3 TEXT", (_n1, _n2))
+
+print("\n[56] Two clip checks that stopped clip 3 after every retry: an opening pose the author's directions give, and 'inner thought' in a shot")
+_prev56 = {"location_id": "lobby_front_desk", "blocking": [blk("Clara Vance", "standing", "screen left", end_posture="standing", end_prof="screen left")]}
+_cur56 = clip_with([blk("Clara Vance", "kneeling", "screen left")])
+_p_plain = hnd._check_narrated_chapter(_cur56, GOOD["beats"][1], GOOD["scene_bible"], _prev56, clip_index=1, beats=GOOD["beats"])
+_p_dir = hnd._check_narrated_chapter(_cur56, GOOD["beats"][1], GOOD["scene_bible"], _prev56, clip_index=1, beats=GOOD["beats"], directed=True)
+check("without directions a different opening posture is still a hard problem", any("opens with posture 'kneeling'" in p for p in hnd._hard_problems(_p_plain)))
+check("with the author's directions for the clip it is only a note (allowed: they open the clip that way), not a reason to stop the job",
+      not any("opens with posture" in p for p in hnd._hard_problems(_p_dir)) and any(p.startswith("[SOFT]") and "'kneeling'" in p and "allowed" in p for p in _p_dir), _p_dir)
+check("write_narrated_chapter turns that on exactly when the premise carries DIRECTIONS FOR CLIP", 'directed="DIRECTIONS FOR CLIP" in (topic or "")' in _insp44.getsource(hnd.write_narrated_chapter))
+
+
+def _shot56(text):
+    c_ = clip_with([blk("Clara Vance", "standing", "screen left")])
+    c_["clips"][0]["shot"] = "[SAME SETUP] " + text
+    return [p for p in hnd._check_narrated_chapter(c_, GOOD["beats"][1], GOOD["scene_bible"], None, clip_index=1, beats=GOOD["beats"]) if "names an inner state" in p]
+
+
+check("a shot that says the camera stays locked on her for the whole inner thought is fine (it names the voice that is playing)",
+      _shot56("Camera snap-zooms onto Clara's eyes and stays locked on her for the whole inner thought, mouth closed") == [] and _shot56("Extreme close-up held through her V.O. voiceover") == [])
+check("but a mental state shown as picture is still refused", len(_shot56("Camera on Clara as she realizes the truth")) == 1 and len(_shot56("Close on Clara, who knows it is over")) == 1)
+
+print("\n[57] A short reaction line the plan gave a cutaway to plays WHOLE over the cutaway when its speaker was already shown speaking")
+_cutline = "Rosie trembling on the rug"
+_pw = _build48(_clip48([_tc(_other43, "What are you doing? It is just a tiny scratch."), _tc(_pov43, "Then let me scratch yours and see how fast it heals."), _tc(_other43, "Viv, what's gotten into you?", _cutline)]))
+check("Margot's short reply, with a cutaway, plays off-camera over it (she was shown speaking earlier): no on-camera close-up for it, mouths closed",
+      f"[Camera cuts to {_cutline}, filmed close, while {_other43}'s voice speaks off-camera. Nobody on screen speaks:]" in _pw and f"{_other43.upper()} (off-screen" in _pw
+      and "[Every mouth on screen stays strictly closed with lips firmly motionless; zero lip movement.]" in _pw and _pw.count(f"Close-up on {_other43} speaking") == 1, _pw)
+check("the whole line is still there, once", _pw.count("Viv, what's gotten into you?") == 1)
+_pw2 = _build48(_clip48([_tc(_pov43, "Hey, hey. I am not going to hit you. Give me your hand."), _tc(_pov43, "I was thinking of the drama again just now.", "", "(V.O. - inner thought, raw)", True), _tc(_pov43, "Go slow, okay?", "Rosie's small cut knuckles as a cotton swab dabs the cut")]))
+check("the same for a live line after the speaker's own inner thought (its cutaway is shown, the inner thought stays a locked close-up)",
+      "Camera cuts to Rosie's small cut knuckles as a cotton swab dabs the cut, filmed close" in _pw2 and "The camera stays locked on" in _pw2 and _pw2.count(f"{_pov43.upper()} (V.O.") == 1, _pw2)
+_pw3 = _build48(_clip48([_tc(_other43, "Viv, what's gotten into you?", _cutline), _tc(_pov43, "Then let me scratch yours and see how fast it heals.")]))
+check("but a speaker NOT yet shown speaking in the clip is never put wholly off-camera: the line stays an on-camera close-up",
+      "Camera cuts to" not in _pw3 and f"Close-up on {_other43} speaking" in _pw3, _pw3)
+_pw4 = _build48(_clip48([_tc(_other43, "What are you doing? It is just a tiny scratch."), _tc(_other43, "Viv, what's gotten into you?", _cutline)]))
+check("two consecutive lines by the speaker still use the split (first part on camera, then the cutaway), not the whole-line form", f"{_other43.upper()} (off-screen, concluding line" in _pw4 and _pw4.count("Camera cuts to") == 1)
+check("a short line with no cutaway is built as before", "Camera cuts to" not in _build48(_clip48([_tc(_other43, "Stop it now, please."), _tc(_pov43, "Why?"), _tc(_other43, "Viv, what's gotten into you?")])))
+
+_p8 = _build48(_clip48([_tc(_other43, "What are you doing? It is just a tiny scratch."), _tc(_pov43, "Then let me scratch yours, and we will see how fast it heals."), _tc(_other43, "Viv, what is gotten into you?", "the children"),
+                        _tc(_pov43, "Hey, hey. I am not going to hit you. Give me your hand."), _tc(_other43, "Sorry I moved. Please do not be mad."),
+                        _tc(_pov43, "In the drama, Vivian slapped her. Not this time.", "", "(V.O. - inner thought, gutted)", True),
+                        _tc(_pov43, "If it stings, squeeze my finger. I will go really slow, okay?", "Rosie's cut knuckles being dabbed"), _tc(_other43, "Okay.")]))
+check("a whole-line cutaway counts toward the cap: an 8-line clip with two cutaways asked for gets 3 cutaways in all, not 5", _p8.count("Camera cuts to") == 3, _p8.count("Camera cuts to"))
+_prev_live = {"location_id": _loc43, "speech": [{"speaker": _other43, "line": "No, I did not take anything. I promise.", "is_voiceover": False}]}
+_prev_vo = {"location_id": _loc43, "speech": [{"speaker": _pov43, "line": "Where am I?", "is_voiceover": True}]}
+_prev_else = {"location_id": "somewhere_else", "speech": [{"speaker": _other43, "line": "Goodbye now.", "is_voiceover": False}]}
+_dense_c = _clip48([_t48(_other43, _long3), _t48(_pov43, _long3)])
+_bp = lambda prev: hnd.build_narrated_prompt(_dense_c, _b43, {}, {}, {}, prev, clip_duration=15)[0]
+_pl = _bp(_prev_live)
+check("a rapid-fire clip in the same place continues the previous clip's last shot (a close-up on whoever spoke last): same framing, no wide shot, no zoom-out to the room",
+      f"continues directly from the previous clip's last shot, a close-up on {_other43}." in _pl and "keeps that exact framing, expression and light" in _pl
+      and "do not zoom out to the whole room" in _pl and "medium shot that already holds" not in _pl, _pl[:500])
+check("after an inner thought the previous last shot was a close-up on the thinker's face (no eye zoom)", f"a close-up on {_pov43}'s face." in _bp(_prev_vo) and "extreme close-up" not in _bp(_prev_vo).lower())
+check("a clip in ANOTHER place (a cut), or with no previous clip, opens on the medium shot with everyone in frame instead",
+      "medium shot that already holds" in _bp(_prev_else) and "medium shot that already holds" in _bp(None) and "continues directly" not in _bp(_prev_else))
+check("the opening-frame line still comes before the first action and the first line", _pl.index("[OPENING FRAME:") < _pl.index("Close-up on"))
+check("a sparse clip gets no opening-frame line at all", "OPENING FRAME" not in hnd.build_narrated_prompt(_clip48([_t48(_other43, "Stop it now, please.")]), _b43, {}, {}, {}, _prev_live, clip_duration=15)[0])
+
+_cast_cb = {"pov_protagonist": "Vivian Ashford", "characters": [{"name": "Vivian Ashford", "appearance": {"hair_color": "dark brown"}}, {"name": "Margot", "appearance": {"hair_color": "blonde"}}],
+            "locations": [{"id": "ashford_mansion_grand_drawing_room", "description": "the drawing room"}], "props": []}
+_cont_text = ("[CAST: Vivian Ashford (27, long dark wavy hair), Margot (28, blonde hair)]\n\n[INT. ASHFORD MANSION - GRAND DRAWING ROOM - DAY.]\n"
+              "MARGOT: (whispering urgently) \"Viv, what are you doing?\"\nVIVIAN: (breathless shock, sudden tenderness) \"Rosie, is your hand bleeding?\"\n"
+              "ROSIE: (voice breaking) \"No, I promise.\"\n")
+_ext = hnd.extend_bible_with_continuation(_cont_text, _cast_cb)
+check("dialogue lines under a CAST line are NOT read as new cast members (a stray VIVIAN, a man in his thirties, used to be added)",
+      [c["name"] for c in _ext["characters"]] == ["Vivian Ashford", "Margot"], [c["name"] for c in _ext["characters"]])
+_ext2 = hnd.extend_bible_with_continuation("NEW CAST MEMBER INTRODUCED:\nAdrian Blake (35): a tall man in a dark overcoat, Sophia's estranged half-brother.\n", _cast_cb)
+check("a real new cast entry is still added", "Adrian Blake" in [c["name"] for c in _ext2["characters"]], [c["name"] for c in _ext2["characters"]])
+
+_c52 = _clip48([_t48(_other43, "Stop it now, please.")])
+_c52["action_steps"] = [
+    {"start_time": 0.0, "character": _other43, "action": "he stands directly in front of the others, arms spread protectively"},
+    {"start_time": 0.5, "character": _pov43, "action": "She lowers her raised hand slightly and asks her question"},
+    {"start_time": 1.0, "character": _other43, "action": "his chin lifts toward her"},
+    {"start_time": 1.5, "character": _pov43, "action": "turns toward the children"},
+]
+_p52 = _build48(_c52)
+check("an action step that already starts with he, she or they gets the character's name instead of 'Name he ...' (that doubled the name beside the spoken line)",
+      f"[{_other43} stands directly in front of the others" in _p52 and f"[{_pov43} lowers her raised hand slightly" in _p52 and f"{_other43} he " not in _p52 and f"{_pov43} she " not in _p52, _p52)
+check("possessives and plain steps are unchanged", f"[{_other43}'s chin lifts toward her" in _p52 and f"[{_pov43} turns toward the children" in _p52, _p52)
+
+print("\n[58] Clip 5: face close-ups for inner thoughts, a NEW SHOT opening for an entrance, new cast from [CAST: ...] with their own look")
+_pvo = _build48(_clip48([_tc(_other43, "Stop it now, please."), _tc(_pov43, "I was thinking of the drama again just now.", "", "(V.O. - inner thought, raw)", True)]))
+check("an inner thought uses the exact wording that rendered correctly in clips 1-4 (snap zoom to eyes and face, or the tight close-up in a sparse clip), locked, mouth closed",
+      f"Snap zoom into an Extreme Close-up on {_pov43}'s eyes and face. The camera stays locked on {_pov43}" in _pvo or f"Tight Close-up on {_pov43}'s face. The camera stays locked on {_pov43}" in _pvo and "Mouth strictly closed" in _pvo, _pvo)
+_c58 = {}
+hnd._mark_fresh_opening(_c58, "story\nDIRECTIONS FOR CLIP 5:\n[OPENING: NEW SHOT - the front door opens and Julian walks in]")
+check("directions that open with [OPENING: NEW SHOT ...] mark the clip as a fresh opening", _c58.get("fresh_opening") is True)
+_c58b = {}
+hnd._mark_fresh_opening(_c58b, "story\nDIRECTIONS FOR CLIP 5:\nRosie stays on the rug")
+hnd._mark_fresh_opening(_c58b, "[OPENING: NEW SHOT] but no directions header")
+check("without the marker in the directions nothing is marked", not _c58b.get("fresh_opening"))
+_fresh = dict(_dense_c)
+_fresh["fresh_opening"] = True
+_pf = hnd.build_narrated_prompt(_fresh, _b43, {}, {}, {}, _prev_live, clip_duration=15)[0]
+check("a fresh-opening clip gets no 'continue the previous shot, nobody walks in' line", "OPENING FRAME" not in _pf)
+check("a normal dense clip still gets it", "OPENING FRAME" in _bp(_prev_live))
+_ext3 = hnd.extend_bible_with_continuation("[CAST: Vivian Ashford (27, long dark wavy hair), Julian Ashford (32, tall, broad shoulders, sharp jaw, charcoal three-piece suit, cold husband)]\n[INT. DRAWING ROOM]", _cast_cb)
+_jul = next((c for c in _ext3["characters"] if c["name"] == "Julian Ashford"), None)
+check("Julian is added from the [CAST: ...] bracket, once; Vivian (already cast) is not duplicated",
+      _jul is not None and [c["name"] for c in _ext3["characters"]].count("Vivian Ashford") == 1, [c["name"] for c in _ext3["characters"]])
+_ja = (_jul or {}).get("appearance", {})
+check("his look comes from his own description (suit, jaw, tall), and nothing is borrowed from another story",
+      "suit" in _ja.get("wardrobe", "") and "jaw" in _ja.get("distinguishing_feature", "") and "tall" in _ja.get("build", "") and "man" in _ja.get("casting", "")
+      and "Blake" not in str(_jul) and "Sophia" not in str(_jul), _jul)
+
+_b9 = {"audio_lines": [{"speaker": _pov43, "line": "x"}] * 9}
+_c9 = _clip48([_t48(_other43 if i % 2 else _pov43, "Yes now.") for i in range(9)])
+_pr9 = hnd._check_narrated_chapter({"clips": [_c9]}, _b9, _b43, None, clip_index=0, clip_duration=15)
+check("a clip may carry as many turns as its beat lists (9 here), where the usual cap is 7", not any("turns in one clip" in p for p in _pr9), [p for p in _pr9 if "turns" in p])
+_pr9b = hnd._check_narrated_chapter({"clips": [_c9]}, {"audio_lines": [{"speaker": _pov43, "line": "x"}] * 3}, _b43, None, clip_index=0, clip_duration=15)
+check("but a beat with few lines still gets the usual cap of 7", any("9 turns in one clip; at most 7" in p for p in _pr9b), _pr9b)
+
+print("\n[59] kie.ai takes at most 3 reference audios: with 4 voiced speakers the 3 who say the most keep theirs")
+_spk4 = [_pov43, _other43, "Julian Ashford", "Theo"]
+_c4 = _clip48([_t48(_spk4[0], "one two three four five six seven nine ten eleven"), _t48(_spk4[1], "one two three four five six seven eight"),
+               _t48(_spk4[2], "one two three four five six seven eight nine"), _t48(_spk4[3], "one two three")])
+_vb4 = {n: f"https://x/{i}.mp3" for i, n in enumerate(_spk4)}
+check("the speaker with the fewest words (Theo) is the one left out", hnd._voice_ref_speakers(_c4, _vb4) == {_pov43, _other43, "Julian Ashford"}, hnd._voice_ref_speakers(_c4, _vb4))
+_bn = {**_b43, "characters": list(_b43.get("characters", [])) + [{"name": "Julian Ashford", "appearance": {}}, {"name": "Theo", "appearance": {}}]}
+_p4, _i4, _a4 = hnd.build_narrated_prompt(_c4, _bn, {}, {}, _vb4, None, clip_duration=15)
+check("the request carries 3 audio files, not 4, and no @Audio4 appears", len(_a4) == 3 and "@Audio4" not in _p4, (len(_a4), _p4[-600:]))
+check("with 3 or fewer voiced speakers nothing changes", hnd._voice_ref_speakers(_c4, {k: v for k, v in _vb4.items() if k != "Theo"}) == {_pov43, _other43, "Julian Ashford"})
+
+print("\n[60] Inner thoughts without the eye zoom; a line can say who its speaker looks at")
+_dv = _clip48([_t48(_other43, _long3), _t48(_pov43, "I was thinking of the drama again just now.", ), _t48(_other43, _long3)])
+_dv["speech"][1]["is_voiceover"] = True
+_pd = hnd.build_narrated_prompt(_dv, _b43, {}, {}, {}, None, clip_duration=15)[0]
+check("a dense clip's inner thought is a steady close-up on the face: no snap zoom, no push-in, no eyes, mouth closed",
+      "Cut to a steady Close-up on" in _pd and "no zoom, no push-in" in _pd and "Snap zoom" not in _pd and "Extreme Close-up" not in _pd and "Mouth strictly closed" in _pd, _pd[-900:])
+hnd.INNER_THOUGHT_EYE_ZOOM = True
+_pdz = hnd.build_narrated_prompt(_dv, _b43, {}, {}, {}, None, clip_duration=15)[0]
+hnd.INNER_THOUGHT_EYE_ZOOM = False
+check("the old eye zoom is still there behind the switch", "Snap zoom into an Extreme Close-up" in _pdz)
+_lk = _clip48([_t48(_other43, "Stop it now, please."), _t48(_pov43, "Why would you say that to me?")])
+_lk["speech"][1]["looking_at"] = _other43
+_pl2 = hnd.build_narrated_prompt(_lk, _b43, {}, {}, {}, None, clip_duration=15)[0]
+check("a line with looking_at puts it in its shot marker", f"Close-up on {_pov43}, looking straight at {_other43} (not at anyone else), speaking" in _pl2, _pl2[-700:])
+check("a line without it is unchanged", f"Close-up on {_other43} speaking" in _pl2)
+
 print(f"\n{'=' * 60}\n{ok} passed, {fail} failed\n{'=' * 60}")
 raise SystemExit(1 if fail else 0)

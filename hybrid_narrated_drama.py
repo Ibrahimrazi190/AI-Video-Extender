@@ -66,8 +66,28 @@ MAX_TURN_WORDS_PER_SECOND = 3.8     # a line spoken faster than this has its win
 MAX_CONSECUTIVE_VO = 3
 VO_RUN_WORTH_NOTING = 3          # allowed, but said out loud, because 15-45 seconds of narration is a lot
 DIALOGUE_RUN_WORTH_NOTING = 10   # no hard cap: a scene takes the clips it takes
+INNER_THOUGHT_EYE_ZOOM = False    # True: an inner thought snap-zooms into the thinker's eyes (clips 1-4); False: a steady close-up on the face, no zoom
 MAX_VOICE_REFS = 7               # maximum reference audio files / speakers per clip
-MAX_DIALOGUE_TURNS = 7           # maximum spoken turns per clip in dialogue
+KIE_MAX_AUDIO_REFS = 3            # kie.ai refuses a request with more reference audio files than this ("reference_audio_urls supports at most 3 files")
+
+
+def _gaze(turn: dict) -> str:
+    """", looking straight at X" for a line whose speaker must look at someone in particular (a turn's optional "looking_at"), else nothing."""
+    who = (turn.get("looking_at") or "").strip()
+    return f", looking straight at {who} (not at anyone else)," if who else ""
+
+
+def _voice_ref_speakers(clip: dict, voice_bank: dict) -> set:
+    """The speakers whose banked voice is sent as a reference audio: at most KIE_MAX_AUDIO_REFS, the ones who say the most in this clip (ties:
+    the one heard first). A speaker left out is filmed from the written voice description instead, as on the clip where they first speak."""
+    words: dict[str, int] = {}
+    for t in _clip_turns(clip):
+        n = (t.get("speaker") or "").strip()
+        if n and voice_bank.get(n):
+            words[n] = words.get(n, 0) + len(_WORD.findall(t.get("line") or ""))
+    ranked = sorted(words, key=lambda n: -words[n])   # sorted() is stable: ties keep the order of first appearance
+    return set(ranked[:KIE_MAX_AUDIO_REFS])
+MAX_DIALOGUE_TURNS = 12          # maximum spoken turns per clip in dialogue
 MAX_REF_IMAGES = 9
 MAX_ON_SCREEN = 7
 
@@ -167,7 +187,7 @@ _ON_SCREEN_RULE = (
 # Told to the planners for 10-15 second clips (never the 5-second prompt): how dense a confrontation clip is, and the optional inner thought.
 _DENSITY_RULE = (
     '   - RAPID-FIRE CONFRONTATIONS (CRITICAL, 15-second DIALOGUE clips): when a scene is a clash (an accusation, a threat, an ultimatum, '
-    'a reveal, a quarrel), write its 15-second clips as rapid-fire exchanges: 4 to 7 lines, about 45 to 65 words in total and never more '
+    'a reveal, a quarrel), write its 15-second clips as rapid-fire exchanges: 4 to 12 lines, about 45 to 65 words in total and never more '
     'than 70, every line short and answering the one before it, so that no second of the clip is empty. Quiet, tender or establishing '
     'scenes use fewer words; never pad a quiet moment to reach the count.'
 )
@@ -176,6 +196,15 @@ _INNER_THOUGHT_RULE = (
     'between live lines, when what they think adds something the live lines and the picture do not (a realization, a fear, a decision). '
     'Write it as one more entry in audio_lines with speaker = the pov_protagonist and "is_voiceover": true, in first person, under 15 words. '
     'Every live, spoken line keeps "is_voiceover": false. At most one such line per clip; most clips have none. It counts toward the clip\'s word total.'
+)
+_CUTAWAY_RULE = (
+    '   - CUTAWAYS WHILE A LINE IS STILL BEING SPOKEN (optional, the "cutaway" field of a line): after the speaker has been shown saying the first words '
+    'of a line, the camera may leave them for something that MATTERS while their voice carries on: a listener\'s silent reaction (put that cast member\'s '
+    'name), or a prop or detail the story needs the audience to SEE (a hand, a wound, a letter, a door opening: put a short plain description such as '
+    '"Rosie\'s clenched fist, a thin red cut across her knuckles"). Put it on the line the camera is away DURING: a line of 8 or more words, or the second '
+    'of two lines the same speaker says one after the other. A premise that gives a shot for that moment gets exactly that shot. Leave "" when nothing needs '
+    'showing; most lines have none and a clip has two or three at most. Never on an inner thought (the camera stays on the thinker). A speaker\'s '
+    'consecutive lines stay SEPARATE lines, as the premise writes them: never merge them into one.'
 )
 PLACE_VIEWS = (2, 3)
 MIN_STEP_SECONDS = 1.0
@@ -352,7 +381,7 @@ def _cap_plan_schema(schema: dict, total_clips: int, beats: int | None = None, c
         if beats:
             props["beats"]["maxItems"] = beats
         b = props["beats"]["items"]["properties"]
-        b["audio_lines"]["maxItems"] = MAX_VOICE_REFS
+        b["audio_lines"]["maxItems"] = MAX_DIALOGUE_TURNS
         b["reveals"]["maxItems"] = MAX_REVEALS_PER_BEAT
         b["present_characters"]["maxItems"] = cast or caps["characters"]
     return s
@@ -390,6 +419,7 @@ def _frame_positions_flip(pos_a: str | None, pos_b: str | None) -> bool:
     a, b = pos_a.strip().lower(), pos_b.strip().lower()
     return (a in LEFT_FRAME_POSITIONS and b in RIGHT_FRAME_POSITIONS) or (a in RIGHT_FRAME_POSITIONS and b in LEFT_FRAME_POSITIONS)
 
+_INNER_THOUGHT_PHRASE = re.compile(r"\bV\.O\.|\b(?:inner[- ]thoughts?|inner[- ]voice|internal[- ]monologue|voice-?over)\b", re.I)
 _INNER_STATE = re.compile(
     r"\b(feels?|felt|realiz(es?|ed)|notic(es?|ed)|sens(es?|ed)|think(s?)|thought|wonders?|wondered|"
     r"understand(s?)|understood|decid(es?|ed)|recogniz(es?|ed)|know(s?)|knew|remembers?|remembered)\b",
@@ -547,7 +577,7 @@ def _compile_cast_image_prompt(appearance: dict) -> str:
 def _compile_character_visuals(bible: dict) -> None:
     """Write every character's "look" and "image_prompt" from the one structured "appearance".
 
-    Both used to be free-text fields OpenAI wrote separately, so the picture FLUX drew and the text sent
+    Both used to be free-text fields OpenAI wrote separately, so the picture the image model drew and the text sent
     beside it in every Seedance prompt described different people (a brown ponytail captioned "tidy
     dark-blonde bob"), and the model picked a different winner in each clip. Generating both from a single
     source means they cannot disagree."""
@@ -734,15 +764,16 @@ OUTLINE_SCHEMA = {
                     "speech_budget": {"type": "integer"},
                     "audio_lines": {
                         "type": "array",
-                        "description": "The EXACT words heard in this clip, in the order they are heard, decided here and nowhere else. voiceover: exactly ONE line, by the pov_protagonist. dialogue: ONE to SEVEN lines across up to 5 speakers that together make a real exchange (a jab and its retort can share one clip). shock_action: an empty array.",
+                        "description": "The EXACT words heard in this clip, in the order they are heard, decided here and nowhere else. voiceover: exactly ONE line, by the pov_protagonist. dialogue: ONE to TWELVE lines across up to 5 speakers that together make a real exchange (a jab and its retort can share one clip). shock_action: an empty array.",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "speaker": {"type": "string", "description": "Who says this line. For a voiceover beat this is the pov_protagonist."},
                                 "line": {"type": "string", "description": "The exact words spoken."},
-                                "is_voiceover": {"type": "boolean", "description": "Set to true if this line is an internal monologue, inner thought, or voiceover (character mouth stays strictly closed); false for live spoken dialogue."}
+                                "is_voiceover": {"type": "boolean", "description": "Set to true if this line is an internal monologue, inner thought, or voiceover (character mouth stays strictly closed); false for live spoken dialogue."},
+                                "cutaway": {"type": "string", "description": "Where the camera goes while THIS live line's voice carries on, after the speaker has been shown saying its first words: a cast member's name (their silent reaction), or a short plain description of a prop or detail the story needs the audience to SEE (e.g. \"Rosie's clenched fist, a thin red cut across her knuckles\"). An empty string when the camera should just follow the usual rules. Always an empty string for an inner thought or voiceover (the camera stays on the thinker)."}
                             },
-                            "required": ["speaker", "line", "is_voiceover"],
+                            "required": ["speaker", "line", "is_voiceover", "cutaway"],
                             "additionalProperties": False
                         }
                     },
@@ -872,7 +903,7 @@ def _narrated_chapter_schema(location_ids: list[str], character_names: list[str]
                         },
                         "speech": {
                             "type": "array",
-                            "maxItems": MAX_VOICE_REFS,
+                            "maxItems": MAX_DIALOGUE_TURNS,
                             "description": f"Everything heard in this clip, in time order, one entry per spoken line. voiceover: exactly one entry. dialogue: one to {MAX_DIALOGUE_TURNS} entries, by up to {MAX_VOICE_REFS} different speakers. shock_action: an empty array. Every line is the Master Plan's, copied word for word.",
                             "items": {
                                 "type": "object",
@@ -1270,7 +1301,7 @@ WRITING THE LINES SO THE STORY IS UNDERSTOOD (CRITICAL):
    3. Name the stakes aloud whenever they change, but NEVER narrate physical actions or visual objects the camera already films.
    4. The first time a listed jargon term is spoken, explain it in the same or the previous line, in plain words.
    5. Sharp dramatic dialogue and comebacks: Preserve venomous, sarcastic, or defiant dialogue from the premise verbatim. Never strip away dramatic insults or punchy comebacks to add exposition.
-   6. One new fact per line, two at most per clip. In 5-second clips, a beat that delivers a fact uses ONE or TWO lines, never three quick-fire ones; in 10-15s clips, a beat holds 1 to 7 lines across up to 5 characters, giving each speaker room to clash.
+   6. One new fact per line, two at most per clip. In 5-second clips, a beat that delivers a fact uses ONE or TWO lines, never three quick-fire ones; in 10-15s clips, a beat holds 1 to 12 lines across up to 5 characters, giving each speaker room to clash.
    7. Plant the question, delay the answer: say THAT a secret exists, never WHAT it is, before its planned clip.
    8. Say the key facts twice, in different words, far apart.
    9. Subtext comes after text: an oblique line is fine once the fact it relies on has been said.
@@ -1339,7 +1370,7 @@ def _narrated_outline_prompt(topic: str, duration: int, total_clips: int) -> tup
             f'the TOTAL words across every line in the beat - scales with duration: 14 to 25 words for 10s, up to 22 to 85 words for 15s. '
             f'A dialogue beat holds 1 to 5 punchy lines between up to 5 speakers (e.g. a jab, a sneer, a reaction, a demand, and a retort can all share one clip). Pacing is fast: each clip is an active micro-sequence with '
             f'2 to 4 rapid narrative/visual shifts (e.g. entry -> discovery -> reaction -> confrontation). Short, hard lines land; '
-            f'never drag out a single line.\n{_DENSITY_RULE}\n{_INNER_THOUGHT_RULE}'
+            f'never drag out a single line.\n{_DENSITY_RULE}\n{_INNER_THOUGHT_RULE}\n{_CUTAWAY_RULE}'
         )
         abs_speech_rule = (
             "   - For voiceover and dialogue clips, speech_budget must match the beat duration: 14 to 25 words for 10s, "
@@ -1396,7 +1427,7 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (FIRST-PERSON POV + LIVE DIALOGUE):
 
 5. THE SPOKEN WORD IS DECIDED HERE (CRITICAL):
    - You are the ONLY writer who sees the whole story, so YOU write every line, in "audio_lines": the exact words the audience hears in that clip, in order. The clip director downstream writes only what is SEEN, and will be forced to speak your lines verbatim.
-   - A DIALOGUE beat may hold 1 to 7 lines, by up to {MAX_VOICE_REFS} different speakers (scaling with duration: 14 to 25 words for 10s, up to 22 to 85 words for 15s). Use multiple lines whenever characters clash or react - a jab, a sneer, a reaction, a demand, and a retort can all share the SAME clip. Keep dialogue lines from ALL scene segments described in the premise for that clip.
+   - A DIALOGUE beat may hold 1 to 12 lines, by up to {MAX_VOICE_REFS} different speakers (scaling with duration: 14 to 25 words for 10s, up to 22 to 85 words for 15s). Use multiple lines whenever characters clash or react - a jab, a sneer, a reaction, a demand, and a retort can all share the SAME clip. Keep dialogue lines from ALL scene segments described in the premise for that clip.
    - PREMISE DIALOGUE ENFORCEMENT (CRITICAL): If the story premise provides explicit quoted dialogue for a character (e.g. Vanessa: "Get her fired, darling", Damien: "Do you know what this suit costs? More than you earn in a year."), you MUST include those exact lines verbatim for those characters in audio_lines. Do NOT drop lines given in the premise, do NOT reassign them to other characters, and do NOT alter the speaker who delivered them. Every character who speaks in the premise must speak their line. If a character's quoted line in the premise is 4 words (e.g. 'Get her fired, darling'), that is completely acceptable - do not drop or change their line.
    - CAUSE-AND-EFFECT CHRONOLOGY (CRITICAL): The spoken lines in "audio_lines" MUST strictly follow chronological narrative cause-and-effect order as events occur in the premise and clip summary. NEVER place a character's plea, apology, or reaction before the instigating line or confrontation that provoked it! When an altercation occurs (e.g. coffee spills -> Damien confronts Aria about his suit -> Vanessa demands she be fired -> Aria pleads for her job -> manager removes her), each line must naturally respond to what was just said or done. Cause always precedes effect.
    - ZERO EXPOSITORY DIALOGUE & NO STATING VISUAL ACTIONS (CRITICAL): Visual actions, physical reveals, and props (e.g. dropping a cake box, throwing a divorce folder, touching a bare collarbone, seeing someone wear a stolen pendant on a balcony, writing initials in a hem, sliding a contract) are filmed by the camera in action_steps. Characters MUST NEVER speak visual actions aloud as dialogue! NEVER make a character say "My sapphire pendant is gone", "S.G. means Sophia Grant", "This divorce says you take my designs too", or "I will fight you for my work" unless explicitly quoted in the premise! Trust the camera to show the visual story. When the premise provides quoted lines for a scene or clip, audio_lines MUST contain ONLY those quoted dialogue exchanges and genuine dramatic reactions between characters. Do NOT invent filler expository lines to summarize the scene or explain the plot.
@@ -1893,9 +1924,10 @@ CORE ARCHITECTURE: HYBRID NARRATED DRAMA (BEAT SCRIPTING):
    - You write the exact spoken words in "audio_lines".
    - In each beat, specify integer "duration" (10 to 15 seconds, default 15) chosen based on dramatic weight.
    - PACING & NARRATIVE DENSITY: Each 10–15s clip is an active, cinematic micro-sequence with 2 to 4 rapid narrative/visual shifts (e.g. entry -> discovery -> reaction -> confrontational line or prompt). Fast-moving and packed with story events!
-   - A DIALOGUE beat holds 1 to 7 lines between up to {MAX_VOICE_REFS} characters in scene_bible.{_delivery_note("quick_beats")}. Keep dialogue from ALL scene segments described in the premise for this clip.
+   - A DIALOGUE beat holds 1 to 12 lines between up to {MAX_VOICE_REFS} characters in scene_bible.{_delivery_note("quick_beats")}. Keep dialogue from ALL scene segments described in the premise for this clip.
 {_DENSITY_RULE}
 {_INNER_THOUGHT_RULE}
+{_CUTAWAY_RULE}
    - PREMISE DIALOGUE ENFORCEMENT & CANONICAL NAMES (CRITICAL): If the story premise provides explicit quoted dialogue for a character (e.g. Vanessa: "Get her fired, darling", Damien: "Do you know what this suit costs? More than you earn in a year."), you MUST include those exact lines verbatim for those characters in audio_lines. Preserve character names exactly as written in the premise (e.g. "Chloe", "Chloe Moss" - never invent unprompted surnames like "Chloe Vale"). Do NOT drop lines given in the premise, do NOT reassign them to other characters, and do NOT alter the speaker who delivered them. Every character who speaks in the premise must speak their line.
    - CAUSE-AND-EFFECT CHRONOLOGY (CRITICAL): Spoken lines in "audio_lines" MUST strictly follow chronological cause-and-effect order as events unfold. Never place a reaction or plea before the line that provoked it. Cause always precedes effect!
    - ZERO EXPOSITORY DIALOGUE & NO STATING VISUAL ACTIONS (CRITICAL): Visual actions, physical reveals, and props (e.g. dropping a cake box, throwing a divorce folder, touching a bare collarbone, seeing someone wear a stolen pendant on a balcony, writing initials in a hem, sliding a contract) are filmed by the camera in action_steps. Characters MUST NEVER speak visual actions aloud as dialogue! NEVER make a character say "My sapphire pendant is gone", "S.G. means Sophia Grant", "This divorce says you take my designs too", or "I will fight you for my work" unless explicitly quoted in the premise! Trust the camera to show the visual story. When the premise provides quoted lines for a scene or clip, audio_lines MUST contain ONLY those quoted dialogue exchanges and genuine dramatic reactions between characters. Do NOT invent filler expository lines to summarize the scene or explain the plot.
@@ -2573,7 +2605,7 @@ def _repair_missing_facts(beats: list[dict], bible: dict, delivery: dict | None,
         if lines is None:
             notes.append(f"[SOFT] fact {f.get('id')} is not said in clip {at} and the rewrite did not work; it is left as written.")
             continue
-        beat["audio_lines"] = lines
+        beat["audio_lines"] = _carry_line_fields(beat.get("audio_lines"), lines)
         beat["speech_budget"] = sum(len(_WORD.findall(t["line"])) for t in lines)
         beat["speaker_or_actor"] = (bible.get("pov_protagonist") or "") if beat.get("delivery_mode") == "voiceover" else lines[0]["speaker"]
         if "delivers" in beat and f.get("id") not in (beat.get("delivers") or []):
@@ -3468,78 +3500,129 @@ def write_narrated_outline(topic: str, duration: int, total_clips: int) -> tuple
     return _write_act_based_outline(topic, duration, total_clips)
 
 
+def _character_from_description(name: str, age: int | None, desc: str, existing_colors: set) -> dict:
+    """A cast entry for someone a continuation introduces, made from their OWN description (hair, build, face, clothes, what they are), not from
+    defaults. It used to give everyone the same grey-suit look and a motive about Ryan Blake and Sophia, whatever the story was."""
+    low = desc.lower()
+    pieces = [p.strip() for p in re.split(r"[,;]", desc) if p.strip()]
+
+    def pick(words):
+        return next((p for p in pieces if any(w in p.lower() for w in words)), None)
+
+    age_num = age if age else 30
+    is_female = any(w in low for w in ("she ", "her ", "sister", "woman", "mother", "wife", "heiress", "daughter", "girl", "lady"))
+    if age_num < 14:
+        casting = "young girl" if is_female else "young boy"
+    elif age_num < 25:
+        casting = "young woman in her early twenties" if is_female else "young man in his early twenties"
+    elif age_num < 40:
+        casting = "woman in her thirties" if is_female else "man in his thirties"
+    else:
+        casting = "distinguished woman in her forties" if is_female else "distinguished man in his forties"
+
+    hair_piece = pick(("hair",))
+    color_word = None
+    if hair_piece:
+        for words in _HAIR_COLORS.values():
+            color_word = next((w for w in words if re.search(rf"\b{re.escape(w)}\b", hair_piece.lower())), None)
+            if color_word:
+                break
+        if not color_word and "dark" in hair_piece.lower():
+            color_word = "dark brown"
+    candidates = ["dark brown", "jet black", "chestnut brown", "auburn", "warm amber"] + (["silver gray"] if age_num >= 50 else [])
+    hair_color = color_word or next((c for c in candidates if _family(c, _HAIR_COLORS) not in existing_colors), "chestnut brown")
+    existing_colors.add(_family(hair_color, _HAIR_COLORS))
+    hair_style = (re.sub(r"\bhair\b", "", hair_piece, flags=re.I).strip() if hair_piece else "") or "neatly styled hair"
+
+    build = pick(("tall", "slim", "lean", "broad", "athletic", "petite", "stocky", "commanding")) or "an average build"
+    feature = pick(("jaw", "scar", "eyes", "beard", "glasses", "freckle", "mole", "tattoo", "gaze", "dimple")) or "a distinctive, expressive face"
+    wardrobe = pick(("suit", "coat", "dress", "sweater", "uniform", "gown", "jacket", "shirt", "tuxedo", "blouse")) or "plain, well-fitting everyday clothes"
+    role = pieces[-1] if len(pieces) > 1 else desc.split(".")[0].strip()
+    return {
+        "name": name,
+        "is_protagonist": False,
+        "role": role,
+        "appearance": {
+            "casting": casting,
+            "hair_color": hair_color,
+            "hair_style": hair_style,
+            "build": build,
+            "distinguishing_feature": feature,
+            "wardrobe": wardrobe,
+        },
+        "voice": "clear mezzo-soprano" if is_female else "deep baritone with authority",
+        "motivation": "plays their part in the story as the continuation describes it",
+        "relationships": "as the continuation describes them",
+        "speech_style": "plain, natural speech that fits who they are",
+    }
+
+
 def extend_bible_with_continuation(continuation_prompt: str, bible: dict) -> dict:
     """Detects and registers any new cast members or new locations introduced in continuation_prompt into the Scene Bible,
-    compiling visual prompts and checking consistency so downstream beat planning and FLUX image generation work seamlessly."""
+    compiling visual prompts and checking consistency so downstream beat planning and image generation work seamlessly."""
     bible = copy.deepcopy(bible)
     existing_char_names = {c["name"].lower(): c for c in bible.get("characters", [])}
     existing_loc_ids = {l["id"]: l for l in bible.get("locations", [])}
     existing_colors = {_family(c.get("appearance", {}).get("hair_color"), _HAIR_COLORS) for c in bible.get("characters", [])}
 
-    # 1. Regex / structured extraction of new cast
+    # 1. New cast: "NEW CAST MEMBER INTRODUCED: Name (35): description" lines, and the entries of a "[CAST: Name (35, details), ...]" line.
+    def _add_new_character(raw_name: str, age_str: str | None, desc: str, from_cast_line: bool = False) -> None:
+        key = raw_name.strip().lower()
+        if not key or key in existing_char_names:
+            return
+        # A spoken line ('VIVIAN: (shock) "Rosie, is your hand bleeding?"') is not a cast entry, and neither is a capitalised speaker label that
+        # repeats the first name of someone already cast (that made a stray man called VIVIAN).
+        if '"' in desc or "\u201c" in desc or desc.startswith("("):
+            return
+        first = key.split()[0]
+        if (raw_name.isupper() or from_cast_line) and any(n.split()[0] == first for n in existing_char_names):
+            return
+        new_char = _character_from_description(raw_name.strip(), int(age_str) if age_str else None, desc, existing_colors)
+        bible.setdefault("characters", []).append(new_char)
+        existing_char_names[key] = new_char
+
     cast_blocks = re.split(r"\b(?:NEW CAST MEMBER(?: INTRODUCED)?|NEW CHARACTER(?:S)?|STORY OVERVIEW & CAST|CAST OVERVIEW|CAST)\s*:\s*", continuation_prompt, flags=re.I)
     if len(cast_blocks) > 1:
         for block in cast_blocks[1:]:
             sub_block = re.split(r"\n\s*(?:CLIP\s+\d+|Location\s*:|SCENE\s+\d+)", block, flags=re.I)[0]
             for line in sub_block.strip().split("\n"):
-                line = line.strip().lstrip("-*• ")
+                line = line.strip().lstrip("-*\u2022 ")
                 if not line:
                     continue
                 m = re.match(r"^([A-Z][a-zA-Z\s'.]+?)(?:\s*\(\s*(\d{1,2})\s*\))?\s*:\s*(.+)$", line)
                 if m:
-                    raw_name = m.group(1).strip()
-                    age_str = m.group(2)
-                    desc = m.group(3).strip()
-                    if raw_name.lower() in existing_char_names:
-                        continue
-                    age_num = int(age_str) if age_str else 30
-                    is_female = any(w in desc.lower() for w in ("she ", "her ", "sister", "woman", "mother", "wife", "heiress", "daughter"))
-                    if age_num < 25:
-                        casting = "young woman in her early twenties" if is_female else "young man in his early twenties"
-                    elif age_num < 40:
-                        casting = "woman in her thirties" if is_female else "man in his thirties"
-                    else:
-                        casting = "distinguished woman in her forties" if is_female else "distinguished man in his forties"
-
-                    color_candidates = ["chestnut brown", "dark brown", "jet black", "silver gray", "auburn", "warm amber"]
-                    chosen_color = next((c for c in color_candidates if _family(c, _HAIR_COLORS) not in existing_colors), "chestnut brown")
-                    existing_colors.add(_family(chosen_color, _HAIR_COLORS))
-
-                    wardrobe = "sharp tailored dark wool overcoat and dark designer suit" if "overcoat" in desc.lower() else "tailored modern luxury business attire"
-                    build = "tall and commanding build" if any(w in desc.lower() for w in ("tall", "commanding", "athletic", "broad")) else "refined athletic build"
-
-                    new_char = {
-                        "name": raw_name,
-                        "is_protagonist": False,
-                        "role": desc.split(".")[0].strip(),
-                        "appearance": {
-                            "casting": casting,
-                            "hair_color": chosen_color,
-                            "hair_style": "neatly parted short styled hair",
-                            "build": build,
-                            "distinguishing_feature": "piercing observant gaze and sculpted jawline",
-                            "wardrobe": wardrobe,
-                        },
-                        "voice": "resonant clear alto with precise diction" if is_female else "deep baritone with authority",
-                        "motivation": "challenge Ryan Blake and uncover the true designer",
-                        "relationships": "estranged family and potential ally to Sophia",
-                        "speech_style": "calm, observant, authoritative ('I have seen this signature before', 'Come to Blake Couture tomorrow')",
-                    }
-                    bible.setdefault("characters", []).append(new_char)
-                    existing_char_names[raw_name.lower()] = new_char
+                    _add_new_character(m.group(1), m.group(2), m.group(3).strip())
+    for cm in re.finditer(r"\[\s*CAST\s*:\s*([^\]]+)\]", continuation_prompt, re.I):
+        for em in re.finditer(r"([A-Z][A-Za-z'.]*(?:\s+[A-Z][A-Za-z'.]*)*)\s*\(\s*(?:(?:about|early|late|mid)?\s*(\d{1,2})s?\s*,\s*)?([^)]*)\)", cm.group(1)):
+            _add_new_character(em.group(1), em.group(2), em.group(3).strip(), from_cast_line=True)
 
     # 2. Regex / structured extraction of new locations
     loc_candidates = []
     for lm in re.finditer(r"\bLocation\s*:\s*([^\n\r]+)", continuation_prompt, re.I):
         loc_candidates.append(lm.group(1).strip().rstrip(".,"))
-    for sm in re.finditer(r"\[(?:[A-Za-z\s.]*?\b)?(?:INT|EXT|INT\/EXT|EXT\/INT)\.?\s+([A-Z0-9\s'—–-]+?)(?:\s*[—–-]\s*(?:NIGHT|DAY|GOLDEN HOUR|DAWN|DUSK|RAIN)[^\]]*)?\]", continuation_prompt, re.I):
-        cand = sm.group(1).strip().rstrip(".,")
-        if cand and cand not in loc_candidates:
-            loc_candidates.append(cand)
+    for bm in re.finditer(r"\[\s*(?:(?:SCENE\s*\d+\s*:\s*)?[A-Za-z0-9\s.]*?\b)?(?:INT|EXT|INT\/EXT|EXT\/INT)\.?\s*([^\]]+)\]", continuation_prompt, re.I):
+        content = bm.group(1).strip()
+        parts = [p.strip() for p in re.split(r"[\—\–\-]", content) if p.strip()]
+        loc_parts = []
+        for p in parts:
+            if re.match(r"^(?:NIGHT|DAY|GOLDEN HOUR|DAWN|DUSK|RAIN|MORNING|EVENING|AFTERNOON)\b", p, re.I):
+                break
+            if re.search(r"\b(runs|walks|stands|sits|looks|turns|calls|enters|strides|speaks|kneels|dives|cries|shouts|stops)\b", p, re.I):
+                break
+            loc_parts.append(p)
+        if loc_parts:
+            cand = " — ".join(loc_parts).strip().rstrip(".,—–- ")
+            if cand and cand not in loc_candidates:
+                loc_candidates.append(cand)
+    for scm in re.finditer(r"\[\s*SCENE\s*(?:\d+)?\s*:\s*([A-Z0-9\s'’—–-]+?)(?:\s*[—–-]\s*(?:NIGHT|DAY|GOLDEN HOUR|DAWN|DUSK|RAIN|MORNING|EVENING|AFTERNOON)[^\]]*)?\]", continuation_prompt, re.I):
+        raw = scm.group(1).strip().rstrip(".,")
+        raw = re.sub(r"^(?:INT|EXT|INT\/EXT|EXT\/INT)\.?\s*", "", raw, flags=re.I).strip()
+        if raw and raw not in loc_candidates:
+            loc_candidates.append(raw)
 
     for raw_loc_line in loc_candidates:
-        clean_name = re.sub(r"\b(night|day|golden hour|rain|fog|dawn|dusk|gentle rain|light mist|with|under|at|a|the|sleek|glistening|wet pavement)\b", "", raw_loc_line, flags=re.I)
-        clean_name = re.sub(r"[-—–]", " ", clean_name)
+        clean_name = re.sub(r"\b(night|day|golden hour|rain|fog|dawn|dusk|gentle rain|light mist|morning|evening|afternoon|with|under|at|a|the|sleek|glistening|wet pavement)\b", "", raw_loc_line, flags=re.I)
+        clean_name = re.sub(r"[\-—–'’]", " ", clean_name)
         words = [w.lower() for w in re.findall(r"[a-zA-Z]+", clean_name)[:4]]
         loc_id = "_".join(words) if words else f"loc_{len(existing_loc_ids) + 1}"
         if re.search(r"\b(park|garden)\b", raw_loc_line, re.I):
@@ -3548,11 +3631,17 @@ def extend_bible_with_continuation(continuation_prompt: str, bible: dict) -> dic
             loc_id = "exterior_high_rise_street"
         elif re.search(r"\b(penthouse|balcony)\b", raw_loc_line, re.I):
             loc_id = "penthouse_balcony"
+        elif re.search(r"\b(pool|poolside)\b", raw_loc_line, re.I) and "ashford_mansion_pool" in existing_loc_ids:
+            loc_id = "ashford_mansion_pool"
 
-        if loc_id in existing_loc_ids:
+        # The id above is cut at four words, so "ASHFORD MANSION - GRAND DRAWING ROOM" became "ashford_mansion_grand_drawing" and was added as a SECOND
+        # place next to the existing "ashford_mansion_grand_drawing_room": a new empty picture slot, a freshly drawn room that did not look like the
+        # first one, and a "continuous" scene in a different room. An id that is the start of an existing id (or the other way round) is the same place.
+        if any(loc_id == e or e.startswith(loc_id + "_") or loc_id.startswith(e + "_") for e in existing_loc_ids):
             continue
 
         loc_clean_prompt = raw_loc_line.split(".")[0].strip()
+        loc_clean_prompt = re.sub(r"^[\-—–\s]+|[\-—–\s]+$", "", loc_clean_prompt)
         new_loc = {
             "id": loc_id,
             "description": f"Spacious {loc_clean_prompt.lower()}.",
@@ -3562,7 +3651,11 @@ def extend_bible_with_continuation(continuation_prompt: str, bible: dict) -> dic
                 f"Medium angle view across {loc_clean_prompt.lower()} with clear floor plane and background perspective.",
                 f"Establishing perspective across the open space of {loc_clean_prompt.lower()}."
             ],
-            "image_prompt": loc_clean_prompt
+            "image_prompt": (
+                f"{loc_clean_prompt.upper()}. The room is EMPTY: nobody in frame, no people at all. "
+                f"Spacious and open, shot with a wide-angle lens: generous floor space and depth, room for multiple people to stand apart and for a camera to stand several metres back. "
+                f"Photorealistic, live-action movie still, shot on Arri Alexa, 8k, detailed textures and materials, natural light falloff, NO CGI, NO 3D render, NO illustration."
+            )
         }
         bible.setdefault("locations", []).append(new_loc)
         existing_loc_ids[loc_id] = new_loc
@@ -3761,6 +3854,23 @@ def topic_with_rules(topic: str, rules: list[dict] | None) -> str:
     """The premise with the standing rules appended: the one place every later stage already reads, so a rule reaches the
     replanner, the continuation planner and every clip writer without touching their prompts."""
     return (topic or "") + rules_block(rules)
+
+
+def topic_with_continuation(topic: str, notes: list | None, clip_number: int) -> str:
+    """The premise the clip writer sees for ONE clip. A continuation's own text (its opening pose, its shots, its delivery wording) used to reach only
+    the continuation planner, so the clip writer filmed from where the previous clip ended: a clip whose text opened with two people already side by
+    side opened instead with one of them walking across the room in a wide shot. For the clips a continuation covers, its text is added."""
+    for n in notes or []:
+        try:
+            lo, hi = int(n.get("start_clip") or 0), int(n.get("end_clip") or 0)
+        except (TypeError, ValueError):
+            continue
+        text = (n.get("text") or "").strip()
+        if text and lo <= clip_number <= hi:
+            many = hi > lo
+            return (f"{topic or ''}\n\nDIRECTIONS FOR CLIP{'S' if many else ''} {lo}{f' TO {hi}' if many else ''} (the author's own shot list for exactly "
+                    f"{'these clips' if many else 'this clip'}; the clips before {'them' if many else 'it'} are already filmed):\n{text}")
+    return topic or ""
 
 
 def clean_rules(rules: list | None) -> list[dict]:
@@ -4120,8 +4230,9 @@ def _put_rewrite(beat: dict, rw: dict, bible: dict) -> dict:
     if out.get("delivery_mode") == "shock_action":
         out["audio_lines"] = []
     else:
-        out["audio_lines"] = [{"speaker": by_lower.get(str(t.get("speaker") or "").lower(), t.get("speaker")), "line": t["line"]}
-                              for t in rw.get("audio_lines") or []]
+        out["audio_lines"] = _carry_line_fields(beat.get("audio_lines"), [
+            {"speaker": by_lower.get(str(t.get("speaker") or "").lower(), t.get("speaker")), "line": t["line"]}
+            for t in rw.get("audio_lines") or []])
     out["speech_budget"] = _spoken_words(out["audio_lines"])
     return out
 
@@ -4135,6 +4246,44 @@ def _runs(numbers: list[int]) -> list[tuple[int, int]]:
         else:
             runs.append([n, n])
     return [(a, b) for a, b in runs]
+
+
+def _carry_line_fields(old_lines: list[dict] | None, new_lines: list[dict]) -> list[dict]:
+    """Put what a line carries besides its words (is_voiceover: an inner thought stays one; cutaway: where the camera goes) back on lines that were
+    REBUILT from the speaker and the words alone (a plan revision, a fact repair). A new line takes the extras of the old line at the same
+    position when the same person says it; anything else starts without them."""
+    old_lines = old_lines or []
+    for i, t in enumerate(new_lines):
+        o = old_lines[i] if i < len(old_lines) else None
+        if o and str(o.get("speaker") or "").strip().lower() == str(t.get("speaker") or "").strip().lower():
+            if o.get("is_voiceover"):
+                t["is_voiceover"] = True
+            if (o.get("cutaway") or "").strip():
+                t["cutaway"] = o["cutaway"].strip()
+    return new_lines
+
+
+_OPENING_NEW_SHOT = re.compile(r"\[\s*OPENING\s*:\s*NEW\s+SHOT", re.I)
+
+
+def _mark_fresh_opening(clip: dict, topic: str | None) -> None:
+    """The author's directions for this clip open with "[OPENING: NEW SHOT ...]" (an entrance, a door opening, a walk-in): the clip does NOT continue
+    from the previous clip's last shot, and the builder leaves out its "continue the previous shot, nobody walks in" line."""
+    t = topic or ""
+    if "DIRECTIONS FOR CLIP" in t and _OPENING_NEW_SHOT.search(t.split("DIRECTIONS FOR CLIP", 1)[1]):
+        clip["fresh_opening"] = True
+
+
+def _copy_line_fields(clip: dict, beat: dict) -> None:
+    """The plan's per-line extras go onto the clip's turns, matched by position (the clip may not add, drop or reorder lines: that is checked)."""
+    planned, turns = _beat_lines(beat), clip.get("speech") or []
+    if len(planned) != len(turns):
+        return
+    for p, t in zip(planned, turns):
+        if (p.get("cutaway") or "").strip() and not p.get("is_voiceover"):
+            t["cutaway"] = p["cutaway"].strip()
+        if p.get("is_voiceover"):
+            t["is_voiceover"] = True
 
 
 def _snapshot(beat: dict) -> dict:
@@ -4742,6 +4891,7 @@ ABSOLUTE SPATIAL & CONTINUITY RULES:
    Blocking describes TWO moments: where each character is at 0.0s (position, posture, screen_profile, eyeline) and where the action leaves them at the end of the clip (end_position, end_posture, end_screen_profile, end_eyeline).
    If this clip continues in the same location as the previous clip, each character's 0.0s pose MUST match the pose the PREVIOUS clip ENDED them in - not the pose it started them in. They are free to move during this clip; every change between the two must be shown happening in action_steps. A character who stands still all clip simply has the same values at both ends.
    SHARED SEATING & BOOTHS (PREVENT MORPHING): When multiple characters share a booth or table, assign each person a distinct, separated physical seat (e.g. seated on opposite sides of the table). At 0.0s, describe both characters present with an active posture or subtle motion in action_steps within the first second, ensuring the video model instantiates both distinct human bodies from frame 0 and never merges or morphs them.
+   DIRECTIONS FOR THIS CLIP (CRITICAL): when the Story Premise ends with "DIRECTIONS FOR CLIP ..." covering this clip, that is the author's own shot list for it. Its "FRAME 0.0s OPENING POSE & BLOCKING" is THIS clip's 0.0s pose even where it differs from where the previous clip left someone: a cut is allowed, so never film a walk-in, an approach or a repositioning to bridge the difference. Use its camera moves, cutaways and delivery wording for this clip; the beat's spoken lines stay exactly the Master Plan's. A line [OPENING: NEW SHOT ...] there means this clip opens on a NEW shot exactly as the directions describe (an entrance, a door opening, someone walking in and across the room toward the others are allowed and are filmed), not on the previous clip's last shot.
    OPENING POSE FIDELITY (CRITICAL): At 0.0s, each character's posture, hand position, and physical stance in 'blocking' and 'action_steps' MUST match the OPENING of the beat or prompt (e.g. if the premise opens with a hand raised high frozen mid-slap, that MUST be their 0.0s starting pose in blocking and action_steps; do NOT preemptively set their ending resolved pose as their starting pose!).
 
 3. REMOTE TELEPHONE / INTERCOM / COMMUNICATOR CALLS (CRITICAL):
@@ -4767,6 +4917,7 @@ ABSOLUTE SPATIAL & CONTINUITY RULES:
        D) ESTABLISHING PHASE: the FIRST clip of a scene, or of a new place, is the master: a wide or medium shot that shows where everyone is, what the room looks like and each person's screen position (frame-left vs frame-right). It MOVES (a slow drift or push); it does not freeze.
        E) FRAMING WHEN SOMEONE SPEAKS: the video is VERTICAL (9:16), so frame TIGHT. The speaker is a Medium Close-Up (chest up) or a Close-Up, NEVER wider than a Medium shot (waist up): nothing below the waist is shown in a clip where someone speaks. Wide shots are only for the first clip of a scene, for group shots and for movement. When a line begins, the camera is on that speaker's face; any non-speaking listener present in the shot must be positioned over-the-shoulder, turned away, or passive with their mouth firmly closed, ensuring lip synchronization locks only onto the speaking character.
        F) L-CUTS: REACTIONS WHILE SOMEONE IS STILL TALKING (CRITICAL): the camera does not have to stay on the speaker for the whole line. EVERY live line BEGINS on its speaker's face with the lips moving, for about a second or more, so the voice is tied to the right mouth. After that the camera may leave for a LISTENER'S reaction (a push-in on their eyes, a jaw tightening, a hand shifting) while the speaker's voice carries on, and it may come BACK to the speaker later in the same line or for the next line. While the camera is on a listener, that listener's mouth stays strictly closed with lips motionless: a listener never mouths, repeats or lip-syncs what the speaker is saying. A line is never spoken wholly over a listener's face unless the camera has just shown that same speaker talking. The speaker stays "visible" in blocking (they are still in the room); only the camera is elsewhere. Write these cuts, with their times, into the one shot sentence (for example: "on Hannah's face for her first second, cut at 1.2 seconds to Mike's closed-mouth reaction while she keeps talking, back to Hannah at 3.4 seconds for her last words"). INNER THOUGHTS ARE THE OPPOSITE: while a character's inner thought (is_voiceover) plays, the camera goes in on THAT character and stays locked on them, one unbroken close shot with no cut away until the thought ends, showing how it lands; their mouth never moves.
+       G) RAPID-FIRE DIALOGUE OPENS CLOSE (CRITICAL): a dialogue clip with 45 or more spoken words has no time for an establishing shot. It opens on a MEDIUM or tighter shot that already shows everyone the beat lists on screen, together in the first frame, and the first line starts at once. Never open on a wide shot, and never spend the opening seconds on someone walking into frame or crossing the room. (Exception: the directions' [OPENING: NEW SHOT ...] opening is followed as written.)
    (2) EVERY ANGLE SHOWS ITS BACKGROUND: say what is visible BEHIND the subject in that angle, taken from the place's layout (for example "behind Hannah, her front door and the rain-streaked window"). The location pictures cannot show every direction, so the shot text has to.
    (3) THE 180-DEGREE RULE & SCREEN DIRECTION: between two clips of one scene, keep the camera on the SAME SIDE of the imaginary line between the people, so each keeps their screen side: the person on frame-left stays on frame-left and looks toward screen-right. Crossing to the other side is allowed in only three cases, and then the shot MUST state the new positions in words and set "frame_position" and "screen_profile" to match (everything mirrors: who is left or right, where doors and windows are, which way people face): (a) the camera visibly travels across during the clip (an orbit, or a track past them); (b) the clip follows a wide or neutral shot, or a change of place; (c) it is a narration or action clip between scenes. The two parts of a cut inside one clip stay on the SAME side of the line. Never flip it by accident.
    (4) COVERAGE PHASE - MOTIVATED CUTS: besides the speaker shots above, use Close-Up / Extreme Close-Up on a face, trembling hands or a key prop at emotional peaks; Power Dynamics (the dominant person from a LOW angle, the vulnerable one from a HIGH angle); Reveals (open on a close detail, then pull back or tilt to show the scene). Every [ANGLE CUT] has a reason in the drama. NEVER cut in the MIDDLE of a movement: when someone walks, enters or leaves across consecutive clips, keep ONE continuous tracking shot ([SAME SETUP]) that follows them.
@@ -4915,9 +5066,11 @@ def _check_narrated_chapter(
     prev_clip: dict | None,
     clip_index: int = 0,
     beats: list[dict] | None = None,
-    clip_duration: int | None = None
+    clip_duration: int | None = None,
+    directed: bool = False,
 ) -> list[str]:
-    """Validates the clip screenplay for mouth closure, dialogue limits, location locking, and spatial continuity."""
+    """Validates the clip screenplay for mouth closure, dialogue limits, location locking, and spatial continuity.
+    `directed`: the author's own directions for this clip (a continuation's text) were given to the clip writer, and they state its opening pose."""
     problems = []
     clips = data.get("clips", [])
     if not clips:
@@ -5011,8 +5164,11 @@ def _check_narrated_chapter(
     elif mode == "dialogue":
         if not turns:
             problems.append(f"clip {clip_index + 1}: dialogue clip must have at least one spoken turn.")
-        if len(turns) > MAX_DIALOGUE_TURNS:
-            problems.append(f"clip {clip_index + 1}: {len(turns)} turns in one clip; at most {MAX_DIALOGUE_TURNS} fit in {clip_dur} seconds.")
+        # The beat's lines are fixed (the author's own text, or an approved plan): a clip may carry as many turns as its beat lists, never fewer
+        # than the usual cap. Without this an author's 9-line clip could never pass and the job stopped at that clip.
+        turn_cap = max(MAX_DIALOGUE_TURNS, len((beat or {}).get("audio_lines") or []))
+        if len(turns) > turn_cap:
+            problems.append(f"clip {clip_index + 1}: {len(turns)} turns in one clip; at most {turn_cap} fit in {clip_dur} seconds.")
         if len({(t.get("speaker") or "").strip().lower() for t in turns}) > MAX_VOICE_REFS:
             problems.append(f"clip {clip_index + 1}: more than {MAX_VOICE_REFS} different speakers; kie.ai takes at most {MAX_VOICE_REFS} voices per clip.")
         if not (min_words <= words <= max_words):
@@ -5092,10 +5248,15 @@ def _check_narrated_chapter(
     if env:
         m = _PERSON_IN_PLATE.search(env)
         if m:
-            problems.append(f"clip {clip_index + 1}: \"environment\" describes a person ('{m.group(0)}'). It is what the PLACE does; people belong in blocking and action_steps.")
+            problems.append(f"[SOFT] clip {clip_index + 1}: \"environment\" describes a person ('{m.group(0)}'). It is what the PLACE does; people belong in blocking and action_steps.")
         for cname in bible_chars.values():
-            if re.search(rf"\b{re.escape(cname.split()[0])}\b", env, re.I):
-                problems.append(f"clip {clip_index + 1}: \"environment\" names '{cname}'. Describe only what the place itself does.")
+            first = cname.split()[0]
+            if first.lower() in ("boardroom", "ashford", "security", "room", "reporter") or len(cname.split()) > 2 or any(w in cname.lower() for w in ("executives", "staff", "guard", "waiter", "reporter", "toy")):
+                pat = rf"\b{re.escape(cname)}\b"
+            else:
+                pat = rf"\b{re.escape(first)}\b"
+            if re.search(pat, env, re.I):
+                problems.append(f"[SOFT] clip {clip_index + 1}: \"environment\" names '{cname}'. Describe only what the place itself does.")
                 break
 
     # 4f. The prop diary: every prop is real, held by somebody real, and never quietly disappears.
@@ -5177,7 +5338,11 @@ def _check_narrated_chapter(
                     # clip in a location to open in the same pose, freezing the scene.
                     prev_post = pb.get("end_posture") or pb.get("posture")
                     curr_post = b.get("posture")
-                    if prev_post and curr_post and prev_post != curr_post:
+                    if prev_post and curr_post and prev_post != curr_post and directed:
+                        # The author's directions for this clip state its opening pose. That is a cut (the same rule the clip writer was given), so
+                        # a different posture is noted, not refused: refusing it made the writer retry until the job stopped, for a pose the author asked for.
+                        problems.append(f"[SOFT] clip {clip_index + 1}: {b['character']} opens '{curr_post}' where the previous clip left them '{prev_post}'; allowed, the author's directions open this clip that way.")
+                    elif prev_post and curr_post and prev_post != curr_post:
                         problems.append(f"clip {clip_index + 1}: {b['character']} opens with posture '{curr_post}', but the previous clip left them '{prev_post}'. The 0.0s pose must continue from where the last clip ENDED; show any change inside this clip's action_steps.")
                     prev_prof = pb.get("end_screen_profile") or pb.get("screen_profile")
                     curr_prof = b.get("screen_profile")
@@ -5209,7 +5374,10 @@ def _check_narrated_chapter(
     # 8. Inner states check in descriptions
     texts = [("shot", clip.get("shot", ""))] + [("action_steps", s.get("action", "")) for s in clip.get("action_steps", [])]
     for field, text in texts:
-        m = _INNER_STATE.search(text)
+        # "the camera stays locked on her for the whole inner thought" names the VOICE that is playing, which the camera rules themselves ask the
+        # writer to say; only a mental state shown as picture ("she realizes", "he knows") is refused. The phrase used to be refused too, so the two
+        # rules contradicted each other and a clip with an inner thought could never pass.
+        m = _INNER_STATE.search(_INNER_THOUGHT_PHRASE.sub(" ", text))
         if m:
             problems.append(f"clip {clip_index + 1}: '{field}' names an inner state ('{m.group(0)}'); describe what the face and body visibly do instead.")
 
@@ -5735,7 +5903,8 @@ def write_narrated_chapter(
             _normalize_narrated_clip(clip, bible)  # a repair may have changed the cast
             for c in changes:
                 print(f"  Clip {clip_index+1} repaired: {c}")
-        problems = _check_narrated_chapter(data, beat, bible, prev_clip, clip_index=clip_index, beats=beats, clip_duration=clip_dur)
+        problems = _check_narrated_chapter(data, beat, bible, prev_clip, clip_index=clip_index, beats=beats, clip_duration=clip_dur,
+                                           directed="DIRECTIONS FOR CLIP" in (topic or ""))
         problems += [f"[SOFT] clip {clip_index+1}: auto-repaired - {c}" for c in changes]
         hard = _hard_problems(problems)
 
@@ -5766,6 +5935,8 @@ def write_narrated_chapter(
                         for sp in sup_problems:
                             print(f"    - {sp}")
                         problems += [f"[SOFT] {sp}" for sp in sup_problems]
+            _copy_line_fields(clip, beat)
+            _mark_fresh_opening(clip, topic)
             return data, problems
 
         if not last_attempt:
@@ -5782,6 +5953,8 @@ def write_narrated_chapter(
             )
     # Retries are spent. The lines were already replaced with the Master Plan's by repair 3, and the beat's
     # cast placed off screen by repair 4, so whatever is left here is a real problem for the caller to judge.
+    _copy_line_fields(data["clips"][0], beat)
+    _mark_fresh_opening(data["clips"][0], topic)
     return data, problems
 
 
@@ -5882,28 +6055,33 @@ def _n_words(text: str) -> int:
     return len(_WORD.findall(text or ""))
 
 
-def _live_segments(text: str) -> list[str]:
+def _live_segments(text: str, relaxed: bool = False) -> list[str]:
     """Where a long live line can change camera: [on the speaker, over the listener] or, for a very long line,
     [on the speaker, over the listener, back on the speaker]. A line that is short, or has no clean place to break, comes back whole.
+    `relaxed` is for a line the PLAN gave a cutaway to: the premise asked for that shot, so shorter pieces are accepted (5 words in all, 3 on the
+    speaker, 2 after).
 
     Breaks fall on sentence ends first and on a comma or dash only inside a single long sentence. The words are untouched: the pieces,
     joined with spaces, are the line."""
+    min_words = 5 if relaxed else LCUT_MIN_WORDS
+    head_min = 3 if relaxed else LCUT_HEAD_MIN_WORDS
+    seg_min = 2 if relaxed else LCUT_SEGMENT_MIN_WORDS
     text = (text or "").strip()
-    if _n_words(text) < LCUT_MIN_WORDS:
+    if _n_words(text) < min_words:
         return [text]
     sentences = [s.strip() for s in _SENTENCE_END.split(text) if s.strip()]
     pieces: list[str] = []
     for s in sentences:                       # a fragment too short to stand alone joins its neighbour
-        if pieces and _n_words(pieces[-1]) < LCUT_SEGMENT_MIN_WORDS:
+        if pieces and _n_words(pieces[-1]) < seg_min:
             pieces[-1] = f"{pieces[-1]} {s}"
         else:
             pieces.append(s)
-    if len(pieces) >= 2 and _n_words(pieces[-1]) < LCUT_SEGMENT_MIN_WORDS:
+    if len(pieces) >= 2 and _n_words(pieces[-1]) < seg_min:
         pieces[-2] = f"{pieces[-2]} {pieces[-1]}"
         pieces.pop()
     if len(pieces) >= 2:
         head, rest = pieces[0], pieces[1:]
-        if _n_words(head) < LCUT_HEAD_MIN_WORDS:
+        if _n_words(head) < head_min:
             head, rest = f"{head} {rest[0]}", rest[1:]
         if not rest:
             return [text]
@@ -5912,9 +6090,24 @@ def _live_segments(text: str) -> list[str]:
         return [head, " ".join(rest)]
     for m in _CLAUSE_BREAK.finditer(text):    # one long sentence: break at the first clause that leaves enough on both sides
         left, right = text[:m.end()].strip(), text[m.end():].strip(" —–")
-        if _n_words(left) >= LCUT_HEAD_MIN_WORDS and _n_words(right) >= LCUT_SEGMENT_MIN_WORDS:
+        if _n_words(left) >= head_min and _n_words(right) >= seg_min:
             return [left, right]
     return [text]
+
+
+def _cutaway_target(cutaway: str, visible: list[str], speaker: str) -> tuple[str, str] | None:
+    """What the plan wants the camera on while a line's voice carries on: ("person", name) when the plan names someone who is in shot (their
+    silent reaction), ("detail", text) for anything else (a prop, a wound, a door: whatever the story needs seen), or None when it names nothing
+    or only the speaker."""
+    cut = re.sub(r"\s+", " ", cutaway or "").strip().strip(".")
+    if not cut:
+        return None
+    key = re.sub(r"['’]s?$", "", cut).strip().lower()
+    for name in visible:
+        full = name.strip().lower()
+        if key in (full, full.split()[0]):
+            return None if full == speaker.strip().lower() else ("person", name)
+    return ("detail", cut)
 
 
 def _regroup_segments(segments: list[str]) -> list[str]:
@@ -5947,13 +6140,27 @@ def _pick_listener(speaker: str, turns: list[dict], index: int, visible: list[st
     return others[0]
 
 
+def _previous_last_shot(prev_clip: dict | None, clip: dict) -> str | None:
+    """The last shot of the previous clip, in words, when this clip is in the same place and continues from it: the camera was on whoever spoke last
+    (an inner thought is always a close shot on the thinker, a live line a close-up on the speaker). None when there is no previous clip, it is in
+    another place (a cut), or nobody spoke in it."""
+    if not prev_clip or str(prev_clip.get("location_id") or "") != str(clip.get("location_id") or ""):
+        return None
+    turns = _clip_turns(prev_clip)
+    who = (turns[-1].get("speaker") or "").strip() if turns else ""
+    if not who:
+        return None
+    return f"a close-up on {who}'s face" if turns[-1].get("is_voiceover") else f"a close-up on {who}"
+
+
 def _build_screenplay_prompt(
     clip: dict,
     bible: dict,
     cast_bank: dict[str, str],
     location_bank: dict[str, list[str]],
     voice_bank: dict[str, str],
-    clip_duration: int = 15
+    clip_duration: int = 15,
+    prev_clip: dict | None = None,
 ) -> tuple[str, list[str], list[str]]:
     """Compiles Seedance prompt in pure screenplay format for 10-15s clips,
     interleaving scene setup, reference bindings, physical action beats,
@@ -6001,12 +6208,13 @@ def _build_screenplay_prompt(
             char_tags.append(f"{name} ({look})")
 
     ref_audios: list[str] = []
+    _ref_speakers = _voice_ref_speakers(clip, voice_bank)
     def _voice_tag(name: str) -> str:
         url = voice_bank.get(name)
-        if not url:
+        if not url or name not in _ref_speakers:
             return ""
         if url not in ref_audios:
-            if len(ref_audios) >= MAX_VOICE_REFS:
+            if len(ref_audios) >= KIE_MAX_AUDIO_REFS:
                 return ""
             ref_audios.append(url)
         return f"@Audio{ref_audios.index(url) + 1}"
@@ -6037,6 +6245,10 @@ def _build_screenplay_prompt(
                 cleaned = f"{cname}'s {cleaned[4:]}"
             elif cleaned.lower().startswith("their "):
                 cleaned = f"{cname}'s {cleaned[6:]}"
+            elif re.match(r"^(?:he|she|they)\s+\S", cleaned, re.IGNORECASE):
+                # the step already starts with a pronoun for this character ("he answers ..."): the name replaces it. Joining them
+                # gave "Theo he answers ...", which put the character's name an extra time right beside the spoken line.
+                cleaned = f"{cname} {cleaned.split(None, 1)[1]}"
             elif not cleaned.lower().startswith(cname.lower()):
                 cleaned = f"{cname} {cleaned[0].lower() + cleaned[1:] if len(cleaned) > 1 else cleaned}"
         return cleaned
@@ -6122,6 +6334,14 @@ def _build_screenplay_prompt(
         if DIALOGUE_CAMERA_PLAN and plan_shot:
             screenplay_lines.append(f"[CAMERA PLAN: {plan_shot}.]")
 
+        if is_high_density and not clip.get("fresh_opening") and any(b.get("character") for b in blocking):
+            who_all = movie._join([b["character"] for b in blocking if b.get("character")])
+            last_shot = _previous_last_shot(prev_clip, clip)
+            if last_shot:
+                screenplay_lines.append(f"[OPENING FRAME: this clip continues directly from the previous clip's last shot, {last_shot}. The very first frame keeps that exact framing, expression and light, and holds it as the clip begins; the camera moves on from there. Do not open on a wide shot, do not zoom out to the whole room, and nobody walks into frame.]")
+            else:
+                screenplay_lines.append(f"[OPENING FRAME: the very first frame is a medium shot that already holds {who_all} together in frame. The first line starts at once: no wide establishing shot, and nobody walks into frame.]")
+
         # 1. Opening actions before speech
         for idx, s in enumerate(action_steps):
             t = float(s.get("start_time", 0.0) or 0.0)
@@ -6154,6 +6374,7 @@ def _build_screenplay_prompt(
         prev_speaker = ""
         prev_was_vo = False
         has_vo = False
+        spoke_on_cam: set[str] = set()     # who has already been shown speaking in this clip (their voice is tied to their lips)
         on_screen_chars = {b.get("character", "").lower() for b in blocking}
         visible_names = [b.get("character", "").strip() for b in blocking if b.get("character")]
 
@@ -6167,30 +6388,45 @@ def _build_screenplay_prompt(
             if merged_turns and live and merged_turns[-1].get("_live") and merged_turns[-1].get("_who") == who:
                 merged_turns[-1]["_segments"].append(piece)
                 merged_turns[-1]["_deliveries"].append((t.get("delivery") or "").strip())
+                merged_turns[-1]["_cutaways"].append((t.get("cutaway") or "").strip())
                 merged_turns[-1]["line"] = f"{merged_turns[-1]['line']} {t.get('line') or ''}".strip()
                 merged_turns[-1]["end_est"] = t.get("end_est", merged_turns[-1].get("end_est"))
             else:
                 nt = dict(t)
                 nt["_live"], nt["_who"], nt["_segments"] = live, who, ([piece] if live else [])
                 nt["_deliveries"] = [(t.get("delivery") or "").strip()]
+                nt["_cutaways"] = [(t.get("cutaway") or "").strip()]
                 merged_turns.append(nt)
         turns = merged_turns
 
-        # Which lines get a cutaway: a premise's own splits always; of the rest, the LONGEST lines that have a clean break and someone to
-        # cut to, up to half the clip's live lines (at least one), never more than LCUT_MAX_SPLITS in all. Short clips are not over-cut.
+        # Which lines get a cutaway: a premise's own splits always, and every line the PLAN gave a cutaway to (it asked for that shot); of the rest,
+        # the LONGEST lines that have a clean break and someone to cut to, up to half the clip's live lines (at least one), never more than
+        # LCUT_MAX_SPLITS in all. Short clips are not over-cut.
         auto_split: set[int] = set()
+        relaxed_idx: set[int] = set()
         if LINE_SPLIT_LCUT:
             live_idx = [i for i, t in enumerate(turns) if t.get("_live")]
             cap = min(LCUT_MAX_SPLITS, max(1, len(live_idx) // 2))
             explicit_n = sum(1 for i in live_idx if len(turns[i]["_segments"]) >= 2)
-            candidates = []
+            planned_cut, candidates, whole_off_n, seen_live = [], [], 0, set()
             for i in live_idx:
+                who_i = turns[i]["_who"]
                 if len(turns[i]["_segments"]) >= 2:
+                    seen_live.add(who_i)
                     continue
                 text = _clean_speech_text((turns[i].get("line") or "").strip())
-                if len(_live_segments(text)) >= 2 and _pick_listener(turns[i]["_who"], turns, i, visible_names):
+                wants = any(c for c in turns[i].get("_cutaways") or [])
+                if wants and len(_live_segments(text, relaxed=len(_live_segments(text)) < 2)) >= 2:
+                    planned_cut.append(i)
+                    if len(_live_segments(text)) < 2:
+                        relaxed_idx.add(i)
+                elif wants and who_i in seen_live:
+                    whole_off_n += 1          # a short line that plays whole over its cutaway: it is a cutaway too, so it counts toward the cap
+                elif len(_live_segments(text)) >= 2 and _pick_listener(turns[i]["_who"], turns, i, visible_names):
                     candidates.append((_n_words(text), -i, i))
-            auto_split = {i for _, _, i in sorted(candidates, reverse=True)[:max(0, cap - explicit_n)]}
+                seen_live.add(who_i)
+            room = max(0, cap - explicit_n - len(planned_cut) - whole_off_n)
+            auto_split = set(planned_cut) | {i for _, _, i in sorted(candidates, reverse=True)[:room]}
 
         for i, turn in enumerate(turns):
             spk = (turn.get("speaker") or "").strip()
@@ -6237,7 +6473,10 @@ def _build_screenplay_prompt(
                 # this clip is not conjured up by a close-up: the thought plays over the scene instead.
                 if clean_spk.lower() in on_screen_chars:
                     if is_high_density:
-                        screenplay_lines.append(f"[Snap zoom into an Extreme Close-up on {clean_spk}'s eyes and face. The camera stays locked on {clean_spk} for the whole of this inner thought, with no cut away until it ends. Mouth strictly closed, lips motionless:]")
+                        if INNER_THOUGHT_EYE_ZOOM:
+                            screenplay_lines.append(f"[Snap zoom into an Extreme Close-up on {clean_spk}'s eyes and face. The camera stays locked on {clean_spk} for the whole of this inner thought, with no cut away until it ends. Mouth strictly closed, lips motionless:]")
+                        else:
+                            screenplay_lines.append(f"[Cut to a steady Close-up on {clean_spk}'s face, framed from forehead to chin. The camera holds this one framing for the whole of this inner thought: no zoom, no push-in, no move toward the eyes, and no cut away until it ends. Mouth strictly closed, lips motionless:]")
                     else:
                         screenplay_lines.append(f"[Angle cut: Tight Close-up on {clean_spk}'s face. The camera stays locked on {clean_spk} for the whole of this inner thought, with no cut away until it ends. Mouth strictly closed, zero lip movement:]")
                 else:
@@ -6257,34 +6496,61 @@ def _build_screenplay_prompt(
                     screenplay_lines.append(f'{clean_spk.upper()} (off-screen{off_voice}): {deliv_str}"{line}"')
                     screenplay_lines.append(f"[On-screen characters keep mouths strictly closed with lips firmly motionless; zero lip movement.]")
                 elif is_on_screen:
+                    # A SHORT line the plan gave a cutaway to cannot be split (a reaction such as "Viv, what's gotten into you?" after someone else's
+                    # line). If its speaker has already been shown speaking in this clip, the whole line plays over the cutaway: the camera does not
+                    # come to them first, because their voice is already tied to their lips. Without this the cutaway was lost and the line was
+                    # filmed as an ordinary close-up.
+                    whole_off = None
+                    if LINE_SPLIT_LCUT and clean_spk.lower() in spoke_on_cam and len(turn.get("_segments") or []) < 2:
+                        cut_txt = next((c for c in (turn.get("_cutaways") or []) if c), "")
+                        if cut_txt and len(_live_segments(line, relaxed=True)) < 2:
+                            whole_off = _cutaway_target(cut_txt, visible_names, clean_spk)
+                    if whole_off:
+                        off_voice = f" in {tag}'s voice" if tag else (f", in {written_voice.rstrip('. ')}" if written_voice else "")
+                        if whole_off[0] == "detail":
+                            screenplay_lines.append(f"[Camera cuts to {whole_off[1]}, filmed close, while {clean_spk}'s voice speaks off-camera. Nobody on screen speaks:]")
+                            screenplay_lines.append(f'{clean_spk.upper()} (off-screen{off_voice}): {deliv_str}"{line}"')
+                            screenplay_lines.append("[Every mouth on screen stays strictly closed with lips firmly motionless; zero lip movement.]")
+                        else:
+                            screenplay_lines.append(f"[Camera cuts to {whole_off[1]} in a tight close-up, listening with mouth strictly closed and lips motionless; {clean_spk}'s voice speaks off-camera:]")
+                            screenplay_lines.append(f'{clean_spk.upper()} (off-screen{off_voice}): {deliv_str}"{line}"')
+                            screenplay_lines.append(f"[{whole_off[1]} keeps mouth strictly closed with lips firmly motionless; zero lip movement.]")
+                        prev_was_vo = False
+                        prev_speaker = clean_spk
+                        continue
                     if prev_was_vo:
                         # Motivated transition from voiceover reaction to live scene confrontation
                         if is_high_density:
-                            screenplay_lines.append(f"[Rapid whip cut: Close-up on {clean_spk} speaking immediately with lip sync:]")
+                            screenplay_lines.append(f"[Rapid whip cut: Close-up on {clean_spk}{_gaze(turn)} speaking immediately with lip sync:]")
                         elif mid_actions_added == 0:
-                            screenplay_lines.append(f"[Angle cut: Close-up on {clean_spk} speaking with lip sync:]")
+                            screenplay_lines.append(f"[Angle cut: Close-up on {clean_spk}{_gaze(turn)} speaking with lip sync:]")
                         else:
-                            screenplay_lines.append(f"[Angle cut: Medium Close-up on {clean_spk} speaking with lip sync:]")
+                            screenplay_lines.append(f"[Angle cut: Medium Close-up on {clean_spk}{_gaze(turn)} speaking with lip sync:]")
                     elif clean_spk.lower() != prev_speaker.lower() or mid_actions_added > 0:
                         if is_high_density:
-                            screenplay_lines.append(f"[Rapid whip cut: Close-up on {clean_spk} speaking immediately with lip sync:]")
+                            screenplay_lines.append(f"[Rapid whip cut: Close-up on {clean_spk}{_gaze(turn)} speaking immediately with lip sync:]")
                         else:
-                            screenplay_lines.append(f"[Angle cut: Close-up on {clean_spk} speaking with lip sync:]")
+                            screenplay_lines.append(f"[Angle cut: Close-up on {clean_spk}{_gaze(turn)} speaking with lip sync:]")
                     # L-cut: the speaker is on camera for the first words (so the voice is tied to their lips), then the camera goes
                     # to a listener with a closed mouth while the voice carries on, and may come back for the last sentence.
                     segments = [s for s in (turn.get("_segments") or []) if s]
                     explicit = len(segments) >= 2
+                    cuts = list(turn.get("_cutaways") or [])
                     if not explicit and LINE_SPLIT_LCUT and i in auto_split:
-                        segments = [_clean_speech_text(s) for s in _live_segments(line)]
-                    listener = _pick_listener(clean_spk, turns, i, visible_names) if len(segments) >= 2 else None
-                    if listener and LINE_SPLIT_LCUT:
-                        # each piece keeps the delivery of the line it came from (a premise's own split); a split the builder made
-                        # itself has one delivery for every piece
-                        raw_deliv = turn.get("_deliveries") or []
-                        piece_deliv = raw_deliv if explicit and len(raw_deliv) == len(segments) else [deliv] * len(segments)
-                        if len(segments) > 3:      # more than speaker / listener / speaker: the middle pieces join, under the first of their deliveries
-                            piece_deliv = [piece_deliv[0], piece_deliv[1], piece_deliv[-1]]
+                        segments = [_clean_speech_text(x) for x in _live_segments(line, relaxed=i in relaxed_idx)]
+                    # the plan's cutaway for each piece the camera is away during (the odd ones): its own, else the line before it, else the line's only one
+                    seg_cut = [""] * len(segments)
+                    for k in range(1, len(segments), 2):
+                        seg_cut[k] = (cuts[k] if explicit and k < len(cuts) and cuts[k] else (cuts[k - 1] if explicit and k - 1 < len(cuts) else (cuts[0] if cuts else ""))) or ""
+                    raw_deliv = turn.get("_deliveries") or []
+                    piece_deliv = raw_deliv if explicit and len(raw_deliv) == len(segments) else [deliv] * len(segments)
+                    if len(segments) > 3:      # more than speaker / listener / speaker: the middle pieces join
+                        seg_cut = [seg_cut[0], next((c for c in seg_cut[1:-1] if c), ""), seg_cut[-1]]
+                        piece_deliv = [piece_deliv[0], piece_deliv[1], piece_deliv[-1]]
                         segments = _regroup_segments(segments)
+                    default_listener = _pick_listener(clean_spk, turns, i, visible_names) if len(segments) >= 2 else None
+                    targets = {k: _cutaway_target(seg_cut[k], visible_names, clean_spk) for k in range(1, len(segments), 2)} if len(segments) >= 2 else {}
+                    if len(segments) >= 2 and LINE_SPLIT_LCUT and (default_listener or any(targets.values())):
                         off_voice = f" in {tag}'s voice" if tag else (f", in {written_voice.rstrip('. ')}" if written_voice else "")
 
                         def _piece_deliv(k: int) -> str:
@@ -6295,9 +6561,17 @@ def _build_screenplay_prompt(
                         for k, seg in enumerate(segments[1:], 1):
                             if k % 2 == 1:
                                 label = "concluding line" if k == len(segments) - 1 else "continuing"
-                                screenplay_lines.append(f"[Camera cuts to {listener} in a tight close-up, listening with mouth strictly closed and lips motionless; {clean_spk}'s voice continues off-camera:]")
-                                screenplay_lines.append(f'{clean_spk.upper()} (off-screen, {label}{off_voice}): {_piece_deliv(k)}"{seg}"')
-                                screenplay_lines.append(f"[{listener} keeps mouth strictly closed with lips firmly motionless; zero lip movement.]")
+                                target = targets.get(k)
+                                if target and target[0] == "detail":
+                                    # something the story needs SEEN while the voice carries on: a prop, a wound, a door. Nobody on screen speaks.
+                                    screenplay_lines.append(f"[Camera cuts to {target[1]}, filmed close, while {clean_spk}'s voice continues off-camera. Nobody on screen speaks:]")
+                                    screenplay_lines.append(f'{clean_spk.upper()} (off-screen, {label}{off_voice}): {_piece_deliv(k)}"{seg}"')
+                                    screenplay_lines.append("[Every mouth on screen stays strictly closed with lips firmly motionless; zero lip movement.]")
+                                else:
+                                    who_on_cam = target[1] if target else default_listener
+                                    screenplay_lines.append(f"[Camera cuts to {who_on_cam} in a tight close-up, listening with mouth strictly closed and lips motionless; {clean_spk}'s voice continues off-camera:]")
+                                    screenplay_lines.append(f'{clean_spk.upper()} (off-screen, {label}{off_voice}): {_piece_deliv(k)}"{seg}"')
+                                    screenplay_lines.append(f"[{who_on_cam} keeps mouth strictly closed with lips firmly motionless; zero lip movement.]")
                             else:
                                 screenplay_lines.append(f"[Cut back to a Close-up on {clean_spk}, speaking with lip sync, finishing the line:]")
                                 screenplay_lines.append(f'{clean_spk.upper()}{voice_note}: {_piece_deliv(k)}"{seg}"')
@@ -6310,9 +6584,9 @@ def _build_screenplay_prompt(
                         for b in clip.get("blocking", [])
                     )
                     if is_remote:
-                        screenplay_lines.append("[Camera holds on active listener holding telephone receiver with mouth closed]")
+                        screenplay_lines.append("[Camera holds on active listener holding smartphone against ear with mouth closed]")
                         off_voice = f" in {tag}'s voice" if tag else (f", in {written_voice.rstrip('. ')}" if written_voice else "")
-                        screenplay_lines.append(f'{clean_spk.upper()} (over telephone receiver{off_voice}): {deliv_str}"{line}"')
+                        screenplay_lines.append(f'{clean_spk.upper()} (over phone line to ear{off_voice}): {deliv_str}"{line}"')
                     else:
                         if clean_spk.lower() != prev_speaker.lower() or mid_actions_added > 0:
                             if is_high_density:
@@ -6320,6 +6594,8 @@ def _build_screenplay_prompt(
                             else:
                                 screenplay_lines.append(f"[Angle cut: Close-up on {clean_spk}, camera establishes their face before speaking:]")
                         screenplay_lines.append(f'{clean_spk.upper()}{voice_note}: {deliv_str}"{line}"')
+                if is_on_screen and not is_off_screen:
+                    spoke_on_cam.add(clean_spk.lower())
                 prev_was_vo = False
                 prev_speaker = clean_spk
 
@@ -6426,7 +6702,8 @@ def build_narrated_prompt(
             cast_bank=cast_bank,
             location_bank=location_bank,
             voice_bank=voice_bank,
-            clip_duration=dur_val
+            clip_duration=dur_val,
+            prev_clip=prev_clip,
         )
 
     mode = clip.get("delivery_mode", "dialogue")
@@ -6504,10 +6781,10 @@ def build_narrated_prompt(
         kie.ai takes at most MAX_VOICE_REFS reference audios per request, and the same speaker reuses the
         same tag rather than a second slot."""
         url = voice_bank.get(name)
-        if not url:
+        if not url or name not in _voice_ref_speakers(clip, voice_bank):
             return ""
         if url not in ref_audios:
-            if len(ref_audios) >= MAX_VOICE_REFS:
+            if len(ref_audios) >= KIE_MAX_AUDIO_REFS:
                 return ""
             ref_audios.append(url)
         return f"@Audio{ref_audios.index(url) + 1}"
@@ -6704,6 +6981,18 @@ def render_narrated_clip(n: int, prompt: str, image_urls: list[str], audio_urls:
     retries_left = CLIP_RETRIES
     dur = int(duration or DEFAULT_CLIP_SECONDS)
 
+    # The kie.ai task for THIS clip, kept from the moment kie.ai accepts it. A retry (or a later Resume) then waits for that same task instead of
+    # paying for a second one: a connection that dropped while a paid clip was rendering used to make the retry submit the clip again.
+    held = {"id": None}
+    if old.get("task_id") and "kie_reply" not in old and (((old.get("sent_to_kie") or {}).get("input") or {}).get("prompt")) == prompt:
+        held["id"] = record["task_id"] = old["task_id"]       # an earlier run sent this very prompt and never saw the clip finish
+        print(f"    clip {n}: waiting for the kie.ai task already sent for it ({held['id']}) instead of paying again", flush=True)
+
+    def _remember(task_id: str) -> None:
+        held["id"] = record["task_id"] = task_id
+        record_path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"    kie.ai task id for clip {n}: {task_id}", flush=True)
+
     while True:
         record["sent_to_kie"] = {
             "model": app.KIE_MODEL,
@@ -6719,7 +7008,9 @@ def render_narrated_clip(n: int, prompt: str, image_urls: list[str], audio_urls:
                 duration=dur,
                 reference_image_urls=image_urls or None,
                 reference_audio_urls=audio_urls or None,
-                generate_audio=True
+                generate_audio=True,
+                on_task_id=_remember,
+                resume_task_id=held["id"],
             )
             print(f"    ✓ clip {n} done in {time.time() - t0:.0f}s (credits: {result.get('credits_consumed', '?')})", flush=True)
             record["kie_reply"] = result
@@ -6733,6 +7024,9 @@ def render_narrated_clip(n: int, prompt: str, image_urls: list[str], audio_urls:
             return "quit"
         except Exception as e:
             record["attempts"].append({"sent_to_kie": record["sent_to_kie"], "error": str(e)})
+            if held["id"] and isinstance(e, KieError) and f"task {held['id']} failed" in str(e):
+                held["id"] = None          # kie.ai itself reports that task as failed: the next try is a NEW submission
+                record.pop("task_id", None)
             record_path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
             print(f"    ✗ clip {n} failed: {e}", flush=True)
 
@@ -6872,24 +7166,24 @@ def run_hybrid_drama(topic: str, duration: int = 75, interactive: bool = False, 
         print(f"Plan saved to {plan_file}. --script-only set, exiting.")
         return
 
-    # 2. FLUX Reference Images
-    print("\nStep 2: Generating Cast & Location reference images via FLUX...")
+    # 2. Reference images (kie.ai image model)
+    print("\nStep 2: Generating Cast & Location reference images via the image model...")
     cast_bank = {}
     _compile_bible_visuals(bible)
     for c in bible["characters"]:
-        url = movie.generate_flux_image(c["image_prompt"])
+        url = movie.generate_image(c["image_prompt"])
         cast_bank[c["name"]] = url
-        print(f"  ✓ FLUX cast image for {c['name']}")
+        print(f"  ✓ cast image for {c['name']}")
 
     location_bank = {}
     for loc in bible["locations"]:
-        master = movie.generate_flux_image(loc["image_prompt"])
+        master = movie.generate_image(loc["image_prompt"])
         views = [master]
-        for view_desc in loc.get("views", [])[1:3]:
-            angle = movie.generate_flux_image(movie._view_prompt(view_desc), input_image=master)
+        for view_desc in loc.get("views", [])[1:1 + max(0, min(2, movie.LOCATION_EXTRA_VIEWS))]:
+            angle = movie.generate_image(movie._view_prompt(view_desc), [master])
             views.append(angle)
         location_bank[loc["id"]] = views
-        print(f"  ✓ FLUX location images for {loc['id']} ({len(views)} views)")
+        print(f"  ✓ location images for {loc['id']} ({len(views)} views)")
 
     # 3. Interleaved Generation Loop
     print("\nStep 3: Interleaved Scripting & Video Generation...")
