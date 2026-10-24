@@ -11,6 +11,8 @@ x-app: &app
     - ./dashboard.html:/srv/dashboard.html
     - ./movie_scene_multispeaker.py:/srv/movie_scene_multispeaker.py
     - ./hybrid_narrated_drama.py:/srv/hybrid_narrated_drama.py
+    - ./story_script.py:/srv/story_script.py
+    - ./script_director.py:/srv/script_director.py
   depends_on:
     redis:
       condition: service_healthy

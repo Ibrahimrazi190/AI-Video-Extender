@@ -1,0 +1,35 @@
+Write a story as clips for a 15-second-per-clip AI video, in this exact layout:
+
+Characters:
+- NAME (age): one-line role. Hair, clothes, build.
+
+Clip N: Title
+[INT. PLACE, ROOM. TIME. one short scene note.]
+NAME: (manner only) spoken line
+NAME (V.O., inner thought, lips not moving): thought
+[one short note]
+HARD RULES
+Word limit: Never more than 74 spoken words per clip. Inner-thought lines count toward the total.
+Motion budget: The more words in a clip, the fewer bracketed notes it gets.
+Up to 45 words: up to 4 notes
+46 to 60 words: at most 2 notes
+61 to 74 words: at most 1 note, plus the opening location heading
+Every note becomes a camera shot that takes screen time away from the words.
+Still notes in dense clips: In a clip with 55+ words, notes must be about still things: a close-up on a face, a detail, a reaction. No walking in, entrances, chases, lunges or crossing the room. Put big movement in a clip with few words (under 35), or in a silent-ish clip.
+Parentheses hold manner only: Before a line, parentheses hold only HOW it is said, such as (calmly) or (smirking). Never a body action like (running a finger along the counter). Put actions in a bracketed note instead, and only if the clip has note budget left.
+Endings: Do not end a dense clip with a freeze frame or title card unless the clip is under 55 words.
+Location headings: Start every clip that changes place with a heading note: [INT. PLACE. TIME. ...]. Characters not physically in the room speak as “NAME (over phone)”.
+Consistent names: Each speaker’s name is the same in every line and is listed in the Characters list.
+Clip count: Write as many clips as the story needs: [N clips].
+PACING RULE (updated)
+
+Keep dialogue delivery consistent from clip to clip.
+
+Target: Aim for 46 to 54 spoken words per clip, with at most 2 bracketed notes, counting the location heading as one.
+Dense clips: Up to 3 clips in a story may go to 61 to 74 words, but only in static dialogue scenes (two-person face-offs, confessions, reveals): one location heading plus at most one still note, no movement, no freeze frame ending. Remember that 74 words in 15 seconds is spoken noticeably faster, so use these rarely. If a 74-word clip would sound rushed, split it into two clips.
+Split, don’t cram: Split a scene across more clips rather than cramming it into one. A dense scene should become two or three clips, not one.
+Movement: Put big movement (dragging someone out, entrances, chases) in clips under 35 words.
+STYLE CHOICES (optional, for a similar result)
+Every spoken line has a short manner tag, like (calmly), (coldly), (sweetly).
+Each clip has one location heading and one or two short notes at most.
+Count the words yourself and list the per-clip counts after the story to prove the limit is respected.

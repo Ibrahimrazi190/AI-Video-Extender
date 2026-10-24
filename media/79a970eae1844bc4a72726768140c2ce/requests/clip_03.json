@@ -1,0 +1,31 @@
+{
+  "attempts": [],
+  "sent_to_kie": {
+    "model": "bytedance/seedance-2-mini",
+    "input": {
+      "prompt": "[SCENE: Location matches @Image1: A roomy formal dining room in the Whitmore penthouse, finished in warm neutral tones with a broad dining table, matching chairs and soft nighttime lighting. The open connection to the kitchen keeps the space visually continuous with the penthouse interior.]\n[CAST: ETHAN is @Image2. CLAIRE is @Image3. SLOANE is @Image4. Each named character's face, hair, and clothing match their reference image exactly: do not restyle or re-cast.]\n[FRAME 0.0s OPENING POSE & BLOCKING: In the WHITMORE PENTHOUSE dining room at night, everyone holds exactly the previous clip’s positions: Sloane in Claire’s chair wearing the pearls, Ethan beside her, and Claire opposite them. Claire’s phone is hidden beneath the table near her lap, its screen glowing with the transfer at 98%.]\n\n[Medium close-up on Ethan as he leans toward Claire with arrogant certainty, then holds his stare, ETHAN speaking with animated lips:]\nETHAN (matching @Audio1): (arrogantly) \"I built this company from nothing.\"\n\n[Cut beneath the table to a tight macro of Claire’s concealed phone, its screen glowing with the transfer at 98%; Claire’s fingers hover steady beside it, filmed close, while ETHAN's voice carries on off-camera. Nobody on screen speaks:]\nETHAN (off-screen, concluding line, matching @Audio1): (arrogantly) \"Remember that, Claire.\"\n[Every mouth on screen stays strictly closed with lips firmly motionless; zero lip movement.]\n\n[One unbroken close-up on Claire’s face; she looks at Ethan with a composed expression that barely conceals her certainty, lips closed. The camera holds this one framing for the whole of this inner thought, with no cut away until it ends. Mouth strictly closed, lips motionless:]\nCLAIRE (V.O. - inner thought in @Audio2's voice): (dry, controlled inner thought) \"Nothing? My father built it. You just borrowed it.\"\n[CLAIRE keeps mouth strictly closed with lips pressed firmly together and motionless, showing how the thought lands only through eye movements and facial expression; zero lip movement.]\n\n[Cut to Claire in a tight, composed close-up; she turns her eyes toward the salt and holds her polite smile, CLAIRE speaking with animated lips:]\nCLAIRE (matching @Audio2): (sweetly) \"Pass the salt, please?\"\n\n[Reverse close-up on Ethan as he reaches across the table with a smirk, offering the salt, ETHAN speaking with animated lips:]\nETHAN (matching @Audio1): (smirking) \"Anything for my loyal wife.\"\n\n[Close-up on Claire as she meets Ethan’s eyes, the warmth in her smile turning pointed, CLAIRE speaking with animated lips:]\nCLAIRE (matching @Audio2): (evenly, with quiet menace) \"Enjoy this dinner, Ethan.\"\n\n[Cut beneath the table to the phone in macro; the display changes to TRANSFER COMPLETE as Claire’s fingers remain steady, filmed close, while CLAIRE's voice carries on off-camera. Nobody on screen speaks:]\nCLAIRE (off-screen, concluding line, matching @Audio2): (evenly, quietly assured) \"It’s your last as a rich man.\"\n[Every mouth on screen stays strictly closed with lips firmly motionless; zero lip movement.]\n\n[Snap back to Ethan, who laughs and flicks a dismissive glance at Claire, ETHAN speaking with animated lips:]\nETHAN (matching @Audio1): (laughing) \"Funny. You should try comedy.\"\n\n[Close-up on Sloane as she giggles, then her smug smile tightens when the doorbell chimes; she glances toward the entrance while finishing her line, SLOANE speaking with animated lips:]\nSLOANE (matching @Audio3): (giggling, condescending) \"Poor thing. She really thinks she’s funny.\"\n\nRAPID-FIRE PACING & LIP-SYNC DIRECTIVE: Dialogue plays in continuous, rapid-fire succession with instant syllable handoffs across cuts. ZERO pauses, silent breaks, or audio gaps between dialogue lines. Each line begins the instant the previous line finishes. Actions and camera moves happen concurrently while lines are actively spoken, and a camera cut never interrupts, restarts or repeats a line. Synchronize lip movement exclusively onto the active live speakers on camera (ETHAN, CLAIRE, SLOANE). During all (V.O. - inner thought) lines the camera stays locked on CLAIRE, whose mouth is strictly closed and lips completely stationary, reacting solely through eye movements and facial expression. CRITICAL OFF-SCREEN DIALOGUE & REACTION RULE: When the camera cuts, tracks, or frames a reacting character or prop while dialogue is actively concluding or spoken off-camera (L-cut reaction shots), on-screen characters MUST keep their mouths strictly closed with lips completely motionless. NEVER animate the lips or mouth of any character on screen to another character's voice, and do not alter the speaker's vocal timbre. Non-speaking listeners NEVER mouth off-screen dialogue. Fluid rapid-fire pacing throughout. No background music.",
+      "resolution": "480p",
+      "duration": 15,
+      "aspect_ratio": "9:16",
+      "nsfw_checker": false,
+      "generate_audio": true,
+      "reference_audio_urls": [
+        "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/ethan_1f577e08.wav",
+        "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/claire_c006f5da.wav",
+        "https://tempfile.redpandaai.co/kieai/11276893/seedance-refs/sloane_94a5d69a.wav"
+      ],
+      "reference_image_urls": [
+        "https://tempfile.aiquickdraw.com/workers/images/image_25117d2f8a9858759b5c9a4a3708d18f.jpg",
+        "https://tempfile.aiquickdraw.com/workers/images/image_a5d29c61676ea1526b574d7c2c75265a.jpg",
+        "https://tempfile.aiquickdraw.com/workers/images/image_efdccfc574a0128115d780b592e93c41.jpg",
+        "https://tempfile.aiquickdraw.com/workers/images/image_08a32e7a8fd7fc0d3d9ee99c7a2b5387.jpg"
+      ]
+    }
+  },
+  "task_id": "2db4ecbdeed2f6cd3c5e864f1ccfe80b",
+  "kie_reply": {
+    "task_id": "2db4ecbdeed2f6cd3c5e864f1ccfe80b",
+    "video_url": "https://tempfile.aiquickdraw.com/seedance/1792861150571-uj8eaxragsl.mp4",
+    "credits_consumed": 57.0
+  }
+}

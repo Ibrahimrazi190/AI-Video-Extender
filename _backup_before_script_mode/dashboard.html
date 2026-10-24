@@ -1,0 +1,2665 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Video Extender</title>
+<style>
+  :root {
+    color-scheme: light dark; /* native scrollbars and the dropdown follow the theme too */
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1c2230; --muted: #5f6878; --line: #dde1e8;
+    --accent: #3056d3; --accent-text: #ffffff; --soft: #eef2fd;
+    --pending: #8a93a3; --generating: #b7791f; --done: #2f855a; --failed: #c53030;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1b2029; --text: #e6e9ef; --muted: #9aa3b2; --line: #2d3440;
+      --accent: #6d8cff; --accent-text: #0e1320; --soft: #222a3a;
+      --pending: #8a93a3; --generating: #e0a33a; --done: #4fbf85; --failed: #f06b6b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
+  form { display: grid; gap: 18px; }
+  label.field, fieldset { display: grid; gap: 6px; margin: 0; }
+  fieldset { border: 0; padding: 0; }
+  legend, .label { font-weight: 600; font-size: 13px; padding: 0; margin-bottom: 6px; }
+  input[type=text], select {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--panel); color: var(--text); font: inherit;
+  }
+  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; }
+  .choices { display: flex; gap: 8px; flex-wrap: wrap; }
+  .choice { position: relative; flex: 1 1 0; min-width: 120px; }
+  .choice input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+  .choice span {
+    display: block; height: 100%; padding: 8px 12px; border: 1px solid var(--line); border-radius: 7px;
+    cursor: pointer; font-weight: 500;
+  }
+  .choice span small { display: block; font-weight: 400; color: var(--muted); font-size: 12.5px; }
+  .choice input:checked + span { border-color: var(--accent); background: var(--soft); }
+  .choice input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .hint { color: var(--muted); font-size: 12.5px; margin: 0; }
+  .actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  button {
+    padding: 10px 22px; border: 0; border-radius: 7px; background: var(--accent); color: var(--accent-text);
+    font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .error { color: var(--failed); }
+  #job { margin-top: 22px; }
+  #job[hidden] { display: none; }
+  .job-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .job-head h2 { font-size: 17px; margin: 0; }
+  .job-meta { color: var(--muted); font-size: 13px; }
+  .job-meta code { font-size: 12px; }
+  .badge {
+    display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; font-weight: 600;
+    color: #fff; background: var(--pending); text-transform: capitalize;
+  }
+  .badge.generating { background: var(--generating); }
+  .badge.plan_ready { background: #8b5cf6; }
+  .badge.done { background: var(--done); }
+  .badge.failed { background: var(--failed); }
+  .timeline { display: flex; gap: 10px; overflow-x: auto; padding: 14px 2px 6px; scroll-snap-type: x proximity; }
+  .seg {
+    flex: 0 0 250px; scroll-snap-align: start; display: flex; flex-direction: column; gap: 8px;
+    border: 1px solid var(--line); border-top: 4px solid var(--pending); border-radius: 8px; padding: 10px;
+    background: var(--panel);
+  }
+  .seg.generating { border-top-color: var(--generating); }
+  .seg.plan_ready { border-top-color: #8b5cf6; }
+  .seg.done { border-top-color: var(--done); }
+  .seg.failed { border-top-color: var(--failed); }
+  .seg-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 600; }
+  .seg-head .res { color: var(--muted); font-weight: 500; }
+  .line { margin: 0; }
+  .visual {
+    margin: 0; color: var(--muted); font-size: 13px;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .waiting { margin: 0; color: var(--muted); font-style: italic; }
+  video { width: 100%; border-radius: 6px; background: #000; margin-top: auto; aspect-ratio: 9/16; object-fit: contain; }
+  .seg { cursor: pointer; }
+  .seg:hover { border-color: var(--muted); }
+  .seg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .seg.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .detail { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 14px; display: grid; gap: 10px; }
+  .detail[hidden] { display: none; }
+  .detail h3 { font-size: 15px; margin: 0; }
+  .detail p { margin: 0; }
+  .detail .quote { font-size: 16px; }
+  .detail .meta { color: var(--muted); font-size: 13.5px; }
+  .detail-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); padding: 8px 16px; }
+  button.danger { background: transparent; color: var(--failed); border: 1px solid var(--failed); padding: 8px 16px; }
+  button.danger:hover { background: rgba(197, 48, 48, 0.1); }
+  .final { margin: 14px 0 4px; display: grid; gap: 10px; }
+  .final[hidden] { display: none; }
+  .final-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .final-head .meta { color: var(--muted); font-size: 13px; }
+  .final video { max-width: 360px; max-height: 640px; aspect-ratio: 9/16; object-fit: contain; }
+  .final-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  a.button {
+    display: inline-block; padding: 9px 20px; border-radius: 7px; background: var(--accent); color: var(--accent-text);
+    font-weight: 600; text-decoration: none;
+  }
+  a.button[hidden], .final-actions button[hidden] { display: none; }
+
+  /* Hover Prompt Popover */
+  .prompt-popover {
+    position: fixed; z-index: 1000; width: 440px; max-width: 92vw;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28), 0 2px 10px rgba(0, 0, 0, 0.12);
+    padding: 16px; font-size: 13px; line-height: 1.45;
+    pointer-events: none; opacity: 0; transform: translateY(6px);
+    transition: opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1), transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .prompt-popover.visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
+  .pop-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  .pop-title { font-weight: 700; font-size: 13.5px; display: flex; align-items: center; gap: 6px; }
+  .pop-body { display: grid; gap: 9px; max-height: 380px; overflow-y: auto; padding-right: 2px; }
+  .pop-card { background: var(--soft); border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; }
+  .pop-card-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--accent); margin-bottom: 4px; }
+  .pop-card-content { margin: 0; word-break: break-word; }
+  .pop-code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11.5px; background: rgba(0,0,0,0.15); padding: 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow-y: auto; }
+  .pop-footer { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; display: flex; justify-content: space-between; align-items: center; }
+  .pop-footer a { color: var(--accent); text-decoration: none; font-weight: 600; cursor: pointer; }
+  .pop-footer a:hover { text-decoration: underline; }
+  .ref-tag { display: inline-block; background: var(--accent); color: var(--accent-text); font-weight: 600; font-size: 11px; padding: 1px 6px; border-radius: 4px; margin: 1px 2px; }
+  .prop-table { width: 100%; border-collapse: collapse; font-size: 11.5px; margin: 4px 0; }
+  .prop-table th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .prop-table td { padding: 4px 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+  .prop-tag-in { display: inline-block; background: #28a745; color: #fff; font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 3px; }
+  .prop-tag-out { display: inline-block; background: var(--muted); color: #fff; font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 3px; }
+
+  /* Modal styles */
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(5px); z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .modal-backdrop[hidden] { display: none; }
+  .modal-window { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; max-width: 740px; width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35); padding: 22px; display: grid; gap: 16px; animation: modalIn 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
+  @keyframes modalIn { from { opacity: 0; transform: scale(0.97) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+  .modal-head { display: flex; justify-content: space-between; align-items: center; }
+  .modal-head h3 { margin: 0; font-size: 17px; font-weight: 700; }
+  .icon-btn { background: transparent; border: 0; color: var(--muted); font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 6px; }
+  .icon-btn:hover { background: var(--soft); color: var(--text); }
+  .modal-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--line); padding-bottom: 2px; }
+  .tab-btn { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted); padding: 8px 14px; font-weight: 600; font-size: 13.5px; cursor: pointer; border-radius: 6px 6px 0 0; }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--soft); }
+  .form-fields { display: grid; gap: 12px; }
+  .form-fields[hidden] { display: none; }
+  .form-group { display: grid; gap: 4px; }
+  .form-group label { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+  .form-group input, .form-group textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; }
+  .form-group textarea { min-height: 60px; resize: vertical; line-height: 1.4; }
+  .preview-box { margin-top: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: grid; gap: 6px; }
+  .preview-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .prompt-code { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.4; color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow-y: auto; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  .modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
+
+  /* Master Plan Review Box */
+  .plan-review-box {
+    margin: 16px 0; padding: 18px; border: 1px solid var(--accent);
+    border-top: 5px solid var(--accent); border-radius: 10px;
+    background: var(--panel); display: grid; gap: 14px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  }
+  .plan-review-box[hidden] { display: none; }
+  .plan-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .plan-head h3 { margin: 0; font-size: 16.5px; display: flex; align-items: center; gap: 8px; }
+  .plan-sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .plan-head-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .plan-msg { font-size: 13px; font-weight: 500; min-height: 18px; }
+  .plan-msg.success { color: var(--done); }
+  .plan-msg.error { color: var(--failed); }
+  .plan-notes { margin: 8px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+  .plan-notes h4 { margin: 0 0 6px; font-size: 13.5px; }
+  .plan-notes ul { margin: 0; padding-left: 18px; }
+  .plan-notes li { margin: 3px 0; }
+  .plan-notes .review { color: var(--failed); font-weight: 600; }
+  .plan-notes details { margin-top: 6px; color: var(--muted); }
+  .plan-revise { margin: 10px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+  .plan-revise h4 { margin: 0 0 4px; font-size: 14px; }
+  .plan-revise h5 { margin: 12px 0 6px; font-size: 13px; }
+  .plan-revise textarea { width: 100%; box-sizing: border-box; margin-top: 6px; font: inherit; padding: 8px; }
+  .revise-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .revise-status { color: var(--muted); font-size: 13px; margin: 10px 0; }
+  .revise-error { color: var(--failed); font-size: 13px; margin: 6px 0; }
+  .revise-items { margin: 0; padding-left: 18px; font-size: 13px; }
+  .revise-items li { margin: 4px 0; }
+  .revise-items li.out { color: var(--muted); }
+  .revise-items .why { font-size: 12px; margin-left: 2px; }
+  .chip { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; font-weight: 600; background: var(--line); }
+  .chip.rule { background: #6f42c1; color: #fff; }
+  .chip.fix { background: var(--accent); color: #fff; }
+  .revise-row { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 13px; cursor: pointer; }
+  .revise-row .muted, .revise-diff .muted { color: var(--muted); font-size: 12px; }
+  .revise-diff { padding: 7px 0; border-top: 1px solid var(--line); font-size: 13px; }
+  .revise-diff .old { color: var(--muted); text-decoration: line-through; }
+  .revise-diff .new { font-weight: 500; }
+  .revise-warn { color: var(--failed); font-size: 13px; }
+  #rules-box { margin-top: 12px; }
+  #rules-box li { margin: 3px 0; font-size: 13px; }
+  #rules-box button { margin-left: 6px; padding: 0 6px; font-size: 12px; }
+
+  .beats-list { display: grid; gap: 10px; margin-top: 4px; }
+  .beat-card {
+    border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+    background: var(--soft); display: grid; gap: 8px;
+  }
+  .beat-card-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 600; }
+  .beat-badge { background: var(--accent); color: var(--accent-text); padding: 2px 8px; border-radius: 99px; font-size: 11px; }
+  .beat-loc-wrap { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+  .beat-loc-input { font: inherit; font-size: 12.5px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: inherit; }
+  .beat-action-input {
+    width: 100%; font: inherit; font-size: 13.5px; line-height: 1.45; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: inherit;
+    resize: vertical; box-sizing: border-box;
+  }
+  .beat-action-input:focus, .beat-loc-input:focus { border-color: var(--accent); outline: none; }
+  .beat-card-footer { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; color: var(--muted); }
+  .beat-speech-label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+
+  .beat-warn { color: #d73a49; font-size: 12.5px; font-weight: 600; line-height: 1.4; }
+  .plan-warn { border: 1px solid #d73a49; border-radius: 8px; padding: 8px 12px; color: #d73a49; font-size: 13px; line-height: 1.45; }
+  /* Your own pictures: one slot per character and place in a beat */
+  .ref-box { border: 1px dashed var(--line); border-radius: 8px; padding: 8px 10px; background: var(--bg); display: grid; gap: 6px; }
+  .ref-title { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+  .ref-row { display: flex; flex-wrap: wrap; gap: 10px; }
+  .ref-slot { width: 112px; display: grid; gap: 4px; font-size: 12px; align-content: start; }
+  .ref-thumb { width: 112px; height: 144px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); display: flex; align-items: center; justify-content: center; overflow: hidden; color: var(--muted); font-size: 11px; text-align: center; }
+  .ref-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .ref-slot.mine .ref-thumb { border-color: var(--done); box-shadow: 0 0 0 1px var(--done); }
+  .ref-name { font-weight: 600; word-break: break-word; }
+  .ref-state { color: var(--muted); }
+  .ref-slot.mine .ref-state { color: var(--done); font-weight: 600; }
+  .ref-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+  .ref-btn { cursor: pointer; font: inherit; font-size: 11.5px; padding: 2px 8px; border: 1px solid var(--accent); border-radius: 5px; color: var(--accent); background: transparent; }
+  .ref-btn:hover { background: var(--accent); color: var(--accent-text); }
+  .ref-err { color: var(--danger, #d73a49); font-size: 11.5px; }
+  .ref-lock { color: var(--muted); font-size: 11px; }
+  .film-refs { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--soft); display: grid; gap: 8px; }
+
+  .bible-details { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; background: var(--soft); }
+  .bible-details summary { cursor: pointer; font-size: 13.5px; font-weight: 600; user-select: none; }
+  .bible-content { margin-top: 10px; display: grid; gap: 12px; font-size: 13px; }
+  .bible-sec { display: grid; gap: 6px; }
+  .bible-item { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+
+  /* Extend Story Panel */
+  .extend-panel {
+    margin: 18px 0 6px; padding: 18px; border: 1px solid var(--accent);
+    border-radius: 10px; background: var(--soft); display: grid; gap: 14px;
+  }
+  .extend-panel[hidden] { display: none; }
+  .extend-head h3 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+  .extend-sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .extend-body { display: grid; gap: 12px; }
+  .extend-body textarea {
+    width: 100%; font: inherit; font-size: 13.5px; line-height: 1.45; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: inherit;
+    resize: vertical; box-sizing: border-box;
+  }
+  .extend-body textarea:focus { border-color: var(--accent); outline: none; }
+  .extend-row { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+  .extend-row .field { flex: 1 1 200px; }
+  .extend-row button { padding: 9px 20px; font-size: 13.5px; height: 38px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AI Video Extender</h1>
+  <p class="sub">Write a topic, pick the settings, and generate a continuous video made of short clips.</p>
+
+  <section class="panel">
+    <form id="form" novalidate>
+      <div class="field">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <label for="topic" class="label" style="margin: 0; cursor: pointer;">Topic / Story Premise</label>
+          <button type="button" id="btn-enhance-prompt" style="padding: 4px 12px; font-size: 12.5px; border-radius: 6px; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; background: var(--soft); border: 1px solid var(--line); color: var(--text); font-weight: 600; transition: all 0.15s ease;">
+            <span>✨ Enhance Story</span>
+          </button>
+        </div>
+        <textarea id="topic" name="topic" rows="3" placeholder="e.g. A small fairy appears to a woman and tells her she is cursed and won't get a man ever..." autocomplete="off" required style="width: 100%; font: inherit; font-size: 13.5px; line-height: 1.45; padding: 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: inherit; resize: vertical; box-sizing: border-box;"></textarea>
+        <div id="enhance-status" style="font-size: 12px; margin-top: 4px; min-height: 18px; color: var(--muted); display: none;"></div>
+      </div>
+
+      <fieldset>
+        <legend>Mode</legend>
+        <div class="choices">
+          <label class="choice"><input type="radio" name="mode" value="talking_head" checked><span>Talking Head<small>one person speaking to camera</small></span></label>
+          <label class="choice"><input type="radio" name="mode" value="story_time"><span>Story Time<small>changing scenes with a voiceover narrator</small></span></label>
+          <label class="choice"><input type="radio" name="mode" value="story_videos"><span>Story Videos<small>multi-character dramatic scenes</small></span></label>
+          <label class="choice"><input type="radio" name="mode" value="narrated_drama"><span>Narrated Drama<small>1st-person VO + live dialogue clashes</small></span></label>
+        </div>
+      </fieldset>
+
+      <div class="row">
+        <fieldset>
+          <legend>Clip length</legend>
+          <div class="choices">
+            <label class="choice"><input type="radio" name="clip_duration" value="15" checked><span>15 seconds<small>cinematic multi-beat</small></span></label>
+            <label class="choice"><input type="radio" name="clip_duration" value="10"><span>10 seconds</span></label>
+            <label class="choice"><input type="radio" name="clip_duration" value="5"><span>5 seconds<small>testing — cheaper</small></span></label>
+          </div>
+        </fieldset>
+
+        <label class="field">
+          <span class="label">Duration</span>
+          <select id="duration" name="duration"></select>
+        </label>
+
+        <fieldset>
+          <legend>Resolution</legend>
+          <div class="choices">
+            <label class="choice"><input type="radio" name="resolution" value="480p" checked><span>480p</span></label>
+            <label class="choice"><input type="radio" name="resolution" value="720p"><span>720p</span></label>
+          </div>
+          <p class="hint" id="res-hint">Aspect ratio: 9:16 (vertical video) &bull; NSFW filter disabled. In Talking Head the first clip is always 720p.</p>
+        </fieldset>
+      </div>
+
+      <div style="margin-top: 10px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px;">
+        <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
+          <input type="checkbox" id="supervise" name="supervise">
+          <span><strong>Script Supervisor</strong> <small style="color: var(--muted);">(AI continuity critique; runs 1 extra check per clip, off by default)</small></span>
+        </label>
+      </div>
+
+      <div class="actions" style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+        <button type="submit" id="generate">Generate</button>
+        <span id="cost-estimate" style="font-size: 12.5px; color: var(--muted); padding: 5px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-weight: 500;"></span>
+        <span id="form-msg" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+  </section>
+
+  <section id="job" class="panel" hidden>
+    <div class="job-head">
+      <h2 id="job-title">Your video</h2>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <a id="job-langfuse-link" href="#" target="_blank" rel="noopener noreferrer" class="badge" style="display: none; text-decoration: none; background: #ff6b00; color: #fff; font-weight: 600; cursor: pointer; align-items: center; gap: 4px;" title="Open live trace in Langfuse Cloud">🔍 Langfuse Trace</a>
+        <button type="button" id="resume-job-btn" style="display: none; padding: 4px 12px; font-size: 13px; font-weight: 600; background: #28a745; color: #fff; border: none; border-radius: 4px; cursor: pointer;">▶ Resume Generation</button>
+        <span id="job-status" class="badge" role="status">pending</span>
+      </div>
+    </div>
+    <p class="job-meta" id="job-meta"></p>
+    <p class="error" id="job-error" hidden></p>
+
+    <!-- Master Plan & Story Progression Review -->
+    <div id="plan-review" class="plan-review-box" hidden>
+      <div class="plan-head">
+        <div>
+          <h3>📋 Story Progression & Master Plan Review</h3>
+          <p class="plan-sub">OpenAI has planned the story progression below. Review or edit the beats before generating video.</p>
+        </div>
+        <div class="plan-head-actions">
+          <button type="button" id="approve-plan" class="button">▶ Approve & Start Video Generation</button>
+          <button type="button" id="save-plan-btn" class="secondary">💾 Save Edits</button>
+          <button type="button" id="replan-btn" class="secondary">🔄 Re-plan Story</button>
+          <button type="button" id="discard-plan-btn" class="danger">🗑️ Discard & Cancel Idea</button>
+        </div>
+      </div>
+      <div id="plan-msg" class="plan-msg" role="status"></div>
+      <div id="plan-notes" class="plan-notes" hidden></div>
+
+      <div id="plan-revise" class="plan-revise" hidden>
+        <h4>✏️ Revise the plan</h4>
+        <p class="plan-sub">Read the beats and spoken lines below. If something is wrong, say what, in your own words. The planner finds the clips it touches and shows them to you before it changes anything. It rewrites what characters say, do and know in the clips that already exist: the number of clips and the places stay the same.</p>
+        <textarea id="revise-note" rows="3" maxlength="3000" placeholder="e.g. Lily must never recognise Ethan when he comes back as Jack. She only learns who he really is when Harrison says “Mr. Blackwood”."></textarea>
+        <div class="revise-actions">
+          <button type="button" id="revise-btn" class="secondary">🔎 Find the clips to change</button>
+          <button type="button" id="cast-btn" class="secondary" title="Find people the plan shows on screen who are not in the cast (a parent at a dinner, a waiter) and add them, so they get a portrait and keep their face">👥 Check the cast</button>
+          <span id="revise-msg" class="plan-msg" role="status"></span>
+        </div>
+        <div id="revise-result"></div>
+        <div id="rules-box"></div>
+      </div>
+
+      <div class="plan-warn" id="plan-warn" role="alert" hidden></div>
+      <p class="plan-sub" id="ref-intro" hidden>🖼️ <strong>Your own pictures (optional).</strong> Under each beat there is a slot for every character in it and for the place it is set in (the place empty, nobody in it). A character's picture is used in every beat they are in. Anything you leave empty is made by the image model after you approve.</p>
+      <div class="film-refs" id="film-refs" hidden></div>
+      <div class="beats-list" id="beats-editor"></div>
+
+      <details class="bible-details" id="bible-details">
+        <summary>🎭 Scene Bible Overview (Characters & Locations)</summary>
+        <div id="bible-content" class="bible-content"></div>
+      </details>
+    </div>
+
+    <div class="final" id="final" hidden>
+      <div class="final-head"><strong>Final video</strong><span class="meta" id="final-meta"></span></div>
+      <video id="final-video" controls preload="metadata" hidden></video>
+      <div class="final-actions">
+        <a class="button" id="final-download" hidden>Download video</a>
+        <button type="button" class="secondary" id="final-build" hidden>Build final video</button>
+        <span id="final-msg" role="status" aria-live="polite"></span>
+      </div>
+    </div>
+
+    <!-- Story Continuation / Extension Panel (Story Videos Mode) -->
+    <div id="extend-story" class="extend-panel" hidden>
+      <div class="extend-head">
+        <div>
+          <h3>🎬 Extend Story / Continuation</h3>
+          <p class="extend-sub">Write a continuation idea for the next scene or chapter. Previous characters, locations, and voices will automatically carry forward.</p>
+        </div>
+      </div>
+      <div class="extend-body">
+        <label class="field">
+          <span class="label">Continuation Idea / Next Scene Event</span>
+          <textarea id="extend-prompt" rows="2" placeholder="e.g. The next morning, Elena goes to the ancient library in town to research the curse and meets a mysterious archivist named David..."></textarea>
+        </label>
+        <div class="extend-row">
+          <label class="field">
+            <span class="label">Additional Duration</span>
+            <select id="extend-duration">
+              <option value="15">15 s · 3 clips</option>
+              <option value="20">20 s · 4 clips</option>
+              <option value="30" selected>30 s · 6 clips</option>
+              <option value="40">40 s · 8 clips</option>
+              <option value="60">60 s · 12 clips</option>
+              <option value="75">75 s · 15 clips</option>
+            </select>
+          </label>
+          <button type="button" id="extend-submit-btn">✨ Plan Continuation</button>
+        </div>
+        <div id="extend-msg" class="plan-msg" role="status"></div>
+      </div>
+    </div>
+    <div class="timeline" id="timeline" aria-label="Clips: select one to see its script and actions"></div>
+    <div class="detail" id="detail" hidden>
+      <h3 id="detail-title"></h3>
+      <div id="detail-text"></div>
+      <div class="detail-actions">
+        <button type="button" class="secondary" id="regen-script">Regenerate Script</button>
+        <button type="button" class="secondary" id="regen-scene">Regenerate Scene</button>
+        <button type="button" class="secondary" id="edit-prompt">✏️ Edit & Customize</button>
+        <span id="detail-msg" role="status" aria-live="polite"></span>
+      </div>
+    </div>
+
+    <!-- Hover Prompt Inspection Popover -->
+    <div id="prompt-popover" class="prompt-popover" hidden>
+      <div class="pop-header">
+        <div class="pop-title" id="pop-title"></div>
+        <span class="badge" id="pop-badge"></span>
+      </div>
+      <div class="pop-body" id="pop-body"></div>
+      <div class="pop-footer">
+        <span>💡 Need changes?</span>
+        <a id="pop-edit-link">Open Editor to customize →</a>
+      </div>
+    </div>
+
+    <!-- Modal for Editing Prompt & Scene Parameters -->
+    <div id="edit-modal" class="modal-backdrop" hidden>
+      <div class="modal-window" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head">
+          <h3 id="modal-title">Edit Clip Parameters & Prompt</h3>
+          <button type="button" class="icon-btn" id="modal-close" aria-label="Close">✕</button>
+        </div>
+        <div class="modal-tabs">
+          <button type="button" class="tab-btn active" id="tab-scene">🎬 Video Scene Input</button>
+          <button type="button" class="tab-btn" id="tab-script">📝 Script & Dialogue</button>
+        </div>
+        <div class="modal-body">
+          <div id="scene-fields" class="form-fields"></div>
+          <div id="script-fields" class="form-fields" hidden></div>
+          <div class="preview-box">
+            <div class="preview-head">
+              <span>Compiled AI Video Prompt Preview <small style="font-weight: normal; color: var(--muted);">(Directly editable)</small></span>
+              <small class="badge" id="preview-model-badge">Seedance 2.0 Mini</small>
+            </div>
+            <textarea class="prompt-code" id="preview-prompt-text" rows="4" style="width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 8px; font-family: ui-monospace, monospace; resize: vertical;" placeholder="Direct Seedance video prompt..."></textarea>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="secondary" id="modal-reset" style="margin-right: auto;" title="Clear customizations and return to automated OpenAI mode">↺ Reset to AI Auto</button>
+          <button type="button" class="secondary" id="modal-cancel">Cancel</button>
+          <button type="button" class="secondary" id="modal-save">💾 Save Edits</button>
+          <button type="button" id="modal-regen">✨ Regenerate with Edits</button>
+          <span id="modal-msg" role="status"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const CLIP_COUNTS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 24, 30, 36, 60];
+  const DEFAULT_CLIPS = 3;
+  const POLL_MS = 4000;
+  const STORE_KEY = "videoExtender.lastJob";
+
+  const $ = (id) => document.getElementById(id);
+  const form = $("form"), durationSel = $("duration"), generateBtn = $("generate"), formMsg = $("form-msg");
+  const radio = (name) => form.querySelector(`input[name="${name}"]:checked`).value;
+  let pollTimer = null, busy = false;
+  // What is on screen, so a poll that brings nothing new changes nothing (a playing video keeps playing).
+  let shownJson = null, shownJob = null;
+  const shownClips = new Map(); // clip index -> { key, node }
+  let selected = null; // index of the clip whose script and actions are shown under the timeline
+  let actionBusy = false;
+  let pendingAction = null; // { index, label } while a regeneration runs, to report how it ended
+
+  function formatSeconds(total) {
+    const m = Math.floor(total / 60), s = total % 60;
+    if (!m) return `${s} s`;
+    return s ? `${m} min ${s} s` : `${m} min`;
+  }
+
+  // The duration list follows the clip length: same number of clips, total = clips x clip length.
+  function fillDurations() {
+    const clipSeconds = Number(radio("clip_duration"));
+    const keepClips = durationSel.value ? Number(durationSel.value) / Number(durationSel.dataset.clipSeconds) : DEFAULT_CLIPS;
+    durationSel.replaceChildren(...CLIP_COUNTS.map((n) => {
+      const opt = new Option(`${formatSeconds(n * clipSeconds)} · ${n} clip${n > 1 ? "s" : ""}`, String(n * clipSeconds));
+      opt.selected = n === keepClips;
+      return opt;
+    }));
+    durationSel.dataset.clipSeconds = String(clipSeconds);
+    updateCostEstimate();
+  }
+
+  function updateCostEstimate() {
+    const el = $("cost-estimate");
+    if (!el) return;
+    const mode = radio("mode") || "story_videos";
+    const duration = Number(durationSel.value) || 30;
+    const clipDur = Number(radio("clip_duration")) || 5;
+    const clipCount = Math.round(duration / clipDur);
+
+    if (mode === "talking_head") {
+      const credits = 41 + Math.max(0, clipCount - 1) * 24;
+      const mins = Math.round(clipCount * 2.5);
+      el.innerHTML = `💳 Est: ~<strong>${credits}</strong> credits (${clipCount} clips &bull; ~${mins} min render)`;
+    } else if (mode === "story_time") {
+      const credits = clipCount * 19;
+      const mins = Math.round(clipCount * 2.5);
+      el.innerHTML = `💳 Est: ~<strong>${credits}</strong> credits (${clipCount} clips &bull; ~${mins} min render)`;
+    } else {
+      const videoCredits = clipCount * 19;
+      const estHours = (clipCount * 3.5 / 60).toFixed(1);
+      const isLong = clipCount >= 30;
+      const actNote = isLong ? " &bull; 4-act plan" : "";
+      el.innerHTML = `💳 Plan: <em>Free</em> &bull; Video: ~<strong>${videoCredits}</strong> credits (${clipCount} clips &bull; ~${estHours} hrs${actNote})`;
+    }
+  }
+
+  function updateHint() {
+    $("res-hint").hidden = radio("mode") !== "talking_head";
+    updateCostEstimate();
+  }
+
+  function remember(jobId) {
+    try { localStorage.setItem(STORE_KEY, jobId); } catch (e) { /* storage unavailable: the job just won't survive a reload */ }
+    try { history.replaceState(null, "", "?job_id=" + encodeURIComponent(jobId)); } catch (e) {}
+  }
+  function recall() {
+    try {
+      const q = new URLSearchParams(window.location.search).get("job_id") || window.location.hash.replace("#", "").trim();
+      if (q) return q;
+    } catch (e) {}
+    try { return localStorage.getItem(STORE_KEY); } catch (e) { return null; }
+  }
+
+  function setBusy(value) {
+    busy = value;
+    generateBtn.disabled = value;
+    generateBtn.textContent = value ? "Generating…" : "Generate";
+  }
+
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function renderSegment(clip, job, previous) {
+    const isPlanReady = clip.status === "pending" && job.status === "plan_ready";
+    const seg = el("article", `seg ${isPlanReady ? "plan_ready" : clip.status}`);
+    seg.dataset.index = String(clip.index);
+    seg.tabIndex = 0; // selectable from the keyboard (Enter or Space), like a click
+    const durLabel = clip.duration || (job.beats && job.beats[clip.index] && job.beats[clip.index].duration) || (job.request && job.request.clip_duration) || "";
+    const durSuffix = durLabel ? ` (${durLabel}s)` : "";
+    const head = el("div", "seg-head");
+    head.append(el("span", null, `Clip ${clip.index + 1}${durSuffix}`));
+    const right = el("span");
+    if (clip.resolution) right.append(el("span", "res", `${clip.resolution} `));
+    right.append(el("span", `badge ${isPlanReady ? "plan_ready" : clip.status}`, isPlanReady ? "plan ready" : clip.status));
+    head.append(right);
+    seg.append(head);
+
+    if (job.mode === "narrated_drama") {
+      if (clip.movie_script) {
+        const ms = clip.movie_script;
+        const dMode = (ms.delivery_mode || "dialogue").toUpperCase();
+        const tag = dMode === "VOICEOVER" ? "[V.O.]" : dMode === "SHOCK_ACTION" ? "[SHOCK]" : "[SYNC]";
+        const spk = ms.speaker ? `${ms.speaker}: ` : "";
+        const txt = clipSpeech(ms) || "— non-verbal beat —";
+        seg.append(el("p", "line", `${tag} ${spk}${txt}`));
+        const loc = (ms.location_id || "").replace(/_/g, " ");
+        seg.append(el("p", "visual", `📍 ${loc}`));
+      } else if (job.beats && job.beats[clip.index]) {
+        const b = job.beats[clip.index];
+        const dMode = (b.delivery_mode || "dialogue").toUpperCase();
+        const tag = dMode === "VOICEOVER" ? "[V.O.]" : dMode === "SHOCK_ACTION" ? "[SHOCK]" : "[SYNC]";
+        seg.append(el("p", "line", `${tag} Beat ${clip.index + 1}: ${b.summary || b.action}`));
+        const loc = (b.location_id || "").replace(/_/g, " ");
+        seg.append(el("p", "visual", `📍 ${loc}`));
+      } else {
+        seg.append(el("p", "waiting", "Waiting for the script…"));
+      }
+    } else if (job.mode === "story_videos") {
+      if (clip.movie_script) {
+        const dl = clip.movie_script.dialogue || [];
+        if (dl.length > 0) {
+          seg.append(el("p", "line", `${dl[0].speaker}: "${dl[0].line}"`));
+        } else {
+          seg.append(el("p", "line", "— silent beat —"));
+        }
+        const loc = (clip.movie_script.location_id || "").replace(/_/g, " ");
+        seg.append(el("p", "visual", `📍 ${loc}`));
+      } else if (job.beats && job.beats[clip.index]) {
+        const b = job.beats[clip.index];
+        seg.append(el("p", "line", `Beat ${clip.index + 1}: ${b.action}`));
+        const loc = (b.location_id || "").replace(/_/g, " ");
+        seg.append(el("p", "visual", `📍 ${loc}${b.speech === false ? " (silent)" : ""}`));
+      } else {
+        seg.append(el("p", "waiting", "Waiting for the script…"));
+      }
+    } else if (job.mode === "story_time") {
+      if (clip.narration) {
+        seg.append(el("p", "line", `“${clip.narration}”`));
+        if (clip.visual) seg.append(el("p", "visual", clip.visual));
+      } else {
+        seg.append(el("p", "waiting", "Waiting for the script…"));
+      }
+    } else if (clip.dialogue) {
+      seg.append(el("p", "line", `“${clip.dialogue}”`));
+    } else {
+      seg.append(el("p", "waiting", "Waiting for the script…"));
+    }
+
+    if (clip.error) seg.append(el("p", "error", clip.error));
+    if (clip.video_url) {
+      // Reuse the player already showing this clip, so a redraw doesn't reload or restart it.
+      let video = previous && previous.querySelector("video");
+      if (!video || video.getAttribute("src") !== clip.video_url) {
+        video = el("video");
+        video.controls = true;
+        video.preload = "metadata";
+        video.src = clip.video_url;
+      }
+      seg.append(video);
+    }
+    return seg;
+  }
+
+  // A narrated-drama clip holds a list of spoken turns (up to three speakers can share one clip). Jobs
+  // planned before that stored a single audio_text/speaker pair, so read either shape.
+  function clipTurns(ms) {
+    if (!ms) return [];
+    if (Array.isArray(ms.speech)) return ms.speech.filter((t) => (t.line || "").trim());
+    return (ms.audio_text || "").trim() ? [{ speaker: ms.speaker || "", line: ms.audio_text }] : [];
+  }
+  function clipSpeech(ms, withSpeaker) {
+    return clipTurns(ms)
+      .map((t) => (withSpeaker && t.speaker ? `${t.speaker}: "${t.line}"` : `"${t.line}"`))
+      .join("   ");
+  }
+
+  function renderJob(job) {
+    const json = JSON.stringify(job);
+    if (json === shownJson) return; // nothing new since the last poll: leave the page alone
+    if (!shownJob || shownJob.id !== job.id) {
+      shownClips.clear();
+      selected = null;
+    }
+    shownJson = json;
+    shownJob = job;
+    $("job").hidden = false;
+    const modeName = {talking_head: "Talking Head", story_time: "Story Time", story_videos: "Story Videos", narrated_drama: "Narrated Drama"}[job.mode] || job.mode;
+    $("job-title").textContent = job.request.topic;
+    const badge = $("job-status");
+    badge.className = `badge ${job.status}`;
+    badge.textContent = job.status === "plan_ready" ? "Plan Ready for Review" : job.status;
+    const lfLink = $("job-langfuse-link");
+    if (lfLink) {
+      if (job.langfuse_url) {
+        lfLink.href = job.langfuse_url;
+        lfLink.style.display = "inline-flex";
+      } else {
+        lfLink.style.display = "none";
+      }
+    }
+    const resumeBtn = $("resume-job-btn");
+    if (resumeBtn) {
+      const canResume = (job.mode === "story_videos" || job.mode === "narrated_drama") && job.status === "failed" && (job.clips || []).some((c) => c.status !== "done") && (job.beats && job.beats.length > 0);
+      resumeBtn.style.display = canResume ? "inline-flex" : "none";
+      resumeBtn.disabled = actionBusy;
+      if (!actionBusy) resumeBtn.textContent = "▶ Resume Generation";
+    }
+    const done = job.clips.filter((c) => c.status === "done").length;
+    $("job-meta").replaceChildren(
+      `${modeName} · ${job.clips.length} × ${job.request.clip_duration} s clips · ${job.resolution} · ${done} of ${job.clips.length} done · job `,
+      el("code", null, job.id),
+    );
+    const err = $("job-error");
+    err.hidden = !job.error;
+    err.textContent = job.error || "";
+    $("timeline").replaceChildren(...job.clips.map((c) => {
+      const key = JSON.stringify([job.mode, c]);
+      const shown = shownClips.get(c.index);
+      if (shown && shown.key === key) return shown.node; // unchanged clip: keep its card as it is
+      const node = renderSegment(c, job, shown && shown.node);
+      shownClips.set(c.index, { key, node });
+      return node;
+    }));
+    renderFinal(job);
+    renderPlanReview(job);
+    renderExtendStory(job);
+    renderDetail();
+  }
+
+  // The joined video: a player and a download link once it exists, a note while it is being made, and a button to
+  // make it for jobs that finished before it existed or after a failed attempt.
+  let finalBusy = false;
+  function renderFinal(job) {
+    const allDone = job.clips.length > 0 && job.clips.every((c) => c.status === "done");
+    const running = job.status === "pending" || job.status === "generating";
+    const box = $("final"), video = $("final-video"), link = $("final-download"), build = $("final-build");
+    box.hidden = !allDone && !job.final_video_at;
+    if (box.hidden) return;
+    const has = Boolean(job.final_video_at);
+    video.hidden = link.hidden = !has;
+    if (has) {
+      const src = `/jobs/${encodeURIComponent(job.id)}/video?v=${job.final_video_at}`; // a new build gets a new address
+      if (video.getAttribute("src") !== src) video.src = src;
+      link.href = src;
+      link.download = `${(job.request.topic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "video")}.mp4`;
+      const built = new Date(job.final_video_at * 1000);
+      $("final-meta").textContent = `${job.clips.length} clips joined at ${job.resolution} · built ${built.toLocaleString()}`;
+    } else {
+      $("final-meta").textContent = "";
+    }
+    build.hidden = has || running;
+    build.disabled = finalBusy;
+    build.textContent = job.final_error ? "Try again" : "Build final video";
+    const msg = $("final-msg");
+    if (running && allDone && !pendingAction) msg.textContent = "Joining the clips into the final video…";
+    else if (!running && job.final_error) msg.textContent = `The final video failed: ${job.final_error}`;
+    else if (!running && !has) msg.textContent = "This job finished before final videos were made automatically.";
+    else msg.textContent = "";
+  }
+
+  $("final-build").addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job || finalBusy) return;
+    finalBusy = true;
+    renderFinal(job);
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/assemble`, { method: "POST" });
+      const body = await res.json().catch(() => null);
+      if (res.status === 202) poll(job.id); // follow it until the final video is ready
+      else $("final-msg").textContent = `Could not do that: ${describeError(body)}`;
+    } catch (e) {
+      $("final-msg").textContent = `Could not reach the server (${e.message}).`;
+    } finally {
+      finalBusy = false;
+    }
+  });
+
+  // --- Master Plan / Story Progression Review ---
+  let planBusy = false;
+
+  // --- Revise the plan (Narrated Drama): a note -> the clips it touches -> only the clips you tick are rewritten ---
+  let reviseSig = null;
+  const reviseTicked = new Set(); // clips ticked in the proposal on screen
+  let reviseKeepUnticked = null;  // clips the user had unticked when they added more clips: they stay unticked after the list is redrawn
+
+  // "21-23, 27 30" -> [21, 22, 23, 27, 30]
+  function parseClipNumbers(text) {
+    const out = new Set();
+    (String(text).match(/\d+\s*[-–]\s*\d+|\d+/g) || []).forEach((tok) => {
+      const m = tok.match(/(\d+)\s*[-–]\s*(\d+)/);
+      if (m) {
+        let a = Number(m[1]), b = Number(m[2]);
+        if (a > b) [a, b] = [b, a];
+        for (let n = a; n <= b && out.size < 500; n++) out.add(n);
+      } else if (out.size < 500) out.add(Number(tok));
+    });
+    return [...out];
+  }
+  const revisionBusy = (job) => !!(job.revision && ["proposing", "applying"].includes(job.revision.status));
+  const beatWords = (b) => (b.audio_lines || []).map((t) => `${String(t.speaker || "").split(" ")[0]}: “${t.line}”`).join(" / ") || "(no spoken words)";
+  const snapWords = (s) => (s.lines || []).map((t) => `${String(t.speaker || "").split(" ")[0]}: “${t.line}”`).join(" / ") || "(no spoken words)";
+
+  function hasUnsavedEdits() {
+    const job = shownJob;
+    if (!job || !job.beats) return false;
+    const edited = gatherEditedBeats();
+    return job.beats.some((b, i) => {
+      const e = edited[i] || {};
+      return (e.action || "") !== String(b.summary || b.action || "").trim() || (e.location_id || "") !== String(b.location_id || "").trim();
+    });
+  }
+
+  async function reviseCall(path, body, method = "POST") {
+    const job = shownJob;
+    const res = await fetch(`/jobs/${encodeURIComponent(job.id)}${path}`, {
+      method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(describeError(data));
+    return data;
+  }
+
+  async function reviseAction(label, fn) {
+    const msg = $("revise-msg");
+    if (planBusy) return;
+    planBusy = true;
+    msg.className = "plan-msg";
+    msg.textContent = label;
+    try {
+      await fn();
+      msg.textContent = "";
+      poll(shownJob.id);
+    } catch (e) {
+      msg.className = "plan-msg error";
+      msg.textContent = e.message;
+    } finally {
+      planBusy = false;
+    }
+  }
+
+  function renderProposal(out, job, rev) {
+    out.appendChild(el("h5", null, "What the planner understood"));
+    const items = el("ul", "revise-items");
+    (rev.items || []).forEach((it) => {
+      const li = el("li", it.in_scope ? "" : "out");
+      li.appendChild(el("span", `chip ${it.kind === "rule" ? "rule" : "fix"}`, it.kind === "rule" ? "Standing rule" : "One-time fix"));
+      li.appendChild(document.createTextNode(` ${it.text}`));
+      if (!it.in_scope) li.appendChild(el("div", "why", `Not done: ${it.why_out_of_scope}`));
+      if (it.in_scope && it.stops_when) li.appendChild(el("div", "why", `Applies until: ${it.stops_when}`));
+      if (it.in_scope && it.probe) li.appendChild(el("div", "why", `Asked of every clip: ${it.probe}`));
+      items.appendChild(li);
+    });
+    out.appendChild(items);
+    if ((rev.replaces || []).length) out.appendChild(el("p", "revise-status", `Saving this replaces rule ${rev.replaces.join(", ")}.`));
+    if (rev.blocked) out.appendChild(el("p", "revise-error", rev.blocked));
+    const clips = rev.clips || [];
+    const maybes = clips.filter((c) => c.selected === false).length;
+    out.appendChild(el("h5", null, clips.length
+      ? `Clips found (${clips.length}). The ticked ones are the planner's confident picks; untick any you want to keep as they are${maybes ? `, and tick the ${maybes} "maybe" you want changed` : ""}.`
+      : "No clip needs to change."));
+    const applyBtn = el("button", "button", "");
+    applyBtn.type = "button";
+    const refresh = () => {
+      const n = reviseTicked.size;
+      const rulesOnly = n === 0 && ((rev.rules_new || []).length || (rev.replaces || []).length);
+      applyBtn.textContent = n ? `✍️ Rewrite ${n} clip${n === 1 ? "" : "s"}` : (rulesOnly ? "💾 Save the rule only" : "✍️ Rewrite");
+      applyBtn.disabled = !!rev.blocked || planBusy || (!n && !rulesOnly);
+    };
+    clips.forEach((c) => {
+      const row = el("label", "revise-row");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = reviseTicked.has(c.clip);
+      cb.addEventListener("change", () => { if (cb.checked) reviseTicked.add(c.clip); else reviseTicked.delete(c.clip); refresh(); });
+      row.appendChild(cb);
+      const text = el("div");
+      text.appendChild(el("strong", null, `Clip ${c.clip}`));
+      if (c.selected === false) text.appendChild(el("span", "chip fix", "maybe"));
+      text.appendChild(document.createTextNode(` — ${c.reason}`));
+      if (c.quote) text.appendChild(el("div", "muted", `It says: “${c.quote}”`));
+      else if (c.change) text.appendChild(el("div", "muted", `Change: ${c.change}`));
+      const b = (job.beats || [])[c.clip - 1];
+      if (b) text.appendChild(el("div", "muted", `Now: ${b.summary} | ${beatWords(b)}`));
+      row.appendChild(text);
+      out.appendChild(row);
+    });
+    // the finder can miss a clip: the user, who has read the plan, can add clips by number
+    const addRow = el("div", "revise-actions");
+    const addBox = document.createElement("input");
+    addBox.type = "text";
+    addBox.placeholder = "Also change clips the list missed, e.g. 21-23, 27";
+    addBox.style.minWidth = "280px";
+    const addBtn = el("button", "secondary", "➕ Add clips");
+    addBtn.type = "button";
+    addBtn.addEventListener("click", () => {
+      const nums = parseClipNumbers(addBox.value);
+      if (!nums.length) {
+        $("revise-msg").className = "plan-msg error";
+        $("revise-msg").textContent = "Type clip numbers, for example 21-23, 27.";
+        return;
+      }
+      reviseKeepUnticked = new Set(clips.map((c) => c.clip).filter((n) => !reviseTicked.has(n)));
+      reviseAction("Adding the clips…", () => reviseCall("/revise-plan/add-clips", { clips: nums }));
+    });
+    addRow.append(addBox, addBtn);
+    out.appendChild(addRow);
+    const actions = el("div", "revise-actions");
+    applyBtn.addEventListener("click", () => reviseAction("Rewriting the selected clips…", () => reviseCall("/revise-plan/apply", { clips: [...reviseTicked].sort((a, b) => a - b) })));
+    const cancelBtn = el("button", "secondary", "Cancel");
+    cancelBtn.type = "button";
+    cancelBtn.addEventListener("click", () => reviseAction("", () => reviseCall("/revise-plan/cancel")));
+    actions.append(applyBtn, cancelBtn);
+    out.appendChild(actions);
+    refresh();
+  }
+
+  function renderApplied(out, job, rev) {
+    const changed = rev.changed || [];
+    out.appendChild(el("h5", null, changed.length ? `Done: ${changed.length} clip${changed.length === 1 ? "" : "s"} rewritten` : "Done: nothing needed rewriting."));
+    changed.forEach((c) => {
+      const row = el("div", "revise-diff");
+      row.appendChild(el("strong", null, `Clip ${c.clip}`));
+      row.appendChild(el("div", "old", `${c.before.summary} | ${snapWords(c.before)}`));
+      row.appendChild(el("div", "new", `${c.after.summary} | ${snapWords(c.after)}`));
+      out.appendChild(row);
+    });
+    (rev.unresolved || []).forEach((u) => {
+      out.appendChild(el("p", "revise-warn", `Clip ${u.clip} was kept as it was: ${(u.problems || []).join(" ")}`));
+    });
+    if ((rev.contradictions || []).length) {
+      out.appendChild(el("h5", null, "Still conflicting with a rule. Check these clips:"));
+      rev.contradictions.forEach((c) => out.appendChild(el("p", "revise-warn", `Clip ${c.clip}: ${c.reason}`)));
+    }
+    if ((rev.notes || []).length) {
+      const det = el("details");
+      det.appendChild(el("summary", null, `Details (${rev.notes.length})`));
+      rev.notes.forEach((n) => det.appendChild(el("div", "muted", n)));
+      out.appendChild(det);
+    }
+    const actions = el("div", "revise-actions");
+    if (job.plan_versions_count > 0) {
+      const undo = el("button", "secondary", "↩ Undo this revision");
+      undo.type = "button";
+      undo.addEventListener("click", () => reviseAction("Restoring the earlier version…", () => reviseCall("/undo-plan-revision")));
+      actions.appendChild(undo);
+    }
+    const done = el("button", "secondary", "Done");
+    done.type = "button";
+    done.addEventListener("click", () => reviseAction("", () => reviseCall("/revise-plan/cancel")));
+    actions.appendChild(done);
+    out.appendChild(actions);
+  }
+
+  // Add people to the cast: the people the plan shows on screen without casting them, each with a name and the clips they are in
+  const clipRanges = (nums) => {
+    const s = [...new Set(nums)].sort((a, b) => a - b), out = [];
+    for (let i = 0; i < s.length; ) {
+      let j = i;
+      while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++;
+      out.push(s[i] === s[j] ? String(s[i]) : `${s[i]}-${s[j]}`);
+      i = j + 1;
+    }
+    return out.join(", ");
+  };
+
+  function renderCast(out, job, rev) {
+    if (rev.status === "proposing") { out.appendChild(el("p", "revise-status", "Looking for people the plan shows on screen who are not in the cast…")); return; }
+    if (rev.status === "applying") { out.appendChild(el("p", "revise-status", "Writing their looks and adding them to the cast. This takes about a minute.")); return; }
+    if (rev.status === "applied") {
+      const added = rev.added || [];
+      out.appendChild(el("h5", null, `Done: ${added.length} ${added.length === 1 ? "person" : "people"} added to the cast`));
+      added.forEach((a) => {
+        const row = el("div", "revise-diff");
+        row.appendChild(el("strong", null, a.name));
+        row.appendChild(document.createTextNode(`${a.relation ? ` (${a.relation})` : ""} in clips ${clipRanges(a.clips || [])}`));
+        if (a.look) row.appendChild(el("div", "muted", a.look));
+        out.appendChild(row);
+      });
+      (rev.notes || []).forEach((n) => out.appendChild(el("p", "revise-warn", n)));
+      out.appendChild(el("p", "revise-status", "They get a portrait when the video is made, and keep that face in every clip they are in. Their lines were not changed."));
+      const actions = el("div", "revise-actions");
+      if (job.plan_versions_count > 0) {
+        const undo = el("button", "secondary", "↩ Undo: take them back out of the cast");
+        undo.type = "button";
+        undo.addEventListener("click", () => reviseAction("Restoring the earlier version…", () => reviseCall("/undo-plan-revision")));
+        actions.appendChild(undo);
+      }
+      const done = el("button", "secondary", "Done");
+      done.type = "button";
+      done.addEventListener("click", () => reviseAction("", () => reviseCall("/revise-plan/cancel")));
+      actions.appendChild(done);
+      out.appendChild(actions);
+      return;
+    }
+    // proposed
+    const people = rev.people || [];
+    const cancel = el("button", "secondary", people.length ? "Cancel" : "Close");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => reviseAction("", () => reviseCall("/revise-plan/cancel")));
+    if (!people.length) {
+      out.appendChild(el("h5", null, "Nobody is missing: everyone the plan shows on screen is in the cast."));
+      const a = el("div", "revise-actions");
+      a.appendChild(cancel);
+      out.appendChild(a);
+      return;
+    }
+    out.appendChild(el("h5", null, `The plan shows ${people.length} ${people.length === 1 ? "person" : "people"} on screen who ${people.length === 1 ? "is" : "are"} not in the cast`));
+    out.appendChild(el("p", "revise-status", `They would be added as supporting characters: a portrait and a face that stays the same in every clip. You can change a name or the clips, and untick anyone you do not want. Tip: every extra face in a clip is harder to keep consistent, so two or three extra people is the safe range. Supporting characters now: ${rev.supporting_now || 0} (at most ${rev.max_supporting || 4} in a film).`));
+    const rows = [];
+    people.forEach((p) => {
+      const row = el("div", "revise-row");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = p.include !== false;
+      const nameBox = document.createElement("input");
+      nameBox.type = "text";
+      nameBox.value = p.suggested_name || p.label;
+      nameBox.maxLength = 40;
+      nameBox.style.cssText = "display:inline-block;width:230px;max-width:100%";
+      const clipsBox = document.createElement("input");
+      clipsBox.type = "text";
+      clipsBox.value = clipRanges(p.clips || []);
+      clipsBox.style.cssText = "display:inline-block;width:150px;max-width:100%";
+      clipsBox.title = "The clips this person is in, e.g. 11-17, 20";
+      const text = el("div");
+      const top = el("div");
+      top.append(el("strong", null, p.label), document.createTextNode(p.relation && p.relation !== p.label ? ` (${p.relation})` : ""), document.createTextNode(" · name: "), nameBox, document.createTextNode(" · clips: "), clipsBox);
+      text.appendChild(top);
+      if (p.evidence) text.appendChild(el("div", "muted", p.evidence));
+      if (p.speaks) text.appendChild(el("div", "muted", "The plan gives them spoken words. Supporting characters speak at most 2 lines in a film."));
+      row.append(cb, text);
+      out.appendChild(row);
+      rows.push({ cb, nameBox, clipsBox, p });
+    });
+    const addBtn = el("button", "button", "");
+    addBtn.type = "button";
+    const refresh = () => {
+      const n = rows.filter((r) => r.cb.checked).length;
+      const over = (rev.supporting_now || 0) + n > (rev.max_supporting || 4);
+      addBtn.textContent = n ? `➕ Add ${n} to the cast` : "➕ Add to the cast";
+      addBtn.disabled = planBusy || !n || over;
+      addBtn.title = over ? `At most ${rev.max_supporting || 4} supporting characters fit in a film: untick some.` : "";
+    };
+    rows.forEach((r) => r.cb.addEventListener("change", refresh));
+    addBtn.addEventListener("click", () => {
+      const chosen = rows.map((r) => ({ name: r.nameBox.value.trim(), relation: r.p.relation || r.p.label, clips: parseClipNumbers(r.clipsBox.value), include: r.cb.checked }));
+      reviseAction("Adding them to the cast…", () => reviseCall("/cast-check/apply", { people: chosen }));
+    });
+    const actions = el("div", "revise-actions");
+    actions.append(addBtn, cancel);
+    out.appendChild(actions);
+    refresh();
+  }
+
+  function renderRules(job) {
+    const box = $("rules-box");
+    box.replaceChildren();
+    const rules = job.plan_rules || [];
+    if (!rules.length) return;
+    box.appendChild(el("h5", null, `Standing rules (${rules.length} of 12). Every later step follows them.`));
+    const ul = el("ul");
+    rules.forEach((r) => {
+      const li = el("li");
+      li.appendChild(document.createTextNode(r.text));
+      if (r.stops_when) li.appendChild(el("span", "muted", ` (until: ${r.stops_when})`));
+      const edit = el("button", "secondary", "✎");
+      edit.type = "button";
+      edit.title = "Edit this rule";
+      edit.addEventListener("click", () => {
+        const text = prompt("Edit the rule:", r.text);
+        if (text && text.trim() && text.trim() !== r.text) {
+          reviseAction("Saving the rules…", () => reviseCall("/plan-rules", { rules: rules.map((x) => (x.id === r.id ? { id: x.id, text: text.trim(), stops_when: x.stops_when || "" } : x)) }, "PUT"));
+        }
+      });
+      const del = el("button", "secondary", "✕");
+      del.type = "button";
+      del.title = "Delete this rule";
+      del.addEventListener("click", () => {
+        if (confirm(`Delete this rule?\n\n${r.text}`)) {
+          reviseAction("Saving the rules…", () => reviseCall("/plan-rules", { rules: rules.filter((x) => x.id !== r.id) }, "PUT"));
+        }
+      });
+      li.append(edit, del);
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
+  }
+
+  function renderRevise(job, canEdit) {
+    const box = $("plan-revise");
+    if (!box) return;
+    const show = job.mode === "narrated_drama" && job.status === "plan_ready" && canEdit;
+    box.hidden = !show;
+    if (!show) return;
+    const busy = revisionBusy(job);
+    $("revise-btn").disabled = busy || planBusy;
+    if ($("cast-btn")) $("cast-btn").disabled = busy || planBusy;
+    $("revise-note").disabled = busy;
+    const sig = JSON.stringify([job.revision, job.plan_rules, job.plan_versions_count, job.beats && job.beats.length]);
+    if (sig === reviseSig) return;
+    reviseSig = sig;
+    const out = $("revise-result");
+    out.replaceChildren();
+    const rev = job.revision;
+    if (rev) {
+      if (rev.kind === "cast" && rev.status !== "failed") renderCast(out, job, rev);
+      else if (rev.status === "proposing") out.appendChild(el("p", "revise-status", "Reading the plan to find the clips this touches…"));
+      else if (rev.status === "applying") out.appendChild(el("p", "revise-status", "Rewriting the selected clips and checking them. This takes about a minute."));
+      else if (rev.status === "failed") {
+        out.appendChild(el("p", "revise-error", `The revision could not be done: ${rev.error}. The plan was not changed.`));
+        const dismiss = el("button", "secondary", "Dismiss");
+        dismiss.type = "button";
+        dismiss.addEventListener("click", () => reviseAction("", () => reviseCall("/revise-plan/cancel")));
+        out.appendChild(dismiss);
+      } else if (rev.status === "proposed") {
+        reviseTicked.clear();
+        (rev.clips || []).forEach((c) => { if (c.selected !== false) reviseTicked.add(c.clip); });
+        if (reviseKeepUnticked) { reviseKeepUnticked.forEach((n) => reviseTicked.delete(n)); reviseKeepUnticked = null; }
+        renderProposal(out, job, rev);
+      } else if (rev.status === "applied") renderApplied(out, job, rev);
+    }
+    renderRules(job);
+  }
+
+  $("revise-btn")?.addEventListener("click", async () => {
+    const job = shownJob;
+    const note = $("revise-note").value.trim();
+    if (!job || planBusy || !note) { if (!note) { $("revise-msg").className = "plan-msg error"; $("revise-msg").textContent = "Write what you want changed first."; } return; }
+    if (hasUnsavedEdits()) {
+      if (!confirm("You have edits to the beats that are not saved yet.\n\nOK saves them first and continues. Cancel stops.")) return;
+      try {
+        const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/plan`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ beats: gatherEditedBeats() }) });
+        if (!res.ok) throw new Error(describeError(await res.json().catch(() => ({}))));
+        renderJob(await res.json());
+      } catch (e) {
+        $("revise-msg").className = "plan-msg error";
+        $("revise-msg").textContent = `Could not save your edits: ${e.message}`;
+        return;
+      }
+    }
+    reviseAction("Sending your note…", () => reviseCall("/revise-plan", { note }));
+  });
+
+  $("cast-btn")?.addEventListener("click", () => {
+    if (!shownJob || planBusy) return;
+    reviseAction("Looking for people the plan shows but does not cast…", () => reviseCall("/cast-check"));
+  });
+
+  function gatherEditedBeats() {
+    const job = shownJob;
+    if (!job || !job.beats) return [];
+    const container = $("beats-editor");
+    const beats = JSON.parse(JSON.stringify(job.beats));
+    container.querySelectorAll(".beat-card").forEach((card) => {
+      const idx = Number(card.dataset.beatIdx);
+      const action = card.querySelector('[data-field="action"]')?.value;
+      const loc = card.querySelector('[data-field="location_id"]')?.value;
+      const speech = card.querySelector('[data-field="speech"]')?.checked;
+      if (beats[idx]) {
+        if (action !== undefined) beats[idx].action = action.trim();
+        if (loc !== undefined) beats[idx].location_id = loc.trim();
+        if (speech !== undefined) beats[idx].speech = speech;
+      }
+    });
+    return beats;
+  }
+
+  // --- Names the plan does not have (mirrors app.py plan_name_problems) ---
+  // A beat set in a place, or showing a person, that the scene bible lacks cannot be rendered: that clip would stop the job when its script is
+  // written, after the clips before it were paid for. Typing a place into a beat's Location box is the usual way to cause it.
+  function beatNameProblems(job, b) {
+    const bible = job.movie_bible || {};
+    const places = (bible.locations || []).map((l) => l.id).filter(Boolean);
+    const cast = new Map((bible.characters || []).map((c) => [String(c.name).trim().toLowerCase(), c.name]));
+    const out = { places: [], people: [], knownPlaces: places, knownPeople: [...cast.values()] };
+    const loc = String(b.location_id || "").trim();
+    const parts = Array.isArray(b.location_ids) && b.location_ids.length ? b.location_ids : loc.split(/[,+&]|_and_|_to_/).map((x) => x.trim()).filter(Boolean);
+    if (places.length && !places.includes(loc) && !(parts.length && parts.every((x) => places.includes(x)))) {
+      out.places = parts.filter((x) => !places.includes(x));
+      if (!out.places.length) out.places = [loc || "(no place)"];
+    }
+    const names = [...(b.present_characters || []), ...(b.audio_lines || []).map((t) => t && t.speaker)];
+    out.people = [...new Set(names.filter(Boolean).map((n) => String(n).replace(/\s*\(.*?\)\s*$/, "").trim()).filter((n) => n && cast.size && !cast.has(n.toLowerCase())))];
+    return out;
+  }
+
+  // Shows what is wrong on each beat (reading the Location boxes as they are now, saved or not) and blocks Approve while anything is.
+  function refreshPlanWarnings() {
+    const job = shownJob, banner = $("plan-warn");
+    if (!banner) return;
+    if (!job || !job.beats || job.status !== "plan_ready" || !job.movie_bible) { banner.hidden = true; return; }
+    const edited = gatherEditedBeats();
+    const done = new Set((job.clips || []).filter((c) => c.status === "done").map((c) => c.index));
+    const bad = [];
+    document.querySelectorAll("#beats-editor .beat-card").forEach((card) => {
+      const idx = Number(card.dataset.beatIdx);
+      const p = !done.has(idx) && edited[idx] ? beatNameProblems(job, edited[idx]) : null;
+      const msgs = [];
+      if (p && p.places.length) msgs.push(`The place ${p.places.map((x) => `“${x}”`).join(", ")} is not one of the plan's places (${p.knownPlaces.join(", ")}).`);
+      if (p && p.people.length) msgs.push(`${p.people.map((x) => `“${x}”`).join(", ")} ${p.people.length === 1 ? "is" : "are"} not in the cast (${p.knownPeople.join(", ")}).`);
+      const warn = card.querySelector(".beat-warn");
+      if (warn) {
+        warn.hidden = !msgs.length;
+        warn.textContent = msgs.length ? `⚠ ${msgs.join(" ")} This clip cannot be rendered until that is fixed.` : "";
+      }
+      if (msgs.length) bad.push(idx + 1);
+    });
+    banner.hidden = !bad.length;
+    if (bad.length) {
+      banner.textContent = `⚠ ${bad.length === 1 ? "Beat" : "Beats"} ${bad.slice(0, 10).join(", ")}${bad.length > 10 ? ` and ${bad.length - 10} more` : ""} ${bad.length === 1 ? "names" : "name"} a place or a person the plan does not have, so ${bad.length === 1 ? "that clip" : "those clips"} could not be written and the job would stop part way through. Approve is blocked until ${bad.length === 1 ? "it is" : "they are"} fixed: pick one of the plan's places in the Location box, or use a person from the cast. Nothing is spent until you approve.`;
+    }
+    const btn = $("approve-plan");
+    btn.disabled = bad.length > 0 || planBusy || revisionBusy(job);
+    btn.title = bad.length ? "Fix the beats marked with a warning first" : "";
+  }
+
+  // --- Your own pictures for the characters and places of the plan (optional; an empty slot is generated after approval) ---
+  // A slot is a character or a place, shown under every beat it is in. All the slots of one character or place show the same state.
+  const refBusy = new Set();   // "kind:key" being uploaded or removed
+  const refError = {};         // "kind:key" -> what went wrong last time
+  const REF_MAX_MB = 25;
+
+  function refSlotState(job, kind, key) {
+    const meta = job.uploaded_refs && job.uploaded_refs[kind] && job.uploaded_refs[kind][key];
+    const url = kind === "cast" ? (job.cast_bank || {})[key] : ((job.location_bank || {})[key] || [])[0];
+    const hasDone = (job.clips || []).some((c) => c.status === "done");
+    const waiting = !!meta && !meta.used;   // uploaded since the last approval: no clip has been made with it yet
+    const locked = job.status !== "plan_ready" ? "the plan is already approved"
+      : (hasDone && url && !waiting ? "clips with this picture are already rendered" : null);
+    const preview = meta ? `/jobs/${job.id}/reference-images/${kind}/${encodeURIComponent(key)}/file?v=${encodeURIComponent(meta.file || "")}` : (url || null);
+    return { uploaded: !!meta, url: url || null, preview, locked };
+  }
+
+  // After an upload or a removal the server sends the slot back: keep the job we hold in step with it, so every slot repaints correctly.
+  function applySlotToJob(job, slot) {
+    job.uploaded_refs = job.uploaded_refs || {};
+    job.uploaded_refs[slot.kind] = job.uploaded_refs[slot.kind] || {};
+    if (slot.uploaded) job.uploaded_refs[slot.kind][slot.key] = { file: slot.file, at: Date.now() / 1000 };
+    else delete job.uploaded_refs[slot.kind][slot.key];
+    const bankName = slot.kind === "cast" ? "cast_bank" : "location_bank";
+    job[bankName] = job[bankName] || {};
+    if (slot.uploaded && slot.url) job[bankName][slot.key] = slot.kind === "cast" ? slot.url : [slot.url];
+    else delete job[bankName][slot.key];
+  }
+
+  function paintRefSlot(node, job) {
+    job = job || shownJob;
+    if (!job) return;
+    const kind = node.dataset.kind, key = node.dataset.key, k = `${kind}:${key}`;
+    const s = refSlotState(job, kind, key);
+    const busy = refBusy.has(k);
+    node.innerHTML = "";
+    node.className = `ref-slot${s.uploaded ? " mine" : ""}`;
+    const thumb = el("div", "ref-thumb");
+    if (s.preview) {
+      const img = document.createElement("img");
+      img.src = s.preview;
+      img.alt = `${key}`;
+      img.loading = "lazy";
+      thumb.appendChild(img);
+    } else {
+      thumb.appendChild(el("span", null, "no picture yet"));
+    }
+    node.appendChild(thumb);
+    node.appendChild(el("div", "ref-name", `${kind === "cast" ? "\u{1F464}" : "\u{1F4CD}"} ${key}`));
+    node.appendChild(el("div", "ref-state", busy ? "Working\u2026" : s.uploaded ? "Your picture" : s.url ? "Generated picture" : "Will be generated"));
+    if (refError[k]) node.appendChild(el("div", "ref-err", refError[k]));
+    if (s.locked) {
+      node.appendChild(el("div", "ref-lock", `Locked: ${s.locked}`));
+    } else if (!busy) {
+      const actions = el("div", "ref-actions");
+      const label = el("label", "ref-btn", s.uploaded || s.url ? "Replace" : "Upload");
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/jpeg,image/png,image/webp";
+      input.hidden = true;
+      input.addEventListener("change", () => { const f = input.files && input.files[0]; input.value = ""; if (f) uploadRef(kind, key, f); });
+      label.appendChild(input);
+      actions.appendChild(label);
+      if (s.uploaded) {
+        const rm = el("button", "ref-btn", "Remove");
+        rm.type = "button";
+        rm.title = "Take your picture back out: this one will be generated instead";
+        rm.addEventListener("click", () => removeRef(kind, key));
+        actions.appendChild(rm);
+      }
+      node.appendChild(actions);
+    }
+  }
+
+  const paintAllRefs = () => document.querySelectorAll(".ref-slot").forEach((n) => paintRefSlot(n));
+
+  async function refCall(kind, key, method, body, contentType) {
+    const job = shownJob, k = `${kind}:${key}`;
+    if (!job || refBusy.has(k)) return;
+    refError[k] = "";
+    refBusy.add(k);
+    paintAllRefs();
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/reference-images/${kind}/${encodeURIComponent(key)}`, {
+        method, headers: contentType ? { "Content-Type": contentType } : {}, body,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(describeError(data));
+      applySlotToJob(job, data);
+    } catch (e) {
+      refError[k] = e.message;
+    } finally {
+      refBusy.delete(k);
+      paintAllRefs();
+    }
+  }
+
+  function uploadRef(kind, key, file) {
+    if (file.size > REF_MAX_MB * 1048576) {
+      refError[`${kind}:${key}`] = `That picture is ${(file.size / 1048576).toFixed(0)} MB; the limit is ${REF_MAX_MB} MB.`;
+      paintAllRefs();
+      return;
+    }
+    return refCall(kind, key, "PUT", file, file.type || "application/octet-stream");
+  }
+  const removeRef = (kind, key) => refCall(kind, key, "DELETE");
+
+  function refSlotNode(kind, key, job) {
+    const node = el("div", "ref-slot");
+    node.dataset.kind = kind;
+    node.dataset.key = key;
+    paintRefSlot(node, job);
+    return node;
+  }
+
+  // The characters and places this beat uses, as slots. Only names the plan's bible knows can hold a picture.
+  function buildBeatRefs(job, b) {
+    const bible = job.movie_bible || {};
+    const castNames = new Map((bible.characters || []).map((c) => [String(c.name).toLowerCase(), c.name]));
+    const placeIds = new Set((bible.locations || []).map((l) => l.id));
+    const chars = [...new Set((b.present_characters || []).map((n) => castNames.get(String(n).toLowerCase())).filter(Boolean))];
+    let places = Array.isArray(b.location_ids) ? b.location_ids.slice() : [];
+    if (!places.length) {
+      const raw = String(b.location_id || "");
+      places = placeIds.has(raw) ? [raw] : raw.split(/[,+&]|_and_|_to_/).map((x) => x.trim()).filter(Boolean);
+    }
+    places = [...new Set(places.filter((p) => placeIds.has(p)))];
+    if (!chars.length && !places.length) return null;
+    const box = el("div", "ref-box");
+    box.appendChild(el("div", "ref-title", "\u{1F5BC}\uFE0F Pictures for this beat"));
+    const row = el("div", "ref-row");
+    chars.forEach((n) => row.appendChild(refSlotNode("cast", n, job)));
+    places.forEach((p) => row.appendChild(refSlotNode("locations", p, job)));
+    box.appendChild(row);
+    return box;
+  }
+
+  // Story Videos beats do not say who is in them, so there the slots for the whole cast and every place sit in one panel.
+  function renderFilmRefs(job) {
+    const box = $("film-refs");
+    if (!box) return;
+    const bible = job.movie_bible || {};
+    const show = job.mode === "story_videos" && ((bible.characters || []).length || (bible.locations || []).length);
+    box.hidden = !show;
+    if (!show) { box.innerHTML = ""; return; }
+    if (box.querySelector(".ref-slot") && box.contains(document.activeElement)) return;
+    box.innerHTML = "";
+    box.appendChild(el("div", "ref-title", "\u{1F5BC}\uFE0F Pictures for the cast and the places"));
+    const row = el("div", "ref-row");
+    (bible.characters || []).forEach((c) => row.appendChild(refSlotNode("cast", c.name, job)));
+    (bible.locations || []).forEach((l) => row.appendChild(refSlotNode("locations", l.id, job)));
+    box.appendChild(row);
+  }
+
+  function renderPlanReview(job) {
+    const box = $("plan-review");
+    if (!box) return;
+    const isPlanReady = (job.mode === "story_videos" || job.mode === "narrated_drama") && (job.status === "plan_ready" || (job.beats && job.beats.length > 0));
+    box.hidden = !isPlanReady;
+    if (!isPlanReady) return;
+
+    const canEdit = job.status === "plan_ready";
+    const isContinuation = (job.clips || []).some((c) => c.status === "done");
+    const revBusy = revisionBusy(job);
+    $("approve-plan").hidden = !canEdit;
+    $("approve-plan").disabled = planBusy || revBusy;
+    $("save-plan-btn").hidden = !canEdit;
+    $("save-plan-btn").disabled = planBusy || revBusy;
+    $("replan-btn").hidden = !canEdit || isContinuation;
+    $("replan-btn").disabled = planBusy || revBusy;
+    $("discard-plan-btn").hidden = !canEdit;
+    $("discard-plan-btn").disabled = planBusy;
+    $("discard-plan-btn").textContent = isContinuation ? "🗑️ Discard Continuation" : "🗑️ Discard & Cancel Idea";
+
+    const msg = $("plan-msg");
+    if (!canEdit) {
+      msg.className = "plan-msg";
+      msg.textContent = "Plan approved · Video generation in progress or complete.";
+    }
+
+    renderRevise(job, canEdit);
+    $("ref-intro").hidden = !(canEdit && (job.mode === "narrated_drama" || job.mode === "story_videos"));
+    renderFilmRefs(job);
+
+    // What the plan checks found. "[REVIEW]" items are rules about how the film looks or sounds that the plan broke and
+    // that nothing stopped: read them before approving. The rest are soft notes (story delivery, pacing, places).
+    const notesBox = $("plan-notes");
+    if (notesBox) {
+      const all = (job.plan_report && job.plan_report.problems) || [];
+      const review = all.filter((p) => p.startsWith("[REVIEW] ")).map((p) => p.slice(9));
+      const soft = all.filter((p) => !p.startsWith("[REVIEW] ")).map((p) => p.replace(/^\[SOFT\] /, ""));
+      // The shape of the story as planned: each act, and inside it the scenes (played out) and bridges (time skipped).
+      const acts = (job.acts || []).filter((a) => a && Array.isArray(a.sequences) && a.sequences.length);
+      notesBox.hidden = !(canEdit && (review.length || soft.length || acts.length));
+      notesBox.innerHTML = "";
+      if (!notesBox.hidden) {
+        if (review.length) {
+          notesBox.appendChild(el("h4", "review", `Review before approving (${review.length})`));
+          const ul = el("ul");
+          review.forEach((t) => ul.appendChild(el("li", null, t)));
+          notesBox.appendChild(ul);
+        }
+        if (acts.length) {
+          const det = el("details");
+          det.appendChild(el("summary", null, `Story structure (${acts.length} ${acts.length === 1 ? "act" : "acts"})`));
+          const ul = el("ul");
+          acts.forEach((a) => {
+            const li = el("li");
+            li.appendChild(el("strong", null, `Act ${a.act_number} · ${a.title || ""} (clips ${a.start_clip}–${a.end_clip}, ${a.end_clip - a.start_clip + 1} clips)`));
+            const inner = el("ul");
+            let cursor = a.start_clip;
+            a.sequences.forEach((s) => {
+              const last = Math.min(cursor + (Number(s.clip_count) || 0) - 1, a.end_clip);
+              inner.appendChild(el("li", null, `${s.kind === "bridge" ? "BRIDGE" : "SCENE"} · clips ${cursor}–${last} · ${s.location_id} · ${s.purpose || ""}`));
+              cursor = last + 1;
+            });
+            li.appendChild(inner);
+            ul.appendChild(li);
+          });
+          det.appendChild(ul);
+          notesBox.appendChild(det);
+        }
+        if (soft.length) {
+          const det = el("details");
+          det.appendChild(el("summary", null, `Plan notes (${soft.length})`));
+          const ul = el("ul");
+          soft.forEach((t) => ul.appendChild(el("li", null, t)));
+          det.appendChild(ul);
+          notesBox.appendChild(det);
+        }
+      }
+    }
+
+    const container = $("beats-editor");
+    if (!container.contains(document.activeElement)) {
+      container.innerHTML = "";
+      (job.beats || []).forEach((b, idx) => {
+        const isClipDone = job.clips[idx] && job.clips[idx].status === "done";
+        const canEditCard = canEdit && !isClipDone;
+        const card = el("div", `beat-card${isClipDone ? " beat-done" : ""}`);
+        card.dataset.beatIdx = String(idx);
+
+        const head = el("div", "beat-card-head");
+        const titleSpan = el("span");
+        const dMode = (b.delivery_mode || (b.speech === false ? "silent" : "dialogue")).toUpperCase();
+        const tag = dMode === "VOICEOVER" ? "V.O." : dMode === "SHOCK_ACTION" ? "SHOCK" : dMode === "SILENT" ? "SILENT" : "SYNC";
+        const tagColor = dMode === "VOICEOVER" ? "#6f42c1" : dMode === "SHOCK_ACTION" ? "#d73a49" : "var(--accent)";
+        const beatDur = b.duration || (clip && clip.duration) || job.request.clip_duration || 5;
+        if (isClipDone) {
+          titleSpan.innerHTML = `<span class="beat-badge" style="background: var(--done);">Clip ${idx + 1} · Generated</span> <strong>Clip ${idx + 1}</strong> (${beatDur}s)`;
+        } else if (isContinuation) {
+          titleSpan.innerHTML = `<span class="beat-badge" style="background: #8b5cf6;">[${tag}] Beat ${idx + 1} · Continuation</span> <strong>Clip ${idx + 1}</strong> (${beatDur}s)`;
+        } else {
+          titleSpan.innerHTML = `<span class="beat-badge" style="background: ${tagColor};">[${tag}] Beat ${idx + 1}</span> <strong>Clip ${idx + 1}</strong> (${beatDur}s)`;
+        }
+        head.appendChild(titleSpan);
+
+        const locWrap = el("div", "beat-loc-wrap");
+        locWrap.appendChild(el("span", null, "📍 Location:"));
+        const locInput = el("input", "beat-loc-input");
+        locInput.value = b.location_id || "";
+        locInput.dataset.field = "location_id";
+        locInput.disabled = !canEditCard;
+        locInput.addEventListener("input", refreshPlanWarnings);
+        locWrap.appendChild(locInput);
+        head.appendChild(locWrap);
+        card.appendChild(head);
+        const warnBox = el("div", "beat-warn");
+        warnBox.hidden = true;
+        card.appendChild(warnBox);
+
+        const actionText = el("textarea", "beat-action-input");
+        actionText.rows = 2;
+        actionText.value = b.summary || b.action || "";
+        actionText.dataset.field = "action";
+        actionText.disabled = !canEditCard;
+        actionText.placeholder = "Describe the visual action and event that happens in this beat...";
+        card.appendChild(actionText);
+
+        if (b.audio_lines?.length) {
+          const linesDiv = el("div", "");
+          const spoken = b.audio_lines.map(l => `“${escapeHtml(l.line)}” (${escapeHtml(l.speaker)}${l.is_voiceover ? ", inner thought" : ""})${l.cutaway && !l.is_voiceover ? ` <em>[camera cuts to: ${escapeHtml(l.cutaway)}]</em>` : ""}`).join(" · ");
+          linesDiv.innerHTML = `<small style="color: var(--muted); display: block; margin-top: 4px;">Spoken: ${spoken}</small>`;
+          card.appendChild(linesDiv);
+        }
+        if (b.reveals?.length) {
+          const revDiv = el("div", "");
+          const revs = b.reveals.map(r => `<span class="ref-tag" style="background:#d73a49;font-size:10px;">${escapeHtml(r)}</span>`).join(" ");
+          revDiv.innerHTML = `<small style="color: var(--muted); display: block; margin-top: 2px;">Reveals: ${revs}</small>`;
+          card.appendChild(revDiv);
+        }
+
+        const refBox = job.mode === "narrated_drama" ? buildBeatRefs(job, b) : null;
+        if (refBox) card.appendChild(refBox);
+
+        const footer = el("div", "beat-card-footer");
+        const speechLabel = el("label", "beat-speech-label");
+        const speechCheck = el("input");
+        speechCheck.type = "checkbox";
+        speechCheck.checked = b.speech !== false;
+        speechCheck.dataset.field = "speech";
+        speechCheck.disabled = !canEditCard;
+        const speechText = el("span", null, speechCheck.checked ? "🗣️ Character Dialogue" : "🤫 Silent / Ambient Beat");
+        speechCheck.addEventListener("change", () => {
+          speechText.textContent = speechCheck.checked ? "🗣️ Character Dialogue" : "🤫 Silent / Ambient Beat";
+        });
+        speechLabel.appendChild(speechCheck);
+        speechLabel.appendChild(speechText);
+        footer.appendChild(speechLabel);
+        card.appendChild(footer);
+
+        container.appendChild(card);
+      });
+    }
+
+    refreshPlanWarnings();
+
+    const bibleDiv = $("bible-content");
+    bibleDiv.innerHTML = "";
+    if (job.movie_bible) {
+      const chars = job.movie_bible.characters || [];
+      if (chars.length) {
+        const sec = el("div", "bible-sec");
+        sec.innerHTML = `<h4>Characters (${chars.length})</h4>`;
+        chars.forEach((c) => {
+          const item = el("div", "bible-item");
+          const lookStr = c.appearance
+            ? Object.entries(c.appearance).map(([k, v]) => `<strong>${escapeHtml(k.replace('_', ' '))}:</strong> ${escapeHtml(v)}`).join(' · ')
+            : escapeHtml(c.look || '');
+          const leadBadge = c.is_protagonist ? ' <span class="badge" style="background:#6f42c1;font-size:10px;">POV Lead</span>' : '';
+          item.innerHTML = `<strong>${escapeHtml(c.name)}</strong>${leadBadge}: ${lookStr} <br><small style="color: var(--muted);">Voice: ${escapeHtml(c.voice || '')}</small>`;
+          sec.appendChild(item);
+        });
+        bibleDiv.appendChild(sec);
+      }
+      const locs = job.movie_bible.locations || [];
+      if (locs.length) {
+        const sec = el("div", "bible-sec");
+        sec.innerHTML = `<h4>Locations (${locs.length})</h4>`;
+        locs.forEach((l) => {
+          const item = el("div", "bible-item");
+          item.innerHTML = `<strong>${escapeHtml(l.id)}</strong>: ${escapeHtml(l.description)} ${l.layout ? `<br><small style="color: var(--muted);">Layout: ${escapeHtml(l.layout)}</small>` : ""}`;
+          sec.appendChild(item);
+        });
+        bibleDiv.appendChild(sec);
+      }
+      const props = job.movie_bible.props || [];
+      if (props.length) {
+        const sec = el("div", "bible-sec");
+        sec.innerHTML = `<h4>Story Props (${props.length})</h4>`;
+        props.forEach((p) => {
+          const item = el("div", "bible-item");
+          item.innerHTML = `<strong>${escapeHtml(p.id)}</strong>: ${escapeHtml(p.description)}`;
+          sec.appendChild(item);
+        });
+        bibleDiv.appendChild(sec);
+      }
+    }
+  }
+
+  $("approve-plan")?.addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job || planBusy) return;
+
+    const clipCount = (job.clips && job.clips.length) ? job.clips.length : Math.round((job.request?.duration || 30) / (job.request?.clip_duration || 5));
+    const estCredits = clipCount * 19;
+    const estHours = (clipCount * 3.5 / 60).toFixed(1);
+    const modeLabel = job.mode === "narrated_drama" ? "Narrated Drama" : "Story Videos";
+
+    const proceed = confirm(
+      `Approve Master Plan and start live video generation on Kie.ai?\n\n` +
+      `• Job: ${clipCount} clips (${modeLabel})\n` +
+      `• Estimated cost: ~${estCredits} credits (plus reference plates)\n` +
+      `• Estimated runtime: ~${estHours} hours (~3.5 min/clip)\n` +
+      `• Reminder: Keep this machine awake throughout the run.\n\n` +
+      `Proceed with live video generation?`
+    );
+    if (!proceed) return;
+
+    planBusy = true;
+    const msg = $("plan-msg");
+    msg.className = "plan-msg";
+    msg.textContent = "Approving plan & starting video generation…";
+    $("approve-plan").disabled = true;
+    try {
+      const beats = gatherEditedBeats();
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/approve-plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ beats }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(describeError(err));
+      }
+      msg.className = "plan-msg success";
+      msg.textContent = "Plan approved! Video generation started.";
+      poll(job.id);
+    } catch (e) {
+      msg.className = "plan-msg error";
+      msg.textContent = `Approval failed: ${e.message}`;
+    } finally {
+      planBusy = false;
+      renderPlanReview(job);
+    }
+  });
+
+  $("save-plan-btn")?.addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job || planBusy) return;
+    planBusy = true;
+    const msg = $("plan-msg");
+    msg.className = "plan-msg";
+    msg.textContent = "Saving plan edits…";
+    try {
+      const beats = gatherEditedBeats();
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/plan`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ beats }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(describeError(err));
+      }
+      msg.className = "plan-msg success";
+      msg.textContent = "Plan edits saved successfully!";
+      const updated = await res.json();
+      renderJob(updated);
+    } catch (e) {
+      msg.className = "plan-msg error";
+      msg.textContent = `Save failed: ${e.message}`;
+    } finally {
+      planBusy = false;
+    }
+  });
+
+  $("replan-btn")?.addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job || planBusy) return;
+    if (!confirm("Ask OpenAI to generate a completely new Master Plan for this story? Existing beats will be replaced.")) return;
+    planBusy = true;
+    const msg = $("plan-msg");
+    msg.className = "plan-msg";
+    msg.textContent = "Requesting new Master Plan from OpenAI…";
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/replan`, { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(describeError(err));
+      }
+      poll(job.id);
+    } catch (e) {
+      msg.className = "plan-msg error";
+      msg.textContent = `Re-plan failed: ${e.message}`;
+    } finally {
+      planBusy = false;
+    }
+  });
+
+  $("discard-plan-btn")?.addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job || planBusy) return;
+    const isContinuation = (job.clips || []).some((c) => c.status === "done");
+    const confirmMsg = isContinuation
+      ? "Discard this continuation? Your previously completed video and clips will remain intact."
+      : "Are you sure you want to completely cancel and discard this video idea? All planned beats and settings will be deleted.";
+    if (!confirm(confirmMsg)) return;
+    planBusy = true;
+    const msg = $("plan-msg");
+    msg.className = "plan-msg";
+    msg.textContent = isContinuation ? "Rolling back continuation…" : "Cancelling and deleting video idea…";
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}`, { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(describeError(err));
+      }
+      const data = await res.json().catch(() => ({}));
+      if (data.action === "rolled_back_to_done") {
+        msg.className = "plan-msg success";
+        msg.textContent = "Continuation discarded. Reverting to completed video.";
+        poll(job.id);
+        return;
+      }
+      clearTimeout(pollTimer);
+      try { localStorage.removeItem(STORE_KEY); } catch (e) {}
+      shownJob = null;
+      shownJson = null;
+      shownClips.clear();
+      selected = null;
+      $("job").hidden = true;
+      $("plan-review").hidden = true;
+      setBusy(false);
+      formMsg.className = "";
+      formMsg.textContent = "Video idea has been cancelled and deleted.";
+      $("topic").value = "";
+      $("topic").focus();
+    } catch (e) {
+      msg.className = "plan-msg error";
+      msg.textContent = `Could not delete job: ${e.message}`;
+    } finally {
+      planBusy = false;
+    }
+  });
+
+  // --- Story Continuation Panel ---
+  let extendBusy = false;
+  function renderExtendStory(job) {
+    const box = $("extend-story");
+    if (!box) return;
+    const canExtend = (job.mode === "story_videos" || job.mode === "narrated_drama") && job.status === "done";
+    box.hidden = !canExtend;
+    if (!canExtend) return;
+    $("extend-submit-btn").disabled = extendBusy;
+
+    const clipDur = (job.request && job.request.clip_duration) || 5;
+    const durSelect = $("extend-duration");
+    if (durSelect) {
+      const currentVal = Number(durSelect.value) || (clipDur === 15 ? 30 : 30);
+      durSelect.innerHTML = "";
+      const durations = clipDur === 15 ? [15, 30, 45, 60] : [15, 20, 30, 40, 60];
+      durations.forEach(d => {
+        const numClips = Math.round(d / clipDur);
+        const opt = document.createElement("option");
+        opt.value = d;
+        opt.textContent = `${d} s · ${numClips} clip${numClips === 1 ? '' : 's'}`;
+        if (d === currentVal) opt.selected = true;
+        durSelect.appendChild(opt);
+      });
+      if (!durSelect.value && durSelect.options.length) durSelect.selectedIndex = (durations.includes(30) ? durations.indexOf(30) : 0);
+    }
+  }
+
+  $("extend-submit-btn")?.addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job || extendBusy) return;
+    const promptInput = $("extend-prompt");
+    const continuationPrompt = promptInput.value.trim();
+    if (!continuationPrompt) {
+      $("extend-msg").className = "plan-msg error";
+      $("extend-msg").textContent = "Please write your continuation idea or next scene event first.";
+      promptInput.focus();
+      return;
+    }
+    const duration = Number($("extend-duration").value) || 30;
+    extendBusy = true;
+    $("extend-submit-btn").disabled = true;
+    const msg = $("extend-msg");
+    msg.className = "plan-msg";
+    msg.textContent = "Analyzing previous story & planning continuation with OpenAI…";
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/extend`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ continuation_prompt: continuationPrompt, duration }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(describeError(err));
+      }
+      msg.className = "plan-msg success";
+      msg.textContent = "Continuation planned! Review the new beats in the Master Plan card above.";
+      promptInput.value = "";
+      poll(job.id);
+    } catch (e) {
+      msg.className = "plan-msg error";
+      msg.textContent = `Could not plan continuation: ${e.message}`;
+    } finally {
+      extendBusy = false;
+      $("extend-submit-btn").disabled = false;
+    }
+  });
+
+  function renderPropTableHtml(propState) {
+    if (!propState || !propState.length) return "<p class='meta' style='margin: 2px 0;'>— None in this clip —</p>";
+    const rows = propState.map((p) => {
+      const inFrame = p.in_frame === true || p.in_frame === "visible";
+      const inTag = inFrame ? '<span class="prop-tag-in">In Frame</span>' : '<span class="prop-tag-out">Off Screen</span>';
+      return `<tr>
+        <td style="font-weight: 600;">${escapeHtml(p.prop)}</td>
+        <td>${escapeHtml(p.holder || '—')}</td>
+        <td>${inTag}</td>
+        <td>${escapeHtml(p.state || '—')}</td>
+      </tr>`;
+    }).join("");
+    return `<table class="prop-table">
+      <thead>
+        <tr>
+          <th>Prop</th>
+          <th>Holder</th>
+          <th>In Frame</th>
+          <th>State</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+
+  // The selected clip's script text and its two actions, under the timeline.
+  function renderDetail() {
+    for (const { node } of shownClips.values()) node.classList.toggle("selected", Number(node.dataset.index) === selected);
+    const detail = $("detail");
+    const job = shownJob;
+    const clip = job && selected != null ? job.clips[selected] : null;
+    detail.hidden = !clip;
+    if (!clip) return;
+    const durLabel = clip.duration || (job.beats && job.beats[clip.index] && job.beats[clip.index].duration) || (job.request && job.request.clip_duration) || "";
+    const durSuffix = durLabel ? ` (${durLabel}s)` : "";
+    $("detail-title").innerHTML = `Clip ${clip.index + 1} of ${job.clips.length}${durSuffix}` + (clip.custom_edited ? ` <span class="badge" style="background: var(--accent); margin-left: 6px; font-size: 11px;">✏️ Custom Edited</span>` : "");
+    const text = [];
+    const hasScript = (job.mode === "story_videos" || job.mode === "narrated_drama") ? Boolean(clip.movie_script) : job.mode === "story_time" ? Boolean(clip.narration) : Boolean(clip.dialogue);
+    if (!hasScript) {
+      text.push(el("p", "waiting", "Waiting for the script…"));
+    } else if (job.mode === "narrated_drama" && clip.movie_script) {
+      const ms = clip.movie_script;
+      const dMode = (ms.delivery_mode || "dialogue").toUpperCase();
+      const spk = ms.speaker ? `${ms.speaker}: ` : "";
+      const txt = clipSpeech(ms) || "— non-verbal beat —";
+      text.push(el("p", "quote", `${spk}${txt}`));
+      text.push(el("p", "meta", `Delivery Mode: ${dMode}`));
+      if (ms.delivery) text.push(el("p", "meta", `Delivery Tone: ${ms.delivery}`));
+      if (ms.start_est != null && ms.end_est != null && (ms.start_est > 0 || ms.end_est > 0)) text.push(el("p", "meta", `Speech Window: ${ms.start_est}s – ${ms.end_est}s`));
+      if (ms.shot) text.push(el("p", "meta", `Shot: ${ms.shot}`));
+      text.push(el("p", "meta", `Location: ${(ms.location_id || "").replace(/_/g, " ")}`));
+      if (ms.environment) {
+        text.push(el("p", "meta", `Environment: ${ms.environment}`));
+      }
+      if (ms.blocking?.length) {
+        const blockingItems = ms.blocking.map((b) => {
+          const pose = (b.end_posture && b.end_posture !== b.posture) ? `${b.posture} → ${b.end_posture}` : b.posture;
+          const pos = (b.end_position && b.end_position !== b.position) ? `${b.position} → ${b.end_position}` : b.position;
+          const fp = b.frame_position ? ` [${b.frame_position}]` : "";
+          const aware = b.awareness ? ` · Knows: ${b.awareness}` : "";
+          return `${b.character}: ${pos} (${pose})${fp}${aware}`;
+        });
+        text.push(el("p", "meta", `Blocking: ${blockingItems.join("; ")}`));
+      }
+      if (ms.prop_state?.length) {
+        const pDiv = el("div", "");
+        pDiv.innerHTML = `<span class="meta" style="font-weight: 600; display: block; margin-top: 4px;">Props in this clip:</span>` + renderPropTableHtml(ms.prop_state);
+        text.push(pDiv);
+      }
+    } else if (job.mode === "story_videos" && clip.movie_script) {
+      const ms = clip.movie_script;
+      const lines = (ms.dialogue || []).map((d) => `${d.speaker}: "${d.line}"`).join("\n");
+      text.push(el("p", "quote", lines || "— silent beat —"));
+      if (ms.shot) text.push(el("p", "meta", `Shot: ${ms.shot}`));
+      text.push(el("p", "meta", `Location: ${(ms.location_id || "").replace(/_/g, " ")}`));
+      if (ms.environment) {
+        text.push(el("p", "meta", `Environment: ${ms.environment}`));
+      }
+      if (ms.blocking?.length) {
+        const blockingItems = ms.blocking.map((b) => {
+          const pose = (b.end_posture && b.end_posture !== b.posture) ? `${b.posture} → ${b.end_posture}` : b.posture;
+          const pos = (b.end_position && b.end_position !== b.position) ? `${b.position} → ${b.end_position}` : b.position;
+          return `${b.character}: ${pos} (${pose})`;
+        });
+        text.push(el("p", "meta", `Blocking: ${blockingItems.join("; ")}`));
+      }
+    } else if (job.mode === "story_time") {
+      text.push(el("p", "quote", `“${clip.narration}”`));
+      text.push(el("p", "meta", `On screen: ${clip.visual}`));
+    } else {
+      text.push(el("p", "quote", `“${clip.dialogue}”`));
+    }
+    if (hasScript && clip.delivery) text.push(el("p", "meta", `Delivery: ${clip.delivery}`));
+    if (clip.custom_edited) {
+      text.push(el("p", "meta", "🔒 Custom edits are active on this clip. Regenerating will strictly use your text and OpenAI will not rewrite it."));
+    }
+    const running = job.status === "pending" || job.status === "generating";
+    if (running) text.push(el("p", "meta", "Regenerating is available once the job has finished."));
+    $("detail-text").replaceChildren(...text);
+    const noRegen = job.mode === "story_videos" || job.mode === "narrated_drama";
+    for (const id of ["regen-script", "regen-scene", "edit-prompt"]) $(id).disabled = noRegen || !hasScript || running || actionBusy;
+  }
+
+  function select(index) {
+    if (index === selected) return;
+    selected = index;
+    $("detail-msg").textContent = "";
+    hidePopover();
+    renderDetail();
+  }
+
+  $("timeline").addEventListener("click", (event) => {
+    const seg = event.target.closest(".seg");
+    if (!seg || event.target.closest("video")) return; // clicks on a video's controls just play it
+    select(Number(seg.dataset.index));
+  });
+  $("timeline").addEventListener("keydown", (event) => {
+    if ((event.key === "Enter" || event.key === " ") && event.target.classList.contains("seg")) {
+      event.preventDefault();
+      select(Number(event.target.dataset.index));
+    }
+  });
+
+  function escapeHtml(str) {
+    return String(str || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  // --- Prompt Component Builders (Human-Comprehensible) ---
+  function getScriptPromptData(job, index) {
+    const clip = job.clips[index];
+    const prevClip = index > 0 ? job.clips[index - 1] : null;
+    const dur = clip.duration || (job.beats && job.beats[index] && job.beats[index].duration) || job.request.clip_duration || 5;
+
+    let modeLabel = "Talking Head Speech";
+    let targetWords = `~${Math.round(dur * 2.2)} words`;
+    if (job.mode === "story_time") {
+      modeLabel = "Story Time Narration";
+    } else if (job.mode === "story_videos") {
+      modeLabel = "Story Videos Multi-Speaker Scene";
+      targetWords = "8 – 16 words";
+    } else if (job.mode === "narrated_drama") {
+      modeLabel = "Narrated Drama (Micro-Cycle)";
+      targetWords = dur >= 15 ? "22 – 36 words" : dur >= 12 ? "17 – 30 words" : dur >= 10 ? "14 – 25 words" : "7 – 10 words";
+    }
+
+    const sections = [
+      { title: "Mode & Directive", content: `<strong>${modeLabel}</strong> (${dur}s clip duration)` },
+      { title: "Story Topic / Beat", content: (job.mode === "story_videos" || job.mode === "narrated_drama") && job.beats && job.beats[index] ? `<strong>Beat ${index + 1}:</strong> ${escapeHtml(job.beats[index].summary || job.beats[index].action)}` : escapeHtml(job.request.topic) },
+    ];
+
+    if (prevClip) {
+      let prevText = prevClip.narration || prevClip.dialogue;
+      if (!prevText && prevClip.movie_script?.dialogue?.[0]) {
+        prevText = `${prevClip.movie_script.dialogue[0].speaker}: "${prevClip.movie_script.dialogue[0].line}"`;
+      } else if (!prevText && clipTurns(prevClip.movie_script).length) {
+        prevText = clipSpeech(prevClip.movie_script, true);
+      }
+      sections.push({ title: "Preceding Clip Context", content: `Continuity from clip ${index}: <em>"${escapeHtml(prevText || 'Action completed')}"</em>` });
+    } else {
+      sections.push({ title: "Sequence Position", content: "Opening clip — sets tone and establishes character baseline" });
+    }
+
+    if (job.mode === "story_time") {
+      sections.push({ title: "Visual Scene (Preserved)", content: escapeHtml(clip.visual || "Waiting for visual") });
+      sections.push({ title: "Current Line (To Replace)", content: clip.narration ? `“${escapeHtml(clip.narration)}”` : "(None yet)" });
+    } else if (job.mode === "story_videos") {
+      const lines = (clip.movie_script?.dialogue || []).map((d) => `${d.speaker}: "${d.line}"`).join("\n");
+      sections.push({ title: "Current Spoken Lines", content: escapeHtml(lines || "— silent beat —") });
+      sections.push({ title: "Location Layout", content: escapeHtml((clip.movie_script?.location_id || "").replace(/_/g, " ")) });
+    } else if (job.mode === "narrated_drama") {
+      const ms = clip.movie_script;
+      let lineText = "— non-verbal shock beat —";
+      if (ms && clipTurns(ms).length) {
+        const dMode = (ms.delivery_mode || "dialogue").toUpperCase();
+        lineText = `[${dMode}] ${clipSpeech(ms, true)}`;
+      }
+      sections.push({ title: "Current Audio & Delivery", content: escapeHtml(lineText) });
+      sections.push({ title: "Location Layout", content: escapeHtml((ms?.location_id || "").replace(/_/g, " ")) });
+    } else {
+      sections.push({ title: "Current Line (To Replace)", content: clip.dialogue ? `“${escapeHtml(clip.dialogue)}”` : "(None yet)" });
+    }
+
+    if (clip.delivery) sections.push({ title: "Emotional Delivery Direction", content: escapeHtml(clip.delivery) });
+    if (job.scene_bible) sections.push({ title: "Scene Bible & Character Appearance", content: escapeHtml(job.scene_bible) });
+    sections.push({ title: "Word & Timing Budget", content: `${targetWords} (paced comfortably for ${dur} seconds)` });
+
+    return {
+      title: "📝 Script Generation Prompt",
+      badge: "OpenAI GPT",
+      sections,
+    };
+  }
+
+  function getScenePromptData(job, index) {
+    const clip = job.clips[index];
+    const isFirst = index === 0;
+    const dur = clip.duration || (job.beats && job.beats[index] && job.beats[index].duration) || job.request.clip_duration || 5;
+
+    const sections = [];
+    let compiledPrompt = "";
+    const refs = [];
+
+    if (job.mode === "talking_head") {
+      const bible = (job.scene_bible || "").trim().replace(/\.+$/, "");
+      sections.push({ title: "Visual Framing & Setup", content: "Medium shot facing camera directly, matching fixed studio lighting" });
+      sections.push({ title: "Spoken Dialogue & Tone", content: `“${escapeHtml(clip.dialogue || '')}” <small>(${escapeHtml(clip.delivery || 'natural')})</small>` });
+      if (isFirst) {
+        refs.push("None (Clip 1 establishes Master Anchor)");
+        compiledPrompt = `${bible}. She speaks directly to camera, ${clip.delivery || 'naturally'}: "${clip.dialogue || ''}" Natural lip sync to dialogue, no background music, no score.`;
+      } else {
+        refs.push("@Video1 (Clip 0 Muted Anchor Video)", "@Audio1 (Clip 0 Master Audio Anchor)");
+        compiledPrompt = `Continuing directly from <Video 1>, ${bible}, still speaking to camera, ${clip.delivery || 'naturally'}: "${clip.dialogue || ''}" Natural lip sync to dialogue, same lighting and camera style, no background music, no score.`;
+      }
+    } else if (job.mode === "story_time") {
+      const bible = (job.scene_bible || "").trim().replace(/\.+$/, "");
+      sections.push({ title: "Visual Scene Description", content: escapeHtml(clip.visual || "Waiting for visual description") });
+      sections.push({ title: "Voiceover Narration", content: `“${escapeHtml(clip.narration || '')}” <small>(${escapeHtml(clip.delivery || 'natural')})</small>` });
+      if (isFirst) {
+        refs.push("None (First clip establishes visual baseline)");
+        compiledPrompt = `${clip.visual || ''}. ${bible}. Voiceover narration only, ${clip.delivery || 'naturally'}, no visible speaker, no lip sync needed since no one is speaking on camera: "${clip.narration || ''}" Natural ambient sound only, no music, no score — just the voiceover.`;
+      } else {
+        refs.push("@Video1 (Muted Previous Clip)", "@Audio1 (Narrator Voice Anchor)", "@Image1 (Main Character Face Anchor)");
+        compiledPrompt = `Same characters, visual style and lighting as @Video1, but a new scene: ${clip.visual || ''}. ${bible}. The main character looks exactly like @Image1. Voiceover narration only, in the same narrator voice as @Audio1, ${clip.delivery || 'naturally'}, no visible speaker, no lip sync needed since no one is speaking on camera: "${clip.narration || ''}" Natural ambient sound only, no music, no score — just the voiceover.`;
+      }
+    } else if (job.mode === "story_videos") {
+      const ms = clip.movie_script || {};
+      sections.push({ title: "Camera Setup & Lighting", content: escapeHtml(ms.shot || "(5-second cinematic shot)") });
+      sections.push({ title: "Location / Set", content: escapeHtml((ms.location_id || "").replace(/_/g, " ")) });
+      if (ms.environment) {
+        sections.push({ title: "Environment (Ambient Atmosphere)", content: escapeHtml(ms.environment) });
+      }
+      if (ms.blocking?.length) {
+        const blockingHtml = ms.blocking.map((b) => {
+          const pose = (b.end_posture && b.end_posture !== b.posture) ? `${b.posture} → ${b.end_posture}` : b.posture;
+          const pos = (b.end_position && b.end_position !== b.position) ? `${b.position} → ${b.end_position}` : b.position;
+          return `<div><strong>${escapeHtml(b.character)}</strong>: ${escapeHtml(pos)} (<em>${escapeHtml(pose)}</em>)</div>`;
+        }).join("");
+        sections.push({ title: "Characters & Blocking", content: blockingHtml });
+      }
+      if (ms.action_steps?.length) {
+        sections.push({ title: "Physical Action Steps", content: escapeHtml(ms.action_steps.map((a) => `[${a.start_est}s-${a.end_est}s] ${a.action}`).join("; ")) });
+      }
+      if (ms.dialogue?.length) {
+        sections.push({ title: "Spoken Dialogue & Delivery", content: escapeHtml(ms.dialogue.map((d) => `${d.speaker} (${d.delivery}): "${d.line}"`).join("\n")) });
+      } else {
+        sections.push({ title: "Audio & Dialogue", content: "— Silent beat: ambient acoustics only —" });
+      }
+      refs.push("@Image1..N (Location Angles + Cast Portraits)", "@Audio1..N (Banked Character Voices)");
+      const shot = (ms.shot || "").trim().replace(/\.+$/, "");
+      const dLines = (ms.dialogue || []).map((d) => `[${d.start_est}s to ${d.end_est}s] ${d.speaker} speaks: "${d.line}"`).join(" ");
+      compiledPrompt = `Five-second ${shot}. Location: ${ms.location_id || ''}. Blocking: ${ms.blocking ? ms.blocking.map((b) => b.character).join(', ') : ''}. Dialogue: ${dLines || 'Nobody speaks.'} Natural lip movement matching spoken line; everyone else keeps their mouth closed. No background music.`;
+    } else if (job.mode === "narrated_drama") {
+      const ms = clip.movie_script || {};
+      const dMode = (ms.delivery_mode || "dialogue").toUpperCase();
+      sections.push({ title: "Delivery Mode", content: `<span class="badge" style="background: ${dMode === 'VOICEOVER' ? '#6f42c1' : dMode === 'SHOCK_ACTION' ? '#d73a49' : 'var(--accent)'}; font-size: 11px;">${dMode}</span>` });
+      sections.push({ title: "Camera Setup & Framing", content: escapeHtml(ms.shot || "(5-second cinematic shot)") });
+      sections.push({ title: "Location / Set", content: escapeHtml((ms.location_id || "").replace(/_/g, " ")) });
+      if (ms.environment) {
+        sections.push({ title: "Environment (Ambient Atmosphere)", content: escapeHtml(ms.environment) });
+      }
+      if (ms.blocking?.length) {
+        const blockingHtml = ms.blocking.map((b) => {
+          const pose = (b.end_posture && b.end_posture !== b.posture) ? `${b.posture} → ${b.end_posture}` : b.posture;
+          const pos = (b.end_position && b.end_position !== b.position) ? `${b.position} → ${b.end_position}` : b.position;
+          const fp = b.frame_position ? ` <span class="ref-tag" style="background: var(--line); color: var(--text);">${escapeHtml(b.frame_position)}</span>` : "";
+          const aware = b.awareness ? `<div style="font-size: 11.5px; color: var(--muted); margin-top: 1px;">🧠 Knows: ${escapeHtml(b.awareness)}</div>` : "";
+          return `<div style="margin-bottom: 5px;"><strong>${escapeHtml(b.character)}</strong>: ${escapeHtml(pos)} (<em>${escapeHtml(pose)}</em>)${fp}${aware}</div>`;
+        }).join("");
+        sections.push({ title: "Characters & Blocking (Start → End Arc & Awareness)", content: blockingHtml });
+      }
+      if (ms.prop_state?.length) {
+        sections.push({ title: "Props in This Clip", content: renderPropTableHtml(ms.prop_state) });
+      }
+      if (ms.action_steps?.length) {
+        sections.push({ title: "Physical Action Steps", content: escapeHtml(ms.action_steps.map((a) => `[${a.start_est}s-${a.end_est}s] ${a.action}`).join("; ")) });
+      }
+      if (clipTurns(ms).length) {
+        sections.push({ title: dMode === "VOICEOVER" ? "Protagonist Voiceover (Closed Lips)" : "Spoken Dialogue (Lip Sync)", content: escapeHtml(clipSpeech(ms, true)) });
+      } else {
+        sections.push({ title: "Audio & Delivery", content: "— Non-verbal shock beat / pure foley and action —" });
+      }
+      refs.push("@Image1..N (Location Angles + Cast Portraits)", "@Audio1 (Protagonist Voice Bank)");
+      const durPrefix = dur === 5 ? "Five-second" : `${dur}-second`;
+      compiledPrompt = ms.compiled_prompt || (ms.shot ? `${durPrefix} ${ms.shot}. Location: ${ms.location_id || ''}. Action: ${(ms.action_steps || []).map(a => a.action).join('. ')}. Audio: ${clipSpeech(ms, true) || 'None'}.` : 'Clip script pending generation...');
+    }
+
+    sections.push({ title: "Reference Inputs Sent", content: refs.map((r) => `<span class="ref-tag">${r}</span>`).join(" ") });
+    sections.push({ title: "Model Format & Safety", content: '<span class="ref-tag">Aspect Ratio: 9:16 (Vertical)</span> <span class="ref-tag">NSFW Checker: Disabled</span>' });
+    sections.push({ title: "Audio Directives", content: "Natural lip sync & speech audio bed, strictly no background music or score" });
+    sections.push({ title: "Compiled Video Prompt Preview", content: `<pre class="pop-code">${escapeHtml(compiledPrompt)}</pre>` });
+
+    return {
+      title: "🎬 AI Video Model Input",
+      badge: "ByteDance Seedance 2.0 Mini",
+      sections,
+    };
+  }
+
+  // --- Hover Popover Handling ---
+  let popoverTimer = null;
+  const popover = $("prompt-popover");
+
+  function showPopover(btn, type) {
+    clearTimeout(popoverTimer);
+    const job = shownJob, index = selected;
+    if (!job || index == null) return;
+    const clip = job.clips[index];
+    if (!clip) return;
+
+    const data = type === "script" ? getScriptPromptData(job, index) : getScenePromptData(job, index);
+    $("pop-title").textContent = data.title;
+    $("pop-badge").textContent = data.badge;
+
+    const body = $("pop-body");
+    body.replaceChildren();
+    for (const sec of data.sections) {
+      const card = el("div", "pop-card");
+      card.appendChild(el("div", "pop-card-title", sec.title));
+      const content = el("p", "pop-card-content");
+      content.innerHTML = sec.content;
+      card.appendChild(content);
+      body.appendChild(card);
+    }
+
+    popover.hidden = false;
+    const rect = btn.getBoundingClientRect();
+    const popWidth = Math.min(440, window.innerWidth - 32);
+    let left = rect.left + rect.width / 2 - popWidth / 2;
+    if (left < 16) left = 16;
+    if (left + popWidth > window.innerWidth - 16) left = window.innerWidth - popWidth - 16;
+
+    const popHeight = 360;
+    let top = rect.top - popHeight - 12;
+    if (top < 16) top = rect.bottom + 12;
+
+    popover.style.left = `${left}px`;
+    popover.style.top = `${top}px`;
+    popover.style.width = `${popWidth}px`;
+    popover.classList.add("visible");
+  }
+
+  function hidePopover() {
+    popoverTimer = setTimeout(() => {
+      popover.classList.remove("visible");
+      setTimeout(() => { if (!popover.classList.contains("visible")) popover.hidden = true; }, 200);
+    }, 250);
+  }
+
+  $("regen-script").addEventListener("mouseenter", function () { showPopover(this, "script"); });
+  $("regen-script").addEventListener("mouseleave", hidePopover);
+  $("regen-scene").addEventListener("mouseenter", function () { showPopover(this, "scene"); });
+  $("regen-scene").addEventListener("mouseleave", hidePopover);
+
+  popover.addEventListener("mouseenter", () => clearTimeout(popoverTimer));
+  popover.addEventListener("mouseleave", hidePopover);
+  $("pop-edit-link").addEventListener("click", () => {
+    hidePopover();
+    openEditModal("scene");
+  });
+
+  // --- Interactive Parameter & Prompt Editor Modal ---
+  const editModal = $("edit-modal");
+  let activeTab = "scene";
+
+  function switchTab(tab) {
+    activeTab = tab;
+    $("tab-scene").classList.toggle("active", tab === "scene");
+    $("tab-script").classList.toggle("active", tab === "script");
+    $("scene-fields").hidden = tab !== "scene";
+    $("script-fields").hidden = tab !== "script";
+    $("modal-regen").textContent = tab === "scene" ? "✨ Regenerate Scene with Edits" : "✨ Regenerate Script with Edits";
+  }
+
+  $("tab-scene").addEventListener("click", () => switchTab("scene"));
+  $("tab-script").addEventListener("click", () => switchTab("script"));
+
+  function populateModalFields(job, clip) {
+    const sFields = $("scene-fields");
+    const scFields = $("script-fields");
+    sFields.replaceChildren();
+    scFields.replaceChildren();
+
+    function makeGroup(id, labelText, val, isTextarea = false) {
+      const g = el("div", "form-group");
+      g.appendChild(el("label", "", labelText));
+      const input = el(isTextarea ? "textarea" : "input", "");
+      input.id = id;
+      if (!isTextarea) input.type = "text";
+      input.value = val || "";
+      input.addEventListener("input", updateCompiledPreview);
+      g.appendChild(input);
+      return g;
+    }
+
+    if (job.mode === "talking_head") {
+      sFields.appendChild(makeGroup("modal-dialogue", "Spoken Dialogue (Words sent to AI)", clip.dialogue, true));
+      sFields.appendChild(makeGroup("modal-delivery", "Emotional Delivery Direction", clip.delivery));
+      scFields.appendChild(makeGroup("modal-script-topic", "Topic / Prompt Goal", job.request.topic));
+      scFields.appendChild(makeGroup("modal-script-delivery", "Delivery Tone for Scriptwriting", clip.delivery));
+    } else if (job.mode === "story_time") {
+      sFields.appendChild(makeGroup("modal-visual", "Visual Scene Description (What appears on screen)", clip.visual, true));
+      sFields.appendChild(makeGroup("modal-narration", "Voiceover Narration (Spoken words)", clip.narration, true));
+      sFields.appendChild(makeGroup("modal-delivery", "Delivery Tone", clip.delivery));
+      scFields.appendChild(makeGroup("modal-script-visual", "Fixed Visual Context for Scriptwriting", clip.visual, true));
+      scFields.appendChild(makeGroup("modal-script-narration", "Target Line to Rewrite", clip.narration, true));
+    } else if (job.mode === "story_videos") {
+      const ms = clip.movie_script || {};
+      sFields.appendChild(makeGroup("modal-shot", "Camera Shot & Framing", ms.shot, true));
+      sFields.appendChild(makeGroup("modal-loc", "Location ID", ms.location_id));
+      const dText = (ms.dialogue || []).map((d) => `${d.speaker}: "${d.line}"`).join("\n");
+      sFields.appendChild(makeGroup("modal-dialogue", "Spoken Dialogue Lines (one per line)", dText, true));
+      const aText = (ms.action_steps || []).map((a) => a.action).join("\n");
+      sFields.appendChild(makeGroup("modal-actions", "Action Steps", aText, true));
+      sFields.appendChild(makeGroup("modal-others", "Ambient Acting & Sound Cues", ms.others, true));
+
+      scFields.appendChild(makeGroup("modal-script-shot", "Camera Setup Direction", ms.shot, true));
+      scFields.appendChild(makeGroup("modal-script-dialogue", "Dialogue Context", dText, true));
+    } else if (job.mode === "narrated_drama") {
+      const ms = clip.movie_script || {};
+      const dMode = (ms.delivery_mode || "dialogue").toUpperCase();
+      sFields.appendChild(makeGroup("modal-delivery-mode", "Delivery Mode", dMode));
+      sFields.appendChild(makeGroup("modal-shot", "Camera Shot & Framing", ms.shot, true));
+      sFields.appendChild(makeGroup("modal-loc", "Location ID", ms.location_id));
+      sFields.appendChild(makeGroup("modal-environment", "Environment (Ambient Atmosphere)", ms.environment || ""));
+      sFields.appendChild(makeGroup("modal-dialogue", dMode === "VOICEOVER" ? "Protagonist Voiceover (Closed Lips)" : "Spoken Lines", clipSpeech(ms, true), true));
+      const aText = (ms.action_steps || []).map((a) => a.action).join("\n");
+      sFields.appendChild(makeGroup("modal-actions", "Action Steps", aText, true));
+
+      if (ms.blocking?.length) {
+        const blkDiv = el("div", "form-group");
+        const blkRows = ms.blocking.map(b => {
+          const pose = (b.end_posture && b.end_posture !== b.posture) ? `${b.posture} → ${b.end_posture}` : b.posture;
+          const pos = (b.end_position && b.end_position !== b.position) ? `${b.position} → ${b.end_position}` : b.position;
+          const fp = b.frame_position ? ` [${b.frame_position}]` : "";
+          const aware = b.awareness ? ` · Knows: ${b.awareness}` : "";
+          return `<div style="margin-bottom:3px;"><strong>${escapeHtml(b.character)}</strong>: ${escapeHtml(pos)} (<em>${escapeHtml(pose)}</em>)${escapeHtml(fp)}<small style="color:var(--muted);">${escapeHtml(aware)}</small></div>`;
+        }).join("");
+        blkDiv.innerHTML = `<label>Characters & Awareness (Blocking Arc)</label><div style="font-size:12px; padding:6px 8px; background:var(--bg); border:1px solid var(--line); border-radius:6px;">${blkRows}</div>`;
+        sFields.appendChild(blkDiv);
+      }
+
+      if (ms.prop_state?.length) {
+        const propDiv = el("div", "form-group");
+        propDiv.innerHTML = `<label>Props in this Clip</label>` + renderPropTableHtml(ms.prop_state);
+        sFields.appendChild(propDiv);
+      }
+
+      sFields.appendChild(makeGroup("modal-others", "Ambient Acting & Sound Cues", ms.others, true));
+
+      scFields.appendChild(makeGroup("modal-script-shot", "Camera Setup Direction", ms.shot, true));
+      scFields.appendChild(makeGroup("modal-script-dialogue", "Spoken Lines", clipSpeech(ms, true), true));
+    }
+
+    updateCompiledPreview();
+  }
+
+  function updateCompiledPreview() {
+    const job = shownJob;
+    const clip = job && selected != null ? job.clips[selected] : null;
+    if (!clip) return;
+
+    let preview = "";
+    if (job.mode === "talking_head") {
+      const bible = (job.scene_bible || "").trim().replace(/\.+$/, "");
+      const dialogue = ($("modal-dialogue") && $("modal-dialogue").value) || clip.dialogue || "";
+      const delivery = ($("modal-delivery") && $("modal-delivery").value) || clip.delivery || "naturally";
+      preview = clip.index === 0
+        ? `${bible}. She speaks directly to camera, ${delivery}: "${dialogue}" Natural lip sync to dialogue, no background music, no score.`
+        : `Continuing directly from <Video 1>, ${bible}, still speaking to camera, ${delivery}: "${dialogue}" Natural lip sync to dialogue, same lighting and camera style, no background music, no score.`;
+    } else if (job.mode === "story_time") {
+      const bible = (job.scene_bible || "").trim().replace(/\.+$/, "");
+      const visual = ($("modal-visual") && $("modal-visual").value) || clip.visual || "";
+      const narration = ($("modal-narration") && $("modal-narration").value) || clip.narration || "";
+      const delivery = ($("modal-delivery") && $("modal-delivery").value) || clip.delivery || "naturally";
+      preview = clip.index === 0
+        ? `${visual}. ${bible}. Voiceover narration only, ${delivery}, no visible speaker, no lip sync needed since no one is speaking on camera: "${narration}" Natural ambient sound only, no music, no score — just the voiceover.`
+        : `Same characters, visual style and lighting as @Video1, but a new scene: ${visual}. ${bible}. The main character looks exactly like @Image1. Voiceover narration only, in the same narrator voice as @Audio1, ${delivery}, no visible speaker, no lip sync needed since no one is speaking on camera: "${narration}" Natural ambient sound only, no music, no score — just the voiceover.`;
+    } else if (job.mode === "story_videos") {
+      const ms = clip.movie_script || {};
+      const shot = ($("modal-shot") && $("modal-shot").value) || ms.shot || "";
+      const loc = ($("modal-loc") && $("modal-loc").value) || ms.location_id || "";
+      const actions = ($("modal-actions") && $("modal-actions").value) || "";
+      const dialogue = ($("modal-dialogue") && $("modal-dialogue").value) || "";
+      preview = `Five-second ${shot}. Location: ${loc}. Action: ${actions}. Dialogue: ${dialogue}. Natural lip movement matching spoken line; everyone else keeps their mouth closed. No background music.`;
+    } else if (job.mode === "narrated_drama") {
+      const ms = clip.movie_script || {};
+      const shot = ($("modal-shot") && $("modal-shot").value) || ms.shot || "";
+      const loc = ($("modal-loc") && $("modal-loc").value) || ms.location_id || "";
+      const env = ($("modal-environment") && $("modal-environment").value) || ms.environment || "";
+      const actions = ($("modal-actions") && $("modal-actions").value) || "";
+      const audio = ($("modal-dialogue") && $("modal-dialogue").value) || clipSpeech(ms, true) || "";
+      const envPart = env ? ` Environment: ${env}.` : "";
+      preview = `Five-second ${shot}. Location: ${loc}.${envPart} Action: ${actions}. Audio: ${audio}. No background music.`;
+    }
+    const promptEl = $("preview-prompt-text");
+    if (promptEl && promptEl.dataset.userModified !== "true") {
+      promptEl.value = preview;
+    }
+  }
+
+  function getModalOverrides() {
+    const job = shownJob;
+    const clip = job && selected != null ? job.clips[selected] : null;
+    if (!clip) return {};
+
+    const overrides = { custom_edited: true };
+    const promptEl = $("preview-prompt-text");
+    if (promptEl && promptEl.dataset.userModified === "true") {
+      overrides.custom_prompt = promptEl.value.trim();
+    }
+    if (job.mode === "talking_head") {
+      if ($("modal-dialogue")) overrides.dialogue = $("modal-dialogue").value.trim();
+      if ($("modal-delivery")) overrides.delivery = $("modal-delivery").value.trim();
+    } else if (job.mode === "story_time") {
+      if ($("modal-visual")) overrides.visual = $("modal-visual").value.trim();
+      if ($("modal-narration")) overrides.narration = $("modal-narration").value.trim();
+      if ($("modal-delivery")) overrides.delivery = $("modal-delivery").value.trim();
+    } else if (job.mode === "story_videos" || job.mode === "narrated_drama") {
+      const ms = JSON.parse(JSON.stringify(clip.movie_script || {}));
+      if ($("modal-shot")) ms.shot = $("modal-shot").value.trim();
+      if ($("modal-loc")) ms.location_id = $("modal-loc").value.trim();
+      if ($("modal-environment")) ms.environment = $("modal-environment").value.trim();
+      if ($("modal-others")) ms.others = $("modal-others").value.trim();
+      overrides.movie_script = ms;
+    }
+    return overrides;
+  }
+
+  function openEditModal(tab = "scene") {
+    const job = shownJob, index = selected;
+    if (!job || index == null) return;
+    const clip = job.clips[index];
+    if (!clip) return;
+
+    $("modal-title").textContent = `Edit Clip ${index + 1} Prompt & Parameters`;
+    const promptEl = $("preview-prompt-text");
+    if (promptEl) {
+      promptEl.dataset.userModified = clip.custom_prompt ? "true" : "false";
+      promptEl.value = clip.custom_prompt || "";
+    }
+    switchTab(tab);
+    populateModalFields(job, clip);
+    editModal.hidden = false;
+  }
+
+  function closeEditModal() {
+    editModal.hidden = true;
+    $("modal-msg").textContent = "";
+  }
+
+  $("modal-close").addEventListener("click", closeEditModal);
+  $("modal-cancel").addEventListener("click", closeEditModal);
+  $("edit-prompt").addEventListener("click", () => openEditModal("scene"));
+  editModal.addEventListener("click", (e) => {
+    if (e.target === editModal) closeEditModal();
+  });
+
+  $("preview-prompt-text").addEventListener("input", () => {
+    $("preview-prompt-text").dataset.userModified = "true";
+  });
+
+  $("modal-reset").addEventListener("click", async () => {
+    const job = shownJob, index = selected;
+    if (!job || index == null) return;
+    $("modal-msg").textContent = "Resetting to AI mode…";
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/clips/${index}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ custom_edited: false, custom_prompt: null }),
+      });
+      if (!res.ok) throw new Error("Could not reset");
+      job.clips[index].custom_edited = false;
+      job.clips[index].custom_prompt = null;
+      const promptEl = $("preview-prompt-text");
+      if (promptEl) {
+        promptEl.dataset.userModified = "false";
+        promptEl.value = "";
+      }
+      populateModalFields(job, job.clips[index]);
+      renderDetail();
+      $("modal-msg").textContent = "✓ Reset to automated AI mode!";
+    } catch (e) {
+      $("modal-msg").textContent = `Failed: ${e.message}`;
+    }
+  });
+
+  $("modal-save").addEventListener("click", async () => {
+    const job = shownJob, index = selected;
+    if (!job || index == null) return;
+    const overrides = getModalOverrides();
+    $("modal-msg").textContent = "Saving…";
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/clips/${index}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(overrides),
+      });
+      if (!res.ok) throw new Error("Could not save changes");
+      Object.assign(job.clips[index], overrides);
+      closeEditModal();
+      renderDetail();
+      $("detail-msg").textContent = `✓ Clip ${index + 1} parameters saved! (Protected from AI overwrites)`;
+    } catch (e) {
+      $("modal-msg").textContent = `Failed: ${e.message}`;
+    }
+  });
+
+  $("modal-regen").addEventListener("click", async () => {
+    const job = shownJob, index = selected;
+    if (!job || index == null) return;
+    const overrides = getModalOverrides();
+    closeEditModal();
+    const action = activeTab === "script" ? "regenerate-script" : "regenerate-scene";
+    runAction(action, overrides);
+  });
+
+  async function runAction(action, overrides = null) {
+    const job = shownJob, index = selected;
+    if (!job || index == null || actionBusy) return;
+    actionBusy = true;
+    renderDetail();
+    const msg = $("detail-msg");
+    msg.textContent = "Sending…";
+    try {
+      const opts = { method: "POST" };
+      if (overrides) {
+        opts.headers = { "Content-Type": "application/json" };
+        opts.body = JSON.stringify(overrides);
+      }
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/clips/${index}/${action}`, opts);
+      const body = await res.json().catch(() => null);
+      if (res.status === 202) {
+        const label = action === "regenerate-script" ? "Regenerate Script" : "Regenerate Scene";
+        pendingAction = { index, label };
+        msg.textContent = `${label} started for clip ${index + 1}: this takes a few minutes. The clip keeps its current version until the new one is ready.`;
+        poll(job.id); // follow the job again until the regeneration finishes
+      } else if (res.status === 501) msg.textContent = `Not available yet: ${describeError(body)}`;
+      else msg.textContent = `Could not do that: ${describeError(body)}`;
+    } catch (e) {
+      msg.textContent = `Could not reach the server (${e.message}).`;
+    } finally {
+      actionBusy = false;
+      renderDetail();
+    }
+  }
+  $("regen-script").addEventListener("click", () => runAction("regenerate-script"));
+  $("regen-scene").addEventListener("click", () => runAction("regenerate-scene"));
+
+  $("resume-job-btn")?.addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job) return;
+    const btn = $("resume-job-btn");
+    btn.disabled = true;
+    btn.textContent = "Resuming…";
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/resume`, { method: "POST" });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(describeError(body));
+      formMsg.textContent = "Resuming video generation…";
+      poll(job.id);
+    } catch (e) {
+      alert("Failed to resume: " + e.message);
+      btn.disabled = false;
+      btn.textContent = "▶ Resume Generation";
+    }
+  });
+
+  async function poll(jobId) {
+    clearTimeout(pollTimer);
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" });
+      if (res.status === 404) {
+        formMsg.textContent = "That job no longer exists.";
+        setBusy(false);
+        return;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const job = await res.json();
+      renderJob(job);
+      if (job.status === "done" || job.status === "failed") {
+        setBusy(false);
+        formMsg.textContent = job.status === "failed" ? "The job failed (details below)." : "";
+        if (pendingAction) {
+          const { index, label } = pendingAction;
+          const clip = job.clips[index];
+          if (selected === index && clip) {
+            $("detail-msg").textContent = clip.error
+              ? `${clip.error}${clip.video_url ? " (the clip keeps its previous version)" : ""}`
+              : `${label} finished: clip ${index + 1} is updated.`;
+          }
+          pendingAction = null;
+        }
+        return;
+      }
+      if (job.status === "plan_ready") {
+        setBusy(false);
+        if (revisionBusy(job)) {   // a revision is working on the plan: keep looking until it finishes
+          formMsg.textContent = "Revising the plan…";
+          pollTimer = setTimeout(() => poll(jobId), POLL_MS);
+          return;
+        }
+        formMsg.textContent = "Master Plan is ready! Please review and approve the story progression below.";
+        return;
+      }
+      setBusy(true);
+      const joining = job.clips.length > 0 && job.clips.every((c) => c.status === "done");
+      formMsg.textContent = pendingAction
+        ? `Regenerating clip ${pendingAction.index + 1}…`
+        : joining
+          ? "Joining the clips into the final video…"
+          : "Generating: this takes a few minutes per clip. You can reload the page; it will pick the job up again.";
+    } catch (e) {
+      formMsg.textContent = `Lost contact with the server (${e.message}); retrying…`;
+    }
+    pollTimer = setTimeout(() => poll(jobId), POLL_MS);
+  }
+
+  function describeError(body) {
+    if (body && Array.isArray(body.detail)) {
+      return body.detail.map((d) => `${(d.loc || []).slice(1).join(".") || "request"}: ${d.msg}`).join("; ");
+    }
+    return (body && body.detail) || "unknown error";
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (busy) return; // one job at a time: every submit is a new, paid job
+    const topic = $("topic").value.trim();
+    if (!topic) {
+      formMsg.textContent = "Write a topic first.";
+      $("topic").focus();
+      return;
+    }
+    const mode = radio("mode");
+    const durVal = Number(durationSel.value) || 30;
+    const clipDurVal = Number(radio("clip_duration")) || 5;
+    const totalClips = Math.round(durVal / clipDurVal);
+
+    if (mode === "talking_head" || mode === "story_time") {
+      if (totalClips >= 10) {
+        const estCredits = mode === "talking_head" ? (41 + (totalClips - 1) * 24) : (totalClips * 19);
+        const estMins = Math.round(totalClips * 2.5);
+        if (!confirm(
+          `Start ${totalClips}-clip direct video generation on Kie.ai?\n\n` +
+          `• Mode: ${mode === "talking_head" ? "Talking Head" : "Story Time"}\n` +
+          `• Estimated cost: ~${estCredits} credits\n` +
+          `• Estimated runtime: ~${estMins} minutes\n\n` +
+          `Click OK to begin generation.`
+        )) {
+          return;
+        }
+      }
+    }
+
+    setBusy(true);
+    formMsg.textContent = "Sending…";
+    const payload = {
+      topic,
+      mode,
+      clip_duration: clipDurVal,
+      duration: durVal,
+      resolution: radio("resolution"),
+      supervise: $("supervise") ? $("supervise").checked : false,
+    };
+    try {
+      const res = await fetch("/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(describeError(body));
+      remember(body.job_id);
+      poll(body.job_id);
+    } catch (e) {
+      setBusy(false);
+      formMsg.textContent = `Could not start the job: ${e.message}`;
+    }
+  });
+
+  form.addEventListener("change", (event) => {
+    if (event.target.name === "clip_duration") fillDurations();
+    if (event.target.name === "mode") {
+      updateHint();
+      if (radio("mode") === "story_videos") {
+        const r5 = form.querySelector('input[name="clip_duration"][value="5"]');
+        if (r5 && !r5.checked) { r5.checked = true; fillDurations(); }
+      } else if (radio("mode") === "narrated_drama") {
+        const r15 = form.querySelector('input[name="clip_duration"][value="15"]');
+        if (r15 && !r15.checked) { r15.checked = true; fillDurations(); }
+      }
+    }
+    updateCostEstimate();
+  });
+  durationSel.addEventListener("change", updateCostEstimate);
+
+  // --- Enhance Prompt Button ---
+  const enhanceBtn = $("btn-enhance-prompt");
+  const enhanceStatus = $("enhance-status");
+  let enhanceBusy = false;
+
+  enhanceBtn?.addEventListener("click", async () => {
+    if (enhanceBusy) return;
+    const topicInput = $("topic");
+    const rawTopic = topicInput.value.trim();
+    if (!rawTopic) {
+      enhanceStatus.style.display = "block";
+      enhanceStatus.style.color = "var(--warn, #c53030)";
+      enhanceStatus.textContent = "Please write a brief story premise first.";
+      topicInput.focus();
+      return;
+    }
+
+    const duration = Number(durationSel.value) || 30;
+    const clipDuration = Number(radio("clip_duration")) || 5;
+    const mode = radio("mode") || "story_videos";
+    const modeName = {talking_head: "Talking Head", story_time: "Story Time", story_videos: "Story Videos", narrated_drama: "Narrated Drama"}[mode] || mode;
+
+    enhanceBusy = true;
+    enhanceBtn.disabled = true;
+    enhanceBtn.innerHTML = `<span>⏳ Enhancing (${duration}s · ${modeName})…</span>`;
+    enhanceStatus.style.display = "block";
+    enhanceStatus.style.color = "var(--muted)";
+    enhanceStatus.textContent = `Consulting Hollywood story architect for a ${duration}s ${modeName} progression…`;
+
+    try {
+      const res = await fetch("/enhance-prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topic: rawTopic,
+          duration: duration,
+          clip_duration: clipDuration,
+          mode: mode,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(describeError(data));
+
+      topicInput.value = data.enhanced_topic;
+      topicInput.style.borderColor = "var(--accent)";
+      topicInput.style.boxShadow = "0 0 0 3px rgba(43, 114, 186, 0.25)";
+      setTimeout(() => {
+        topicInput.style.borderColor = "";
+        topicInput.style.boxShadow = "";
+      }, 1500);
+
+      enhanceStatus.style.color = "var(--accent)";
+      enhanceStatus.textContent = `✓ Story expanded into a ${duration}s multi-act roadmap for ${modeName}! You can edit or tweak any details.`;
+    } catch (e) {
+      enhanceStatus.style.color = "var(--warn, #c53030)";
+      enhanceStatus.textContent = `Could not enhance prompt: ${e.message}`;
+    } finally {
+      enhanceBusy = false;
+      enhanceBtn.disabled = false;
+      enhanceBtn.innerHTML = `<span>✨ Enhance Story</span>`;
+    }
+  });
+
+  fillDurations();
+  updateHint();
+  const last = recall();
+  if (last) poll(last); // show the last job again, and keep following it if it is still running
+})();
+</script>
+</body>
+</html>

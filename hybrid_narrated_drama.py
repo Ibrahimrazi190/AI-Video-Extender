@@ -12,6 +12,7 @@ Can be run via CLI or imported as a library.
 
 import argparse
 import collections
+import contextvars
 import copy
 import json
 import math
@@ -45,6 +46,31 @@ from app import (
 )
 
 import movie_scene_multispeaker as movie
+
+try:
+    from story_script import SCRIPT_MAX_WORDS_PER_CLIP, SCRIPT_CLIP_SECONDS
+except ImportError:      # story_script.py is not in this container yet: the script limits fall back to their values
+    SCRIPT_MAX_WORDS_PER_CLIP, SCRIPT_CLIP_SECONDS = 74, 15
+
+# ---------------------------------------------------------------------------
+# Verbatim-script mode
+# ---------------------------------------------------------------------------
+# A job that starts from the author's own story script (an uploaded .txt) has its dialogue fixed: every word the author wrote
+# is spoken, and no code may cut, reword, "clean" or re-time it. The job runner sets this flag for the duration of such a job
+# (`with verbatim_script():`), and the functions that used to touch the words check it. It is a ContextVar, so a job that
+# sets it never changes another job running in the same worker. Premise jobs never set it and behave exactly as before.
+VERBATIM_SCRIPT: contextvars.ContextVar = contextvars.ContextVar("verbatim_script", default=False)
+
+
+class verbatim_script:
+    """`with verbatim_script():` marks everything run inside as a script job (words are never changed)."""
+    def __enter__(self):
+        self._token = VERBATIM_SCRIPT.set(True)
+        return self
+
+    def __exit__(self, *exc):
+        VERBATIM_SCRIPT.reset(self._token)
+        return False
 
 # ---------------------------------------------------------------------------
 # Constants & Configuration
@@ -99,6 +125,9 @@ def clip_word_budget(duration: int | None = None) -> tuple[int, int]:
     12s: 17 to 30 words
     15s: 22 to 85 words
     """
+    if VERBATIM_SCRIPT.get():
+        # a script job: every clip is a full clip; the ceiling is the author's, and there is no minimum (a short clip is fine)
+        return 0, SCRIPT_MAX_WORDS_PER_CLIP
     if duration is None or duration <= 5:
         return MIN_WORDS, MAX_WORDS
     d = min(CLIP_MAX_SECONDS, max(CLIP_MIN_SECONDS, int(duration)))
@@ -4592,6 +4621,9 @@ def _normalize_narrated_clip(clip: dict, bible: dict) -> None:
     for t in clip["speech"]:
         if t.get("speaker"):
             t["speaker"] = by_lower.get(t["speaker"].lower(), t["speaker"])
+    if isinstance(clip.get("authored"), dict):   # script mode: the shot list owns who is on screen
+        clip["present_characters"] = list(clip["authored"].get("on_screen") or [])
+        return
     for s in clip.get("action_steps", []):
         if "character" in s and s["character"]:
             s["character"] = by_lower.get(s["character"].lower(), s["character"])
@@ -5411,6 +5443,8 @@ def _turn_windows_valid(turns: list[dict], clip_duration: int | None = None) -> 
 
 def _turns_too_fast(turns: list[dict]) -> bool:
     """Is any line packed into a window too short to be spoken without dropping a word?"""
+    if VERBATIM_SCRIPT.get():
+        return False             # a script job: dense clips are the author's choice, and the screenwriter owns the timing
     for t in turns:
         try:
             length = float(t.get("end_est", 0)) - float(t.get("start_est", 0))
@@ -5425,8 +5459,8 @@ def _respace_turns(turns: list[dict], clip_duration: int | None = None) -> None:
     """Give the turns clean, ordered windows inside the clip, each sized by its word count.
 
     Who speaks and in what order is the model's decision; only the clock is ours."""
-    if not turns:
-        return
+    if not turns or VERBATIM_SCRIPT.get():
+        return                   # a script job: the screenwriter's timing stands; the validator reports a bad window instead
     if clip_duration is not None:
         dur = float(clip_duration)
     else:
@@ -6010,6 +6044,8 @@ def _clean_speech_text(text: str) -> str:
     """
     if not text:
         return ""
+    if VERBATIM_SCRIPT.get():
+        return text.strip()      # a script job: the author's words reach the video model exactly as written
     text = re.sub(r"\bcan'?t\b", "cannot", text, flags=re.IGNORECASE)
     replacements = {
         r"\bdont\b": "don't",
@@ -6693,6 +6729,9 @@ def build_narrated_prompt(
     clip_duration: int | None = None
 ) -> tuple[str, list[str], list[str]]:
     """Compiles Seedance prompt and references tailored to delivery_mode."""
+    if isinstance(clip.get("authored"), dict):   # script mode: the screenwriter's shot list is compiled by script_director
+        import script_director
+        return script_director.compile_prompt(clip, bible, cast_bank, location_bank, voice_bank, prev_clip)
     dur = clip_duration or clip.get("duration")
     dur_val = int(dur) if dur is not None else 5
     if dur_val >= 10:

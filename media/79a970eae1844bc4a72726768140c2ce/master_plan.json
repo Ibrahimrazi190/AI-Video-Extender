@@ -1,0 +1,348 @@
+{
+  "topic": "Story script",
+  "duration": 45,
+  "total_clips": 3,
+  "scene_bible": {
+    "pov_protagonist": "CLAIRE",
+    "characters": [
+      {
+        "name": "CLAIRE",
+        "is_protagonist": true,
+        "role": "Wife with a secret plan",
+        "appearance": {
+          "casting": "woman of 29",
+          "hair_color": "dark brown",
+          "hair_style": "Hair gathered in a low bun.",
+          "build": "Slim, average height.",
+          "distinguishing_feature": "Small beauty mark beside her left eye.",
+          "wardrobe": "Cream cardigan and pearl earrings, with a simple neutral top and skirt."
+        },
+        "voice": "Mid-range, clear, General American accent.",
+        "motivation": "",
+        "relationships": "",
+        "speech_style": "",
+        "age": 29,
+        "source_look": "the “doormat” wife with a secret plan. Dark hair in a low bun, cream cardigan, pearl earrings, slim build.",
+        "auto_look": false,
+        "look": "woman of 29, dark brown hair, Hair gathered in a low bun, Slim, average height, Small beauty mark beside her left eye, Cream cardigan and pearl earrings, with a simple neutral top and skirt",
+        "image_prompt": "Photorealistic head-and-shoulders portrait photograph of a woman of 29. Hair: dark brown, Hair gathered in a low bun. Build: Slim, average height. Small beauty mark beside her left eye. Wearing Cream cardigan and pearl earrings, with a simple neutral top and skirt. Front-facing, looking straight into the lens, neutral relaxed expression, mouth closed. Even soft studio key light across the whole face, plain mid-grey seamless background, no props, no scenery, no text, nobody else in frame. Shot on an 85mm lens at f/2.8, 8k, natural detailed skin texture and pores, sharp focus on the eyes, live-action movie still, NO CGI, NO 3D render, NO illustration, NO plastic skin."
+      },
+      {
+        "name": "ETHAN",
+        "is_protagonist": false,
+        "role": "Tech CEO and Claire’s husband",
+        "appearance": {
+          "casting": "man of 34",
+          "hair_color": "brown",
+          "hair_style": "Hair slicked straight back.",
+          "build": "Tall and broad-shouldered.",
+          "distinguishing_feature": "A small crease across the bridge of his nose.",
+          "wardrobe": "Charcoal suit with a loosened tie."
+        },
+        "voice": "Low, smooth, General American accent.",
+        "motivation": "",
+        "relationships": "",
+        "speech_style": "",
+        "age": 34,
+        "source_look": "arrogant tech CEO husband. Slicked-back brown hair, charcoal suit with loosened tie, tall and broad-shouldered.",
+        "auto_look": false,
+        "look": "man of 34, brown hair, Hair slicked straight back, Tall and broad-shouldered, A small crease across the bridge of his nose, Charcoal suit with a loosened tie",
+        "image_prompt": "Photorealistic head-and-shoulders portrait photograph of a man of 34. Hair: brown, Hair slicked straight back. Build: Tall and broad-shouldered. A small crease across the bridge of his nose. Wearing Charcoal suit with a loosened tie. Front-facing, looking straight into the lens, neutral relaxed expression, mouth closed. Even soft studio key light across the whole face, plain mid-grey seamless background, no props, no scenery, no text, nobody else in frame. Shot on an 85mm lens at f/2.8, 8k, natural detailed skin texture and pores, sharp focus on the eyes, live-action movie still, NO CGI, NO 3D render, NO illustration, NO plastic skin."
+      },
+      {
+        "name": "SLOANE",
+        "is_protagonist": false,
+        "role": "Ethan’s mistress and assistant",
+        "appearance": {
+          "casting": "woman of 26",
+          "hair_color": "blonde",
+          "hair_style": "Long hair worn loose.",
+          "build": "Slender, average height.",
+          "distinguishing_feature": "A small mole on her right cheek.",
+          "wardrobe": "Fitted white dress and red lipstick."
+        },
+        "voice": "Mid-high, lightly breathy, General American accent.",
+        "motivation": "",
+        "relationships": "",
+        "speech_style": "",
+        "age": 26,
+        "source_look": "his mistress and “assistant.” Long blonde hair, red lipstick, fitted white dress, slender build.",
+        "auto_look": false,
+        "look": "woman of 26, blonde hair, Long hair worn loose, Slender, average height, A small mole on her right cheek, Fitted white dress and red lipstick",
+        "image_prompt": "Photorealistic head-and-shoulders portrait photograph of a woman of 26. Hair: blonde, Long hair worn loose. Build: Slender, average height. A small mole on her right cheek. Wearing Fitted white dress and red lipstick. Front-facing, looking straight into the lens, neutral relaxed expression, mouth closed. Even soft studio key light across the whole face, plain mid-grey seamless background, no props, no scenery, no text, nobody else in frame. Shot on an 85mm lens at f/2.8, 8k, natural detailed skin texture and pores, sharp focus on the eyes, live-action movie still, NO CGI, NO 3D render, NO illustration, NO plastic skin."
+      },
+      {
+        "name": "ALDEN",
+        "is_protagonist": false,
+        "role": "Lawyer to the late Harold Lang",
+        "appearance": {
+          "casting": "man of 60",
+          "hair_color": "silver",
+          "hair_style": "Short hair neatly side-parted.",
+          "build": "Thin, average height.",
+          "distinguishing_feature": "Thin, rectangular eyeglasses.",
+          "wardrobe": "Grey suit and a black briefcase."
+        },
+        "voice": "Low, lightly gravelled, General American accent.",
+        "motivation": "",
+        "relationships": "",
+        "speech_style": "",
+        "age": 60,
+        "source_look": "the late Harold Lang’s lawyer. Silver hair, grey suit, black briefcase, thin build.",
+        "auto_look": false,
+        "look": "man of 60, silver hair, Short hair neatly side-parted, Thin, average height, Thin, rectangular eyeglasses, Grey suit and a black briefcase",
+        "image_prompt": "Photorealistic head-and-shoulders portrait photograph of a man of 60. Hair: silver, Short hair neatly side-parted. Build: Thin, average height. Thin, rectangular eyeglasses. Wearing Grey suit and a black briefcase. Front-facing, looking straight into the lens, neutral relaxed expression, mouth closed. Even soft studio key light across the whole face, plain mid-grey seamless background, no props, no scenery, no text, nobody else in frame. Shot on an 85mm lens at f/2.8, 8k, natural detailed skin texture and pores, sharp focus on the eyes, live-action movie still, NO CGI, NO 3D render, NO illustration, NO plastic skin."
+      }
+    ],
+    "props": [],
+    "locations": [
+      {
+        "id": "whitmore_penthouse_kitchen",
+        "description": "A spacious, polished penthouse kitchen with warm evening light, pale stone counters, dark wood cabinetry and stainless-steel appliances. Its open layout connects visually to the penthouse entrance and leaves generous clear floor space.",
+        "layout": "The main entrance door is on the west wall, with a clear sightline into the kitchen. A long island sits in the center, parallel to the north and south walls; counters and cabinetry run along the north wall, with the sink beneath a broad window. The refrigerator and built-in oven occupy the east wall. The south side opens toward the dining area; no staircase is visible.",
+        "image_prompt": "Wide establishing view of an empty, spacious luxury penthouse kitchen, pale stone counters, dark wood cabinetry, stainless-steel appliances, central kitchen island, warm evening light, broad window, open connection toward a dining area, polished surfaces, cinematic realistic interior, vertical 9:16 composition. No people, no food, no cookware, no story props. The place is EMPTY: nobody in frame, no people at all, and none of the story's props. Spacious and open, shot with a wide-angle lens: generous floor space and depth, room for three people to stand apart and for a camera to stand several metres back. Photorealistic, live-action movie still, shot on Arri Alexa, 8k, detailed textures and materials, natural light falloff, NO CGI, NO 3D render, NO illustration.",
+        "views": [
+          "Empty wide view from the main entrance facing east across the central island toward the appliance wall and open dining-area connection.",
+          "Empty wide view from the dining-area opening facing north toward the island, counters, sink window and cabinetry.",
+          "Empty wide view from the east side facing west toward the entrance door, island and open-plan room."
+        ]
+      },
+      {
+        "id": "whitmore_penthouse_dining_room",
+        "description": "A roomy formal dining room in the Whitmore penthouse, finished in warm neutral tones with a broad dining table, matching chairs and soft nighttime lighting. The open connection to the kitchen keeps the space visually continuous with the penthouse interior.",
+        "layout": "The main entrance to the dining room is the wide opening on the west wall, facing the kitchen. A long rectangular dining table is centered in the room, with chairs placed along both long sides and at each end. A broad window spans the east wall; a low sideboard stands against the north wall. No staircase is visible.",
+        "image_prompt": "Wide view of an empty, spacious formal penthouse dining room at night, warm neutral walls, long rectangular dining table with matching chairs, low sideboard, broad east-facing window, soft interior lighting, open doorway toward the kitchen, elegant but understated modern design, cinematic realistic interior, vertical 9:16 composition. No people, no phones, no personal items, no story props. The place is EMPTY: nobody in frame, no people at all, and none of the story's props. Spacious and open, shot with a wide-angle lens: generous floor space and depth, room for three people to stand apart and for a camera to stand several metres back. Photorealistic, live-action movie still, shot on Arri Alexa, 8k, detailed textures and materials, natural light falloff, NO CGI, NO 3D render, NO illustration.",
+        "views": [
+          "Empty wide view from the kitchen opening facing east across the dining table toward the broad window.",
+          "Empty wide view from beside the east window facing west toward the table, chairs and kitchen opening.",
+          "Empty wide view from the south side looking north across the room toward the sideboard and the centered table."
+        ]
+      }
+    ]
+  },
+  "acts": null,
+  "beats": [
+    {
+      "clip_number": 1,
+      "cycle_number": 1,
+      "delivery_mode": "dialogue",
+      "location_id": "whitmore_penthouse_kitchen",
+      "present_characters": [
+        "ETHAN",
+        "CLAIRE",
+        "SLOANE"
+      ],
+      "speaker_or_actor": "ETHAN",
+      "duration": 15,
+      "summary": "Moving In: INT. WHITMORE PENTHOUSE, KITCHEN. EVENING. Claire stirs soup as the front door slams. Close-up: Claire’s hand tightens on the ladle, then relaxes.",
+      "speech_budget": 51,
+      "audio_lines": [
+        {
+          "speaker": "ETHAN",
+          "line": "Sloane is moving into the guest room. Don’t make it awkward.",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "CLAIRE",
+          "line": "Since when?",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "ETHAN",
+          "line": "Since I got tired of pretending. You just cook and nod.",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "SLOANE",
+          "line": "Sorry, Claire. Love finds a way.",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "CLAIRE",
+          "line": "Of course. I’ll make up the room.",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "CLAIRE",
+          "line": "Six months of playing broken. One more night, and he’ll never see it coming.",
+          "is_voiceover": true,
+          "cutaway": ""
+        }
+      ],
+      "reveals": [],
+      "function": "clash",
+      "turn": "",
+      "delivers": [],
+      "script_title": "Moving In",
+      "script_clip_number": 1,
+      "action": "Moving In: INT. WHITMORE PENTHOUSE, KITCHEN. EVENING. Claire stirs soup as the front door slams. Close-up: Claire’s hand tightens on the ladle, then relaxes.",
+      "speech": true
+    },
+    {
+      "clip_number": 2,
+      "cycle_number": 2,
+      "delivery_mode": "dialogue",
+      "location_id": "whitmore_penthouse_dining_room",
+      "present_characters": [
+        "SLOANE",
+        "CLAIRE",
+        "ETHAN"
+      ],
+      "speaker_or_actor": "SLOANE",
+      "duration": 15,
+      "summary": "Mother’s Pearls: INT. WHITMORE PENTHOUSE, DINING ROOM. NIGHT. Sloane sits in Claire’s chair, wearing a pearl necklace. Close-up: Claire’s bare throat, her pearl earrings catching the candlelight.",
+      "speech_budget": 54,
+      "audio_lines": [
+        {
+          "speaker": "SLOANE",
+          "line": "Ethan gave me these pearls. Aren’t they gorgeous?",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "CLAIRE",
+          "line": "They were my mother’s.",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "ETHAN",
+          "line": "Then she’d be happy someone worthy finally wears them.",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "SLOANE",
+          "line": "She isn’t even angry, Ethan. How boring.",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "ETHAN",
+          "line": "The board is thrilled. Next quarter, I’m taking Whitmore Tech public.",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "CLAIRE",
+          "line": "That’s wonderful, darling. You’ve worked so hard.",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "CLAIRE",
+          "line": "Wear them tonight. They’re mine again by morning.",
+          "is_voiceover": true,
+          "cutaway": ""
+        }
+      ],
+      "reveals": [],
+      "function": "clash",
+      "turn": "",
+      "delivers": [],
+      "script_title": "Mother’s Pearls",
+      "script_clip_number": 2,
+      "action": "Mother’s Pearls: INT. WHITMORE PENTHOUSE, DINING ROOM. NIGHT. Sloane sits in Claire’s chair, wearing a pearl necklace. Close-up: Claire’s bare throat, her pearl earrings catching the candlelight.",
+      "speech": true
+    },
+    {
+      "clip_number": 3,
+      "cycle_number": 3,
+      "delivery_mode": "dialogue",
+      "location_id": "whitmore_penthouse_dining_room",
+      "present_characters": [
+        "ETHAN",
+        "CLAIRE",
+        "SLOANE"
+      ],
+      "speaker_or_actor": "ETHAN",
+      "duration": 15,
+      "summary": "Pass the Salt: INT. WHITMORE PENTHOUSE, DINING ROOM. NIGHT. Close-up: Claire’s phone glows under the table, reading “Final transfer: 98%.” Macro shot: the phone reads “TRANSFER COMPLETE.” The doorbell rings.",
+      "speech_budget": 50,
+      "audio_lines": [
+        {
+          "speaker": "ETHAN",
+          "line": "I built this company from nothing. Remember that, Claire.",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "CLAIRE",
+          "line": "Nothing? My father built it. You just borrowed it.",
+          "is_voiceover": true,
+          "cutaway": ""
+        },
+        {
+          "speaker": "CLAIRE",
+          "line": "Pass the salt, please?",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "ETHAN",
+          "line": "Anything for my loyal wife.",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "CLAIRE",
+          "line": "Enjoy this dinner, Ethan. It’s your last as a rich man.",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "ETHAN",
+          "line": "Funny. You should try comedy.",
+          "is_voiceover": false,
+          "cutaway": ""
+        },
+        {
+          "speaker": "SLOANE",
+          "line": "Poor thing. She really thinks she’s funny.",
+          "is_voiceover": false,
+          "cutaway": ""
+        }
+      ],
+      "reveals": [],
+      "function": "clash",
+      "turn": "",
+      "delivers": [],
+      "script_title": "Pass the Salt",
+      "script_clip_number": 3,
+      "action": "Pass the Salt: INT. WHITMORE PENTHOUSE, DINING ROOM. NIGHT. Close-up: Claire’s phone glows under the table, reading “Final transfer: 98%.” Macro shot: the phone reads “TRANSFER COMPLETE.” The doorbell rings.",
+      "speech": true
+    }
+  ],
+  "plan_report": {
+    "script_mode": true,
+    "problems": [],
+    "stats": {
+      "spoken_lines": 20,
+      "spoken_words": 155,
+      "narration_share": 0.2
+    },
+    "words_per_clip": [
+      {
+        "clip": 1,
+        "title": "Moving In",
+        "words": 51
+      },
+      {
+        "clip": 2,
+        "title": "Mother’s Pearls",
+        "words": 54
+      },
+      {
+        "clip": 3,
+        "title": "Pass the Salt",
+        "words": 50
+      }
+    ],
+    "auto_looks": []
+  }
+}

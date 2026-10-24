@@ -105,6 +105,7 @@ class ClipRequest(BaseModel):
     mode: Mode = "talking_head"
     clip_duration: ClipDuration = CLIP_DURATION
     supervise: bool = False
+    script_text: str | None = None   # Narrated Drama: the author's finished story script (.txt layout); skips story creation
 
     @model_validator(mode="after")
     def duration_is_whole_clips(self):
@@ -1006,6 +1007,10 @@ def final_video_path(job_id: str) -> Path:
     return job_media_dir(job_id) / "final.mp4"
 
 
+def partial_video_path(job_id: str) -> Path:
+    return job_media_dir(job_id) / "partial.mp4"
+
+
 def _probe(path: Path) -> dict:
     """Size, frame rate and duration of a local video's picture, and whether it has an audio track."""
     out = subprocess.run(
@@ -1126,7 +1131,7 @@ def _wants_lead_in_trim(job: Job, index: int, clip: Clip) -> bool:
     return any((t.get("line") or "").strip() for t in turns)
 
 
-def assemble_final_video(job: Job) -> Path:
+def assemble_final_video(job: Job, partial: bool = False) -> Path:
     """Join every clip, in order, into the job's final video and return its path.
 
     Each clip is downloaded (and kept: kie.ai deletes generated videos after 14 days), then scaled to the job's
@@ -1136,24 +1141,31 @@ def assemble_final_video(job: Job) -> Path:
     encode; the audio is encoded once for the whole video. The finished file replaces the old one in a single step,
     so a half-written video is never served.
     """
-    if not job.clips or any(c.status != "done" or not c.video_url for c in job.clips):
-        raise ValueError("every clip must be done before the final video can be made")
-    sources = [_local_clip(job.id, c) for c in job.clips]
+    if partial:   # whatever clips are finished, in order, into partial.mp4 (the real final video is untouched)
+        picked = [(i, c) for i, c in enumerate(job.clips) if c.status == "done" and c.video_url]
+        if not picked:
+            raise ValueError("no clip has been generated yet")
+    else:
+        if not job.clips or any(c.status != "done" or not c.video_url for c in job.clips):
+            raise ValueError("every clip must be done before the final video can be made")
+        picked = list(enumerate(job.clips))
+    clips = [c for _, c in picked]
+    sources = [_local_clip(job.id, c) for c in clips]
     probes = [_probe(p) for p in sources]
-    own = [p for p, c in zip(probes, job.clips) if (c.resolution or job.resolution) == job.resolution]
+    own = [p for p, c in zip(probes, clips) if (c.resolution or job.resolution) == job.resolution]
     width, height = (own[0]["width"], own[0]["height"]) if own else FINAL_SIZES[job.resolution]
     fps = (own or probes)[0]["fps"]
-    trims = [_wants_lead_in_trim(job, i, c) for i, c in enumerate(job.clips)]
+    trims = [_wants_lead_in_trim(job, i, c) for i, c in picked]
     parts = [_normalized(p, width, height, fps, trim) for p, trim in zip(sources, trims)]
     folder = job_media_dir(job.id)
-    listing = folder / "concat.txt"
+    listing = folder / ("concat_partial.txt" if partial else "concat.txt")
     listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts), encoding="utf-8")
-    part = folder / "final.part.mp4"
+    part = folder / ("partial.part.mp4" if partial else "final.part.mp4")
     _run_ffmpeg(
         "-f", "concat", "-safe", "0", "-i", str(listing),
         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(part),
     )
-    final = final_video_path(job.id)
+    final = partial_video_path(job.id) if partial else final_video_path(job.id)
     part.replace(final)
     return final
 
@@ -1613,11 +1625,28 @@ def _continue_movie_job(job_id: str) -> None:
         task_log.info("job %s: clip %d done", job_id, i + 1)
 
 
+def _generate_script_plan(job_id: str) -> None:
+    """Phase 1 for a story-script job: parse the author's script (no AI), build the cast and places (one AI call), then the screenwriter
+    directs the clips (one AI call per 3). Nothing is spent on pictures or video until the plan is approved."""
+    import script_director as sd
+    job = get_job(job_id)
+    task_log.info("job %s: planning from the author's story script", job_id)
+    plan = sd.plan_from_script(job.request.script_text, progress=lambda m: task_log.info("job %s: %s", job_id, m))
+    bible, beats = plan["bible"], plan["beats"]
+    clips = [Clip(index=i, duration=int(b.get("duration", 15)), movie_script=plan["clip_scripts"][i]) for i, b in enumerate(beats)]
+    update_job(job_id, movie_bible=bible, beats=beats, clips=clips, acts=None, delivery=None, plan_report=plan["report"],
+               scene_bible=json.dumps(bible, ensure_ascii=False), status="plan_ready")
+    _save_master_plan_file(get_job(job_id))
+    task_log.info("job %s: script plan ready (%d clips)", job_id, len(beats))
+
+
 def _generate_narrated_plan(job_id: str) -> None:
     """Phase 1 for Narrated Drama: the Master Plan (bible, acts, beats, and the delivery map of what the spoken script
     must make the audience understand), then a report on whether the script actually delivers it."""
     job = get_job(job_id)
     import hybrid_narrated_drama as hnd
+    if (job.request.script_text or "").strip():
+        return _generate_script_plan(job_id)
     topic = hnd.topic_with_rules(job.request.topic, job.plan_rules)   # the standing rules ride along with the premise
     total_clips = job.request.num_clips
     task_log.info("job %s: generating narrated drama master plan for %d clips", job_id, total_clips)
@@ -1699,6 +1728,16 @@ def _bank_clip_voices(job_id: str, i: int, clip_script: dict, clip_file: Path, b
 
 
 def _continue_narrated_drama_job(job_id: str) -> None:
+    """Runs the narrated drama job; a story-script job runs with the dialogue untouched (no trimming, cleaning or re-timing of words)."""
+    import hybrid_narrated_drama as hnd
+    job = get_job(job_id)
+    if (job.request.script_text or "").strip():
+        with hnd.verbatim_script():
+            return _continue_narrated_drama_job_inner(job_id)
+    return _continue_narrated_drama_job_inner(job_id)
+
+
+def _continue_narrated_drama_job_inner(job_id: str) -> None:
     """Phase 1.5: reference images -> Phase 2: Narrated drama per-clip (VO / Dialogue / Shock) -> assemble."""
     job = get_job(job_id)
     import hybrid_narrated_drama as hnd
@@ -2885,6 +2924,95 @@ def save_plan(job_id: str, request: PlanApprovalRequest) -> Job:
     return job
 
 
+class StoryScriptCheck(BaseModel):
+    text: str
+
+
+@app.post("/story-script/check")
+def check_story_script(req: StoryScriptCheck) -> dict:
+    """Parse a pasted/uploaded story script and report on it. No AI, no cost. The dashboard starts a job only when `errors` is empty."""
+    import story_script as ss
+    doc = ss.parse_story_script(req.text)
+    return {
+        "title": doc.title,
+        "cast": [{"name": c.name, "age": c.age} for c in doc.characters],
+        "clips": [{"n": c.index, "number": c.number, "title": c.title, "words": c.words, "lines": len(c.lines),
+                   "place": c.location_name, "over": c.words > ss.SCRIPT_MAX_WORDS_PER_CLIP} for c in doc.clips],
+        "unlisted_speakers": doc.unlisted_speakers,
+        "errors": [str(i) for i in doc.errors],
+        "warnings": [str(i) for i in doc.warnings],
+        "max_words": ss.SCRIPT_MAX_WORDS_PER_CLIP,
+        "report": ss.format_report(doc),
+    }
+
+
+class DirectionEdit(BaseModel):
+    instruction: str | None = None   # rewrite the clip's direction following this
+    edit: dict | None = None         # or a hand edit: {opening_pose, end_state, on_screen, shots: [{index, camera, delivery, target, purpose, lips}]}
+    regenerate: bool = False         # or direct this clip again from scratch
+    location_id: str | None = None   # move the clip to another of the plan's places (a place id, or several joined by commas)
+
+
+def _script_clip_or_409(job_id: str, clip_index: int) -> tuple[Job, Clip]:
+    job = _require_clip(job_id, clip_index)
+    clip = job.clips[clip_index]
+    if job.status != "plan_ready":
+        raise HTTPException(status_code=409, detail=f"the direction can only be changed in the plan review (job status is '{job.status}')")
+    if not (clip.movie_script and isinstance(clip.movie_script, dict) and clip.movie_script.get("authored")):
+        raise HTTPException(status_code=409, detail="this clip was not directed from a story script")
+    return job, clip
+
+
+@app.patch("/jobs/{job_id}/clips/{clip_index}/direction")
+def edit_clip_direction(job_id: str, clip_index: int, req: DirectionEdit) -> Job:
+    """Plan review of a story-script job: change one clip's direction by hand (camera, delivery, opening pose...) or by an instruction that the
+    screenwriter follows. The spoken words never change."""
+    import script_director as sd
+    job, clip = _script_clip_or_409(job_id, clip_index)
+    bible = job.movie_bible
+    beat = job.beats[clip_index]
+    script = clip.movie_script
+    loc_changed = False
+    if req.location_id is not None and req.location_id.strip():
+        want = [x.strip() for x in req.location_id.split(",") if x.strip()]
+        places = {l["id"] for l in (bible or {}).get("locations", []) if l.get("id")}
+        bad = [x for x in want if x not in places]
+        if bad:
+            raise HTTPException(status_code=422, detail=f"{', '.join(map(repr, bad))} is not one of the plan's places ({', '.join(sorted(places))})")
+        new_loc = ", ".join(want)
+        loc_changed = new_loc != str(beat.get("location_id") or "")
+        if loc_changed:
+            beats = list(job.beats)
+            beats[clip_index] = {**beat, "location_id": new_loc, **({"location_ids": want} if len(want) > 1 else {})}
+            if len(want) <= 1:
+                beats[clip_index].pop("location_ids", None)
+            job = update_job(job_id, beats=beats)
+            beat = job.beats[clip_index]
+            script = {**script, "location_id": new_loc, "location_ids": want, "authored": {**script["authored"], "heading": {**script["authored"]["heading"], "location_name": want[0].replace("_", " ").upper(), "continuous": False}}}
+    try:
+        if req.regenerate and not (req.instruction and req.instruction.strip()):
+            req.instruction = "Direct this clip again from scratch with fresh, more cinematic camera work. Keep the same story beats."
+        if loc_changed and not ((req.instruction and req.instruction.strip()) or req.edit):
+            req.instruction = f"The clip now takes place in {want[0].replace('_', ' ')}. Re-direct it so the shots, opening pose and who is where fit that place; keep the story beats."
+        if req.instruction and req.instruction.strip():
+            prev_end = job.clips[clip_index - 1].movie_script["authored"]["end_state"] if clip_index > 0 and job.clips[clip_index - 1].movie_script else ""
+            nxt = job.clips[clip_index + 1].movie_script if clip_index + 1 < len(job.clips) else None
+            authored = sd.rewrite_clip(script, beat, bible, clip_index + 1, req.instruction, prev_end=prev_end,
+                                       next_opening=(nxt or {}).get("authored", {}).get("opening_pose", ""))
+        elif req.edit:
+            authored = sd.apply_hand_edit(script, bible, req.edit)
+        else:
+            raise HTTPException(status_code=422, detail="send an instruction or an edit")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    doc_clip = sd.doc_clip_from_script(script, beat, bible, clip_index + 1)
+    loc_ids = [x.strip() for x in str(beat.get("location_id") or script.get("location_id", "")).split(",") if x.strip()]
+    new_script = sd.clip_script_from(doc_clip, authored, bible, loc_ids)
+    job = update_clip(job_id, clip_index, movie_script=new_script)
+    _save_master_plan_file(job)
+    return job
+
+
 @app.post("/jobs/{job_id}/approve-plan", status_code=202)
 def approve_plan(job_id: str, request: PlanApprovalRequest | None = None) -> dict:
     """Approve the story progression / master plan, apply any edits, and start video generation."""
@@ -3261,6 +3389,44 @@ def assemble(job_id: str) -> dict:
         update_job(job_id, status=before.status)
         raise HTTPException(status_code=503, detail="could not queue the final video; try again") from e
     return {"job_id": job_id}
+
+
+_MERGE_LOCKS: dict[str, threading.Lock] = {}
+
+
+@app.post("/jobs/{job_id}/merge-clips")
+def merge_clips(job_id: str) -> dict:
+    """Join the clips generated so far, in order, into one video (partial.mp4) right now, even while the job is still generating or has been
+    stopped. Runs here in the API, not in the worker, so it works with the worker stopped. The job itself is not changed."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    done = [c for c in job.clips if c.status == "done" and c.video_url]
+    if not done:
+        raise HTTPException(status_code=409, detail="no clip has been generated yet")
+    lock = _MERGE_LOCKS.setdefault(job_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="a merge is already running for this job")
+    try:
+        try:
+            assemble_final_video(get_job(job_id), partial=True)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"the merge failed: {type(e).__name__}: {e}") from e
+    finally:
+        lock.release()
+    return {"job_id": job_id, "clips": len(done), "of": len(job.clips), "built_at": time.time(),
+            "url": f"/jobs/{job_id}/partial-video?v={int(time.time())}"}
+
+
+@app.get("/jobs/{job_id}/partial-video")
+def partial_video(job_id: str) -> FileResponse:
+    """The video made by POST /jobs/{job_id}/merge-clips."""
+    if get_job(job_id) is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    path = partial_video_path(job_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="no merged video yet")
+    return FileResponse(path, media_type="video/mp4")
 
 
 @app.get("/jobs/{job_id}/video")

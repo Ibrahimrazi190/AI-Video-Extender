@@ -1,0 +1,3 @@
+file '/srv/media/79a970eae1844bc4a72726768140c2ce/norm/clip_01_496x864.mkv'
+file '/srv/media/79a970eae1844bc4a72726768140c2ce/norm/clip_02_496x864_trim.mkv'
+file '/srv/media/79a970eae1844bc4a72726768140c2ce/norm/clip_03_496x864_trim.mkv'

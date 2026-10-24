@@ -287,6 +287,16 @@
         <div id="enhance-status" style="font-size: 12px; margin-top: 4px; min-height: 18px; color: var(--muted); display: none;"></div>
       </div>
 
+      <div class="field" id="script-box" style="display:none; border:1px solid var(--line); border-radius:7px; padding:10px; margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:6px;">
+          <span class="label" style="margin:0;">Story script <small style="color:var(--muted);">(optional: skips story creation; same layout as a Claude story: Characters list, then Clip 1, Clip 2...)</small></span>
+          <span><input type="file" id="script-file" accept=".txt,text/plain" style="font-size:12.5px;"> <button type="button" id="script-clear" style="padding:3px 10px; font-size:12px;">Clear</button></span>
+        </div>
+        <textarea id="script-text" rows="6" placeholder="Paste the story script here, or choose a .txt file. Every word of dialogue is kept exactly as written (74 words per 15-second clip at most)." style="width:100%; font:inherit; font-size:12.5px; padding:10px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:inherit; resize:vertical; box-sizing:border-box;"></textarea>
+        <div style="margin-top:6px; display:flex; gap:10px; align-items:center;"><button type="button" id="script-check" style="padding:4px 12px; font-size:12.5px;">Check script</button><span id="script-status" style="font-size:12.5px; color:var(--muted);"></span></div>
+        <pre id="script-report" style="display:none; font-size:12px; white-space:pre-wrap; max-height:260px; overflow:auto; margin:8px 0 0; padding:8px; background:var(--soft); border-radius:6px;"></pre>
+      </div>
+
       <fieldset>
         <legend>Mode</legend>
         <div class="choices">
@@ -388,6 +398,16 @@
         <summary>🎭 Scene Bible Overview (Characters & Locations)</summary>
         <div id="bible-content" class="bible-content"></div>
       </details>
+    </div>
+
+    <div class="final" id="merge-box" hidden style="margin-bottom:12px;">
+      <div class="final-head"><strong>Merge generated clips</strong><span class="meta" id="merge-meta"></span></div>
+      <video id="merge-video" controls preload="metadata" hidden style="max-width:100%; max-height:70vh;"></video>
+      <div class="final-actions" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px;">
+        <button type="button" class="secondary" id="merge-btn">Merge the clips made so far</button>
+        <a class="button" id="merge-download" hidden>Download merged video</a>
+        <span id="merge-msg" role="status" aria-live="polite" style="font-size:12.5px; color:var(--muted);"></span>
+      </div>
     </div>
 
     <div class="final" id="final" hidden>
@@ -731,7 +751,40 @@
   // The joined video: a player and a download link once it exists, a note while it is being made, and a button to
   // make it for jobs that finished before it existed or after a failed attempt.
   let finalBusy = false;
+  function renderMerge(job) {
+    const done = (job.clips || []).filter((c) => c.status === "done" && c.video_url).length;
+    const all = (job.clips || []).length;
+    const box = $("merge-box");
+    if (!box) return;
+    box.hidden = done === 0 || (done === all && job.final_video_at);   // once everything is made the normal final video is there
+    $("merge-meta").textContent = done ? `${done} of ${all} clips are ready` : "";
+  }
+  let mergeBusy = false;
+  $("merge-btn")?.addEventListener("click", async () => {
+    const job = shownJob;
+    if (!job || mergeBusy) return;
+    mergeBusy = true;
+    $("merge-btn").disabled = true;
+    $("merge-msg").style.color = "var(--muted)";
+    $("merge-msg").textContent = "Merging… this can take a minute";
+    try {
+      const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/merge-clips`, { method: "POST" });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(describeError(body));
+      const v = $("merge-video"), dl = $("merge-download");
+      v.src = body.url; v.hidden = false; dl.href = body.url; dl.download = "merged-clips.mp4"; dl.hidden = false;
+      $("merge-msg").textContent = `Merged ${body.clips} of ${body.of} clips.`;
+    } catch (e) {
+      $("merge-msg").style.color = "#d73a49";
+      $("merge-msg").textContent = `Could not merge: ${e.message}`;
+    } finally {
+      mergeBusy = false;
+      $("merge-btn").disabled = false;
+    }
+  });
+
   function renderFinal(job) {
+    renderMerge(job);
     const allDone = job.clips.length > 0 && job.clips.every((c) => c.status === "done");
     const running = job.status === "pending" || job.status === "generating";
     const box = $("final"), video = $("final-video"), link = $("final-download"), build = $("final-build");
@@ -1369,6 +1422,70 @@
     box.appendChild(row);
   }
 
+  function buildDirectionEditor(job, idx, a, canEditCard) {
+    const wrap = el("details", "");
+    wrap.style.cssText = "margin-top:8px; border:1px solid var(--line); border-radius:7px; padding:6px 10px;";
+    const sum = el("summary", "", `🎬 Direction (${a.shots.length} shots)` + (a.fallback ? " ⚠ basic shot list, ask for a rewrite" : ""));
+    sum.style.cssText = "cursor:pointer; font-weight:600; font-size:13px;" + (a.fallback ? "color:#d73a49;" : "");
+    wrap.appendChild(sum);
+    const mk = (label, val, rows) => {
+      const lab = el("label", ""); lab.style.cssText = "display:block; font-size:12px; color:var(--muted); margin-top:6px;";
+      lab.appendChild(document.createTextNode(label));
+      const t = el("textarea", ""); t.rows = rows || 2; t.value = val || ""; t.disabled = !canEditCard;
+      t.style.cssText = "width:100%; font:inherit; font-size:12.5px; padding:6px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:inherit; box-sizing:border-box;";
+      lab.appendChild(t); wrap.appendChild(lab); return t;
+    };
+    const pose = mk("Opening pose (frame 0.0s)", a.opening_pose, 3);
+    const rows = a.shots.map((s, i) => {
+      const box = el("div", ""); box.style.cssText = "margin-top:8px; padding:6px; background:var(--soft); border-radius:6px;";
+      const words = s.line ? `<div style="font-size:12px;"><strong>Line ${s.line}</strong> (${escapeHtml(a.lines[s.line - 1]?.speaker || "")}, ${escapeHtml(s.lips)}): “${escapeHtml(s.words)}” <em style="color:var(--muted)">(words locked)</em></div>` : `<div style="font-size:12px;"><strong>Silent shot</strong></div>`;
+      box.innerHTML = words;
+      const mkIn = (label, val, rws) => {
+        const lab = el("label", ""); lab.style.cssText = "display:block; font-size:11.5px; color:var(--muted); margin-top:3px;";
+        lab.appendChild(document.createTextNode(label));
+        const t = el("textarea", ""); t.rows = rws; t.value = val || ""; t.disabled = !canEditCard;
+        t.style.cssText = "width:100%; font:inherit; font-size:12.5px; padding:5px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:inherit; box-sizing:border-box;";
+        lab.appendChild(t); box.appendChild(lab); return t;
+      };
+      const cam = mkIn(`Shot ${i + 1}: camera`, s.camera, 2);
+      const del = s.line ? mkIn("How it is said", s.delivery, 1) : null;
+      wrap.appendChild(box);
+      return { i, cam, del, s };
+    });
+    const row = el("div", ""); row.style.cssText = "margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;";
+    const msg = el("span", "", ""); msg.style.cssText = "font-size:12px; color:var(--muted);";
+    const call = async (body, label) => {
+      const locEl = wrap.closest(".beat-card")?.querySelector('[data-field="location_id"]');
+      if (locEl && locEl.value) body.location_id = locEl.value;
+      msg.style.color = "var(--muted)"; msg.textContent = label;
+      try {
+        const res = await fetch(`/jobs/${encodeURIComponent(job.id)}/clips/${idx}/direction`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(describeError(j));
+        msg.textContent = "Done. Updated.";
+        if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();   // the review redraws only when nothing inside it has focus
+        shownJson = null;
+        renderJob(j);
+      } catch (e) { msg.style.color = "#d73a49"; msg.textContent = e.message; }
+    };
+    const save = el("button", "", "Save my edits"); save.type = "button"; save.disabled = !canEditCard;
+    const regen = el("button", "", "Regenerate this clip"); regen.type = "button"; regen.disabled = !canEditCard;
+    regen.title = "Directs only this clip again (one AI call); also applies a changed place";
+    regen.addEventListener("click", () => call({ regenerate: true }, "Regenerating…"));
+    save.addEventListener("click", () => {
+      const shots = rows.filter((r) => r.cam.value.trim() !== r.s.camera || (r.del && r.del.value.trim() !== (r.s.delivery || "")))
+        .map((r) => ({ index: r.i, camera: r.cam.value, ...(r.del ? { delivery: r.del.value } : {}) }));
+      call({ edit: { opening_pose: pose.value, shots } }, "Saving…");
+    });
+    row.appendChild(save); row.appendChild(regen); row.appendChild(msg); wrap.appendChild(row);
+    const ins = mk("Or tell the screenwriter what to change in this clip (it rewrites the direction; the words stay locked)", "", 2);
+    ins.placeholder = "e.g. Open on a low angle of Rosie's fist, make the last line land on a slow push-in on Vivian's eyes";
+    const rw = el("button", "", "Rewrite with AI"); rw.type = "button"; rw.disabled = !canEditCard; rw.style.marginTop = "6px";
+    rw.addEventListener("click", () => { if (!ins.value.trim()) { msg.textContent = "Write the instruction first."; return; } call({ instruction: ins.value }, "Rewriting…"); });
+    wrap.appendChild(rw);
+    return wrap;
+  }
+
   function renderPlanReview(job) {
     const box = $("plan-review");
     if (!box) return;
@@ -1474,8 +1591,18 @@
 
         const locWrap = el("div", "beat-loc-wrap");
         locWrap.appendChild(el("span", null, "📍 Location:"));
-        const locInput = el("input", "beat-loc-input");
-        locInput.value = b.location_id || "";
+        const isScriptClip = !!job.clips[idx]?.movie_script?.authored;
+        const locInput = el(isScriptClip ? "select" : "input", "beat-loc-input");
+        if (isScriptClip) {
+          const ids = (job.movie_bible?.locations || []).map((l) => l.id);
+          const cur = b.location_id || "";
+          const pairs = [];
+          ids.forEach((x) => ids.forEach((y) => { if (x !== y) pairs.push(`${x}, ${y}`); }));
+          [...new Set([...ids, ...pairs, cur].filter(Boolean))].forEach((id) => { const o = el("option", "", id); o.value = id; locInput.appendChild(o); });
+          locInput.value = cur;
+        } else {
+          locInput.value = b.location_id || "";
+        }
         locInput.dataset.field = "location_id";
         locInput.disabled = !canEditCard;
         locInput.addEventListener("input", refreshPlanWarnings);
@@ -1509,6 +1636,8 @@
 
         const refBox = job.mode === "narrated_drama" ? buildBeatRefs(job, b) : null;
         if (refBox) card.appendChild(refBox);
+        const authored = job.clips[idx]?.movie_script?.authored;
+        if (authored) card.appendChild(buildDirectionEditor(job, idx, authored, canEditCard));
 
         const footer = el("div", "beat-card-footer");
         const speechLabel = el("label", "beat-speech-label");
@@ -2519,18 +2648,55 @@
     return (body && body.detail) || "unknown error";
   }
 
+  // --- Story script upload / check ---
+  let scriptClipCount = 0;
+  async function checkScript() {
+    const text = $("script-text").value;
+    const status = $("script-status"), rep = $("script-report");
+    scriptClipCount = 0;
+    if (!text.trim()) { status.textContent = "Paste or upload a script first."; rep.style.display = "none"; return false; }
+    status.textContent = "Checking…";
+    try {
+      const res = await fetch("/story-script/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+      const r = await res.json();
+      if (!res.ok) throw new Error(describeError(r));
+      rep.textContent = r.report; rep.style.display = "block";
+      const over = r.clips.filter((c) => c.over).length;
+      if (r.errors.length) { status.style.color = "#d73a49"; status.textContent = `${r.errors.length} error(s): nothing can start until they are fixed.`; return false; }
+      scriptClipCount = r.clips.length;
+      status.style.color = "var(--muted)";
+      status.textContent = `OK: ${r.clips.length} clips (${r.clips.length * 15}s), ${r.warnings.length} note(s)` + (r.unlisted_speakers.length ? `, ${r.unlisted_speakers.length} minor speaker(s) get automatic looks` : "") + (over ? `, ${over} clip(s) over the limit` : "");
+      return true;
+    } catch (e) { status.style.color = "#d73a49"; status.textContent = `Could not check: ${e.message}`; return false; }
+  }
+  $("script-check")?.addEventListener("click", checkScript);
+  $("script-clear")?.addEventListener("click", () => { $("script-text").value = ""; $("script-file").value = ""; $("script-status").textContent = ""; $("script-report").style.display = "none"; scriptClipCount = 0; });
+  $("script-file")?.addEventListener("change", async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    $("script-text").value = await f.text();
+    checkScript();
+  });
+  function syncScriptBox() { const b = $("script-box"); if (b) b.style.display = radio("mode") === "narrated_drama" ? "block" : "none"; }
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (busy) return; // one job at a time: every submit is a new, paid job
-    const topic = $("topic").value.trim();
+    const scriptText = (radio("mode") === "narrated_drama" && $("script-text")) ? $("script-text").value.trim() : "";
+    const topic = $("topic").value.trim() || (scriptText ? "Story script" : "");
     if (!topic) {
       formMsg.textContent = "Write a topic first.";
       $("topic").focus();
       return;
     }
+    if (scriptText) {
+      const ok = await checkScript();
+      if (!ok) { formMsg.textContent = "Fix the story script errors first (see the report above)."; return; }
+    }
     const mode = radio("mode");
-    const durVal = Number(durationSel.value) || 30;
-    const clipDurVal = Number(radio("clip_duration")) || 5;
+    let durVal = Number(durationSel.value) || 30;
+    let clipDurVal = Number(radio("clip_duration")) || 5;
+    if (scriptText) { clipDurVal = 15; durVal = 15 * scriptClipCount; }
     const totalClips = Math.round(durVal / clipDurVal);
 
     if (mode === "talking_head" || mode === "story_time") {
@@ -2559,6 +2725,7 @@
       resolution: radio("resolution"),
       supervise: $("supervise") ? $("supervise").checked : false,
     };
+    if (scriptText) payload.script_text = scriptText;
     try {
       const res = await fetch("/jobs", {
         method: "POST",
@@ -2579,6 +2746,7 @@
     if (event.target.name === "clip_duration") fillDurations();
     if (event.target.name === "mode") {
       updateHint();
+      syncScriptBox();
       if (radio("mode") === "story_videos") {
         const r5 = form.querySelector('input[name="clip_duration"][value="5"]');
         if (r5 && !r5.checked) { r5.checked = true; fillDurations(); }
